@@ -1,0 +1,42 @@
+# Private design and local agent artifacts
+/docs/
+/.superpowers/
+/.codex/
+/.agents/
+
+# Gradle
+/.gradle/
+**/build/
+/out/
+/bin/
+
+# Local Minecraft development instances
+/run/
+/runs/
+/logs/
+/crash-reports/
+
+# IDE metadata
+/.idea/
+/.vscode/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Runtime and diagnostic output
+*.log
+hs_err_pid*
+replay_pid*
+
+# Local secrets
+.env
+.env.*
+!.env.example
+secrets.properties
