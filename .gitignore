@@ -1,12 +1,15 @@
 # Private design and local agent artifacts
+/AGENTS.md
 /docs/
 /.superpowers/
 /.codex/
 /.agents/
+/.worktrees/
 
 # Gradle
 /.gradle/
 **/build/
+/src/generated/resources/.cache/
 /out/
 /bin/
 
@@ -18,6 +21,7 @@
 
 # IDE metadata
 /.idea/
+/.run/
 /.vscode/
 *.iml
 *.ipr
