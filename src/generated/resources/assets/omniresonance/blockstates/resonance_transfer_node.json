@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "omniresonance:block/resonance_transfer_node"
+    }
+  }
+}

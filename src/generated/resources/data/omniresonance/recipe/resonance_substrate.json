@@ -1,0 +1,37 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    {
+      "item": "omniresonance:omni_dust"
+    },
+    {
+      "item": "omniresonance:omni_dust"
+    },
+    {
+      "item": "omniresonance:omni_dust"
+    },
+    {
+      "item": "omniresonance:omni_dust"
+    },
+    {
+      "item": "minecraft:redstone"
+    },
+    {
+      "item": "minecraft:redstone"
+    },
+    {
+      "item": "minecraft:redstone"
+    },
+    {
+      "item": "minecraft:redstone"
+    },
+    {
+      "item": "minecraft:obsidian"
+    }
+  ],
+  "result": {
+    "count": 4,
+    "id": "omniresonance:resonance_substrate"
+  }
+}

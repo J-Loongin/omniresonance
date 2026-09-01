@@ -1,0 +1,25 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="LGPL-3.0-or-later"
+issueTrackerURL="https://github.com/J-Loongin/omniresonance/issues"
+
+[[mods]]
+modId="omniresonance"
+version="${mod_version}"
+displayName="Omni Resonance"
+authors="loongin"
+displayURL="https://github.com/J-Loongin/omniresonance"
+
+[[dependencies.omniresonance]]
+modId="neoforge"
+type="required"
+versionRange="[21.1.248,21.2)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.omniresonance]]
+modId="minecraft"
+type="required"
+versionRange="[1.21.1]"
+ordering="NONE"
+side="BOTH"

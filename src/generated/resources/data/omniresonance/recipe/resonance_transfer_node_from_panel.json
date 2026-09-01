@@ -1,0 +1,13 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "redstone",
+  "ingredients": [
+    {
+      "item": "omniresonance:resonance_transfer_panel"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "id": "omniresonance:resonance_transfer_node"
+  }
+}

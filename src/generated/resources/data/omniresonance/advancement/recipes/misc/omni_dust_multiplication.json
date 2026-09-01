@@ -1,0 +1,32 @@
+{
+  "parent": "minecraft:recipes/root",
+  "criteria": {
+    "has_omni_dust": {
+      "conditions": {
+        "items": [
+          {
+            "items": "omniresonance:omni_dust"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    },
+    "has_the_recipe": {
+      "conditions": {
+        "recipe": "omniresonance:omni_dust_multiplication"
+      },
+      "trigger": "minecraft:recipe_unlocked"
+    }
+  },
+  "requirements": [
+    [
+      "has_the_recipe",
+      "has_omni_dust"
+    ]
+  ],
+  "rewards": {
+    "recipes": [
+      "omniresonance:omni_dust_multiplication"
+    ]
+  }
+}

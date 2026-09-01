@@ -1,0 +1,308 @@
+import java.util.jar.JarFile
+import javax.xml.parsers.DocumentBuilderFactory
+import net.neoforged.minecraftdependencies.OperatingSystem as MinecraftOperatingSystem
+import org.gradle.api.artifacts.result.UnresolvedDependencyResult
+
+plugins {
+    id 'java-library'
+    id 'java-test-fixtures'
+    id 'net.neoforged.moddev' version '2.0.144'
+    id 'com.diffplug.spotless' version '8.10.1'
+}
+
+group = providers.gradleProperty('mod_group').get()
+version = providers.gradleProperty('mod_version').get()
+base.archivesName = 'omniresonance'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+sourceSets {
+    gameTest {
+        compileClasspath += sourceSets.main.output + sourceSets.testFixtures.output
+        runtimeClasspath += sourceSets.main.output + sourceSets.testFixtures.output
+    }
+    main.resources {
+        srcDir 'src/generated/resources'
+        exclude '**/.cache/**'
+    }
+}
+
+configurations {
+    gameTestImplementation.extendsFrom implementation, testFixturesImplementation
+    gameTestRuntimeOnly.extendsFrom runtimeOnly, testFixturesRuntimeOnly
+}
+
+def dependencyLockOs = providers.gradleProperty('dependency_lock_os')
+def hostOsName = System.getProperty('os.name').toLowerCase(Locale.ROOT)
+def hostLockOs
+if (hostOsName.contains('mac')) {
+    hostLockOs = 'osx'
+} else if (hostOsName.contains('windows')) {
+    hostLockOs = 'windows'
+} else if (hostOsName.contains('linux')) {
+    hostLockOs = 'linux'
+} else {
+    throw new GradleException('Unsupported build operating system: ' + hostOsName)
+}
+def selectedLockOs = dependencyLockOs.getOrElse(hostLockOs)
+if (!(selectedLockOs in ['linux', 'osx', 'windows'])) {
+    throw new GradleException('Unsupported dependency lock OS: ' + selectedLockOs)
+}
+dependencyLocking {
+    lockAllConfigurations()
+    lockMode = LockMode.STRICT
+    lockFile = layout.projectDirectory.file('gradle/dependency-locks/' + selectedLockOs + '.lockfile')
+}
+
+if (dependencyLockOs.isPresent()) {
+    def targetOs = objects.named(MinecraftOperatingSystem, selectedLockOs)
+    configurations.configureEach {
+        attributes.attribute(MinecraftOperatingSystem.ATTRIBUTE, targetOs)
+    }
+    gradle.taskGraph.whenReady { graph ->
+        def allowed = ['resolveLockGraphs', 'dependencies', 'dependencyInsight']
+        if (graph.allTasks.any { !(it.name in allowed) }) {
+            throw new GradleException('dependency_lock_os may only be used for dependency graph tasks.')
+        }
+    }
+}
+
+tasks.register('resolveLockGraphs') {
+    group = 'verification'
+    description = 'Resolves dependency graphs without executing platform-specific code.'
+    notCompatibleWithConfigurationCache('Resolves configuration graphs at execution time')
+    doLast {
+        configurations.findAll { it.canBeResolved }.each { configuration ->
+            configuration.incoming.resolutionResult.allDependencies.each { dependency ->
+                if (dependency instanceof UnresolvedDependencyResult) {
+                    throw new GradleException('Unresolved dependency in ' + configuration.name, dependency.failure)
+                }
+            }
+        }
+        logger.lifecycle('Verified dependency graphs for {}.', selectedLockOs)
+    }
+}
+
+neoForge {
+    version = providers.gradleProperty('neo_version').get()
+    parchment {
+        minecraftVersion = providers.gradleProperty('minecraft_version').get()
+        mappingsVersion = providers.gradleProperty('parchment_version').get()
+    }
+    addModdingDependenciesTo sourceSets.testFixtures
+    addModdingDependenciesTo sourceSets.gameTest
+    mods {
+        omniresonance {
+            sourceSet sourceSets.main
+            sourceSet sourceSets.testFixtures
+            sourceSet sourceSets.gameTest
+        }
+    }
+    unitTest {
+        enable()
+        testedMod = mods.omniresonance
+    }
+    runs {
+        client {
+            client()
+            gameDirectory = file('run/client')
+        }
+        server {
+            server()
+            gameDirectory = file('run/server')
+            programArgument '--nogui'
+        }
+        gameTestServer {
+            type = 'gameTestServer'
+            sourceSet = sourceSets.gameTest
+            gameDirectory = file('run/gameTest')
+        }
+        data {
+            data()
+            gameDirectory = file('run/data')
+            programArguments.addAll '--mod', 'omniresonance', '--all',
+                    '--output', file('src/generated/resources').absolutePath
+            if (file('src/main/resources').isDirectory()) {
+                programArguments.addAll '--existing', file('src/main/resources').absolutePath
+            }
+        }
+        configureEach {
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'omniresonance'
+            logLevel = org.slf4j.event.Level.INFO
+        }
+    }
+}
+
+def gameTestReport = layout.buildDirectory.file('test-results/gameTest/results.xml')
+def cleanGameTestWorld = tasks.register('cleanGameTestWorld', Delete) {
+    group = 'verification'
+    description = 'Cleans the disposable GameTest world before another run.'
+    delete layout.projectDirectory.dir('run/gameTest/world')
+}
+neoForge.runs.gameTestServer.systemProperty 'omniresonance.game_test_report',
+        gameTestReport.get().asFile.absolutePath
+tasks.named('runGameTestServer') {
+    dependsOn cleanGameTestWorld
+    timeout = Duration.ofMinutes(5)
+    doFirst {
+        def report = gameTestReport.get().asFile
+        report.parentFile.mkdirs()
+        java.nio.file.Files.deleteIfExists(report.toPath())
+    }
+    doLast {
+        def report = gameTestReport.get().asFile
+        if (!report.isFile()) {
+            throw new GradleException('GameTest did not write a completion report; no tests may have run.')
+        }
+        def factory = DocumentBuilderFactory.newInstance()
+        factory.setFeature('http://apache.org/xml/features/disallow-doctype-decl', true)
+        def document = factory.newDocumentBuilder().parse(report)
+        def count = document.getElementsByTagName('testcase').length
+        def failures = document.getElementsByTagName('failure').length +
+                document.getElementsByTagName('error').length
+        if (count == 0 || failures != 0) {
+            throw new GradleException('GameTest report has ' + count + ' tests and ' + failures + ' failures.')
+        }
+        logger.lifecycle('Verified GameTest completion report: {} tests, zero required failures.', count)
+    }
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.14.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+def generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    def values = [mod_version: project.version.toString()]
+    inputs.properties values
+    from('src/main/templates') {
+        expand values
+    }
+    into layout.buildDirectory.dir('generated/modMetadata')
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+def generatedGameTestResources = layout.buildDirectory.dir('generated/gameTestResources')
+def generateGameTestStructures = tasks.register('generateGameTestStructures', JavaExec) {
+    group = 'verification'
+    description = 'Converts test SNBT to Minecraft structure templates without shipping test data.'
+    dependsOn tasks.named('testFixturesClasses')
+    classpath = sourceSets.testFixtures.runtimeClasspath
+    mainClass = 'io.github.loongin.omniresonance.bootstrap.TestStructureGenerator'
+    javaLauncher = javaToolchains.launcherFor(java.toolchain)
+    def input = layout.projectDirectory.file('src/gameTest/resources/data/omniresonance/structure/bootstrap.snbt')
+    def output = generatedGameTestResources.map { it.file('data/omniresonance/structure/bootstrap.nbt') }
+    inputs.file input
+    outputs.dir generatedGameTestResources
+    args input.asFile.absolutePath, output.get().asFile.absolutePath
+}
+sourceSets.gameTest.resources.srcDir generatedGameTestResources
+tasks.named('processGameTestResources') {
+    dependsOn generateGameTestStructures
+    exclude '**/*.snbt'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+    options.compilerArgs.addAll ['-Xlint:all,-processing']
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat = 'full'
+    }
+}
+
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+tasks.named('jar', Jar) {
+    from('LICENSE')
+    manifest.attributes(
+            'Implementation-Title': 'Omni Resonance',
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': 'loongin')
+}
+tasks.named('testFixturesJar', Jar) {
+    destinationDirectory = layout.buildDirectory.dir('test-fixtures')
+}
+tasks.named('sourcesJar', Jar) {
+    from('LICENSE')
+}
+
+def verifyModJar = tasks.register('verifyModJar') {
+    group = 'verification'
+    description = 'Checks the release JAR metadata and excludes development-only classes.'
+    dependsOn tasks.named('jar')
+    def archive = tasks.named('jar', Jar).flatMap { it.archiveFile }
+    inputs.file archive
+    doLast {
+        new JarFile(archive.get().asFile).withCloseable { jar ->
+            def entries = jar.entries().collect { it.name }
+            for (def required : [
+                    'META-INF/neoforge.mods.toml',
+                    'io/github/loongin/omniresonance/bootstrap/OmniResonanceMod.class',
+                    'LICENSE']) {
+                if (!entries.contains(required)) {
+                    throw new GradleException('Missing release entry: ' + required)
+                }
+            }
+            def forbidden = entries.findAll {
+                it.contains('/fixtures/') || it.contains('GameTests') ||
+                        it.contains('TestStructureGenerator') || it.endsWith('.snbt') ||
+                        it.startsWith('.cache/')
+            }
+            if (!forbidden.empty) {
+                throw new GradleException('Development-only entries in release JAR: ' + forbidden)
+            }
+            def metadata = jar.getInputStream(jar.getJarEntry('META-INF/neoforge.mods.toml'))
+                    .getText('UTF-8')
+            if (metadata.contains('$' + '{')) {
+                throw new GradleException('Unexpanded metadata in release JAR')
+            }
+        }
+    }
+}
+tasks.named('check') {
+    dependsOn verifyModJar
+}
+
+tasks.named('wrapper', Wrapper) {
+    gradleVersion = '9.2.1'
+    distributionType = Wrapper.DistributionType.BIN
+    distributionSha256Sum = '72f44c9f8ebcb1af43838f45ee5c4aa9c5444898b3468ab3f4af7b6076c5bc3f'
+}
+
+spotless {
+    java {
+        target 'src/**/*.java'
+        palantirJavaFormat('2.97.0')
+        forbidWildcardImports()
+        removeUnusedImports()
+        licenseHeader '// SPDX-License-Identifier: LGPL-3.0-or-later\n'
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+    format 'text', {
+        target '*.gradle', '*.properties', '.gitignore', '.gitattributes',
+                'gradlew', 'gradlew.bat', '.github/**/*.yml', 'src/**/*.toml'
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}

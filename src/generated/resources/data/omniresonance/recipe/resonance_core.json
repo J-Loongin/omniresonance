@@ -1,0 +1,37 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [
+    {
+      "item": "minecraft:amethyst_shard"
+    },
+    {
+      "item": "minecraft:amethyst_shard"
+    },
+    {
+      "item": "minecraft:amethyst_shard"
+    },
+    {
+      "item": "minecraft:amethyst_shard"
+    },
+    {
+      "item": "omniresonance:omni_dust"
+    },
+    {
+      "item": "omniresonance:omni_dust"
+    },
+    {
+      "item": "omniresonance:omni_dust"
+    },
+    {
+      "item": "omniresonance:omni_dust"
+    },
+    {
+      "item": "minecraft:nether_star"
+    }
+  ],
+  "result": {
+    "count": 64,
+    "id": "omniresonance:resonance_core"
+  }
+}

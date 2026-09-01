@@ -1,0 +1,21 @@
+{
+  "type": "minecraft:block",
+  "pools": [
+    {
+      "bonus_rolls": 0.0,
+      "conditions": [
+        {
+          "condition": "minecraft:survives_explosion"
+        }
+      ],
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "omniresonance:resonance_transfer_panel"
+        }
+      ],
+      "rolls": 1.0
+    }
+  ],
+  "random_sequence": "omniresonance:blocks/resonance_transfer_panel"
+}
