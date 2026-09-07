@@ -11,7 +11,7 @@ import net.minecraft.resources.ResourceLocation;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Bounded immutable server result without exception text or administrator sets. Safe to share across
+ * Bounded immutable server result; member pages are limited to authorized views and never include exception text. Safe to share across
  * threads; codecs only validate framing/value bounds and never access or modify authoritative state.
  */
 public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
@@ -35,7 +35,18 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
                                 buffer.readUUID(),
                                 buffer.readBoolean() ? buffer.readUUID() : null,
                                 buffer.readLong(),
-                                Reason.fromWire(buffer.readUnsignedByte()));
+                                Reason.fromWire(buffer.readUnsignedByte()),
+                                buffer.readBoolean() ? NetworkTerminalState.read(buffer) : null);
+                    case 2 ->
+                        new ViewState(
+                                buffer.readUUID(),
+                                buffer.readUUID(),
+                                buffer.readLong(),
+                                NetworkTerminalState.read(buffer));
+                    case 3 ->
+                        new AccessRevoked(buffer.readUUID(), buffer.readUUID(), buffer.readLong(), buffer.readUUID());
+                    case 4 ->
+                        new NetworkDeleted(buffer.readUUID(), buffer.readUUID(), buffer.readLong(), buffer.readUUID());
                     default -> throw new DecoderException("Unknown terminal response tag");
                 };
             } catch (IllegalArgumentException failure) {
@@ -67,6 +78,31 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
                     }
                     buffer.writeLong(failure.sequence());
                     buffer.writeByte(failure.reason().wireCode);
+                    buffer.writeBoolean(failure.state() != null);
+                    if (failure.state() != null) {
+                        NetworkTerminalState.write(buffer, failure.state());
+                    }
+                }
+                case ViewState state -> {
+                    buffer.writeByte(2);
+                    buffer.writeUUID(state.viewId());
+                    buffer.writeUUID(state.sessionId());
+                    buffer.writeLong(state.sequence());
+                    NetworkTerminalState.write(buffer, state.state());
+                }
+                case AccessRevoked revoked -> {
+                    buffer.writeByte(3);
+                    buffer.writeUUID(revoked.viewId());
+                    buffer.writeUUID(revoked.sessionId());
+                    buffer.writeLong(revoked.sequence());
+                    buffer.writeUUID(revoked.networkId());
+                }
+                case NetworkDeleted deleted -> {
+                    buffer.writeByte(4);
+                    buffer.writeUUID(deleted.viewId());
+                    buffer.writeUUID(deleted.sessionId());
+                    buffer.writeLong(deleted.sequence());
+                    buffer.writeUUID(deleted.networkId());
                 }
             }
             NetworkSummary.requireEncodedBound(buffer, start);
@@ -98,11 +134,48 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
         }
     }
 
-    record Failure(UUID viewId, @Nullable UUID sessionId, long sequence, Reason reason)
+    record ViewState(UUID viewId, UUID sessionId, long sequence, NetworkTerminalState state)
             implements NetworkTerminalResponse {
+        public ViewState {
+            requireEnvelope(viewId, sequence);
+            Objects.requireNonNull(sessionId, "sessionId");
+            Objects.requireNonNull(state, "state");
+        }
+    }
+
+    record Failure(
+            UUID viewId,
+            @Nullable UUID sessionId,
+            long sequence,
+            Reason reason,
+            @Nullable NetworkTerminalState state) implements NetworkTerminalResponse {
         public Failure {
             requireEnvelope(viewId, sequence);
             Objects.requireNonNull(reason, "reason");
+        }
+
+        public Failure(UUID viewId, @Nullable UUID sessionId, long sequence, Reason reason) {
+            this(viewId, sessionId, sequence, reason, null);
+        }
+    }
+
+    /** Unsolicited closure for one exact active view/session, independent of a pending request sequence. */
+    record AccessRevoked(UUID viewId, UUID sessionId, long sequence, UUID networkId)
+            implements NetworkTerminalResponse {
+        public AccessRevoked {
+            requireEnvelope(viewId, sequence);
+            Objects.requireNonNull(sessionId, "sessionId");
+            Objects.requireNonNull(networkId, "networkId");
+        }
+    }
+
+    /** Unsolicited closure for one exact view/session whose selected network was deleted. */
+    record NetworkDeleted(UUID viewId, UUID sessionId, long sequence, UUID networkId)
+            implements NetworkTerminalResponse {
+        public NetworkDeleted {
+            requireEnvelope(viewId, sequence);
+            Objects.requireNonNull(sessionId, "sessionId");
+            Objects.requireNonNull(networkId, "networkId");
         }
     }
 
@@ -115,7 +188,18 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
         INVALID_REQUEST(5),
         SESSION_EXPIRED(6),
         STALE_REQUEST(7),
-        INTERNAL_ERROR(8);
+        INTERNAL_ERROR(8),
+        NO_ACCESS(9),
+        LOCKED(10),
+        LOCK_EXPIRED(11),
+        STALE_REVISION(12),
+        TUNNEL_DISABLED(13),
+        RESET_REQUIRED(14),
+        PLAYER_OFFLINE(15),
+        ALREADY_ADMINISTRATOR(16),
+        NOT_ADMINISTRATOR(17),
+        HAS_NODES(18),
+        STORAGE_UNVERIFIED(19);
         private final int wireCode;
 
         Reason(int wireCode) {
@@ -137,6 +221,17 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
                 case 6 -> SESSION_EXPIRED;
                 case 7 -> STALE_REQUEST;
                 case 8 -> INTERNAL_ERROR;
+                case 9 -> NO_ACCESS;
+                case 10 -> LOCKED;
+                case 11 -> LOCK_EXPIRED;
+                case 12 -> STALE_REVISION;
+                case 13 -> TUNNEL_DISABLED;
+                case 14 -> RESET_REQUIRED;
+                case 15 -> PLAYER_OFFLINE;
+                case 16 -> ALREADY_ADMINISTRATOR;
+                case 17 -> NOT_ADMINISTRATOR;
+                case 18 -> HAS_NODES;
+                case 19 -> STORAGE_UNVERIFIED;
                 default -> throw new DecoderException("Unknown terminal failure reason");
             };
         }

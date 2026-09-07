@@ -20,13 +20,13 @@ public final class NetworkPayloads {
     private NetworkPayloads() {}
 
     /**
-     * Registers required version-1 PLAY payloads with main-thread handlers. The framework supplies the
+     * Registers required version-3 PLAY payloads with main-thread handlers. The framework supplies the
      * real sending player and replies through its connection; server work never trusts a payload owner.
      * Missing client bootstrap fails explicitly rather than silently discarding successful responses.
      */
     public static void register(RegisterPayloadHandlersEvent event, NetworkRuntimeRegistry registry) {
         Objects.requireNonNull(registry, "registry");
-        PayloadRegistrar registrar = event.registrar("1").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("3").executesOn(HandlerThread.MAIN);
         registrar.playToServer(NetworkTerminalRequest.TYPE, NetworkTerminalRequest.STREAM_CODEC, (request, context) -> {
             if (!(context.player() instanceof ServerPlayer sender)) {
                 throw new IllegalStateException("Terminal request requires a server player");

@@ -1,0 +1,11 @@
+{
+  "ui_click": {
+    "sounds": [
+      {
+        "name": "omniresonance:ui_click",
+        "preload": true
+      }
+    ],
+    "subtitle": "omniresonance.subtitle.ui_click"
+  }
+}

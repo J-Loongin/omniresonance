@@ -162,6 +162,7 @@ public final class NodeAuthorityGameTests {
             ResonanceNodeBlockEntity entity =
                     place(helper, pos, ModBlocks.RESONANCE_TRANSFER_PANEL.get(), Direction.UP);
             loadState(helper, entity, NODE_A, NodeLinkState.BLANK);
+            fixture.network(NETWORK_A).setDirty(false);
 
             fixture.authority.reconcileLoaded(entity);
 
@@ -171,7 +172,15 @@ public final class NodeAuthorityGameTests {
             helper.assertTrue(
                     updated.form() == NodeForm.PANEL && updated.facing() == Direction.UP,
                     "Physical snapshot was not refreshed");
+            helper.assertTrue(updated.revision() == 1, "Physical refresh did not increment revision exactly once");
+            helper.assertTrue(fixture.network(NETWORK_A).isDirty(), "Physical refresh did not dirty network data");
             assertUnique(helper, updated, fixture.directory.byId(NODE_A));
+            fixture.network(NETWORK_A).setDirty(false);
+            fixture.authority.reconcileLoaded(entity);
+            NetworkNodeRecord unchanged =
+                    fixture.network(NETWORK_A).findNode(NODE_A).orElseThrow();
+            helper.assertTrue(unchanged.equals(updated), "Repeated physical reconciliation changed the snapshot");
+            helper.assertTrue(!fixture.network(NETWORK_A).isDirty(), "Repeated reconciliation dirtied network data");
             helper.succeed();
         }
     }

@@ -79,6 +79,43 @@ final class NetworkNodeDirectoryTest {
     }
 
     @Test
+    void managementSnapshotReplacementUpdatesAllThreeIndexes() {
+        NetworkNodeDirectory.Entry first = entry(NETWORK_A, NODE_A, 1, "A", POS_A);
+        NetworkNodeDirectory directory = new NetworkNodeDirectory(List.of(first));
+        NetworkNodeRecord changedRecord = first.record()
+                .withName(new ManagedName("Crusher input"))
+                .withChunkLoadingRequested(true)
+                .withMode(NodeMode.DIRECT)
+                .withEnabled(false);
+        NetworkNodeDirectory.Entry changed = new NetworkNodeDirectory.Entry(NETWORK_A, changedRecord);
+
+        assertEquals(changed, directory.update(first, changed));
+        assertUnique(changed, directory.byId(NODE_A));
+        assertUnique(changed, directory.byPosition(POS_A));
+        assertEquals(List.of(changed), directory.recordsInChunk(Level.OVERWORLD, new ChunkPos(POS_A.pos())));
+        assertEquals(List.of(changed), directory.allUniqueEntries());
+    }
+
+    @Test
+    void preparedNetworkReplacementChangesOnlyNetworkAndTargetNumber() {
+        NetworkNodeDirectory.Entry source = entry(NETWORK_A, NODE_A, 1, "A", POS_A);
+        NetworkNodeDirectory directory = new NetworkNodeDirectory(List.of(source));
+        NetworkNodeRecord moved = source.record().moveTo(7, new ManagedName("Moved"));
+        NetworkNodeDirectory.Entry target = new NetworkNodeDirectory.Entry(NETWORK_B, moved);
+
+        NetworkNodeDirectory.PreparedNetworkReplacement prepared = directory.prepareNetworkReplacement(source, target);
+        assertUnique(source, directory.byId(NODE_A));
+        assertEquals(target, directory.commitNetworkReplacement(prepared));
+
+        assertUnique(target, directory.byId(NODE_A));
+        assertUnique(target, directory.byPosition(POS_A));
+        assertEquals(List.of(target), directory.recordsInChunk(Level.OVERWORLD, new ChunkPos(POS_A.pos())));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> directory.prepareNetworkReplacement(target, new NetworkNodeDirectory.Entry(NETWORK_B, moved)));
+    }
+
+    @Test
     void startupConflictsAreLocalAndIndependentOfInputOrder() {
         NetworkNodeDirectory.Entry sameIdFirst = entry(NETWORK_A, NODE_A, 1, "A", POS_A);
         NetworkNodeDirectory.Entry sameIdSecond = entry(NETWORK_B, NODE_A, 1, "B", POS_B);
@@ -125,6 +162,20 @@ final class NetworkNodeDirectoryTest {
                 IllegalArgumentException.class, () -> directory.update(first, entry(NETWORK_B, NODE_A, 1, "A", POS_A)));
         assertThrows(
                 IllegalArgumentException.class, () -> directory.update(first, entry(NETWORK_A, NODE_B, 1, "A", POS_A)));
+        NetworkNodeRecord renumbered = new NetworkNodeRecord(
+                NODE_A,
+                2,
+                first.record().name(),
+                POS_A,
+                first.record().form(),
+                first.record().facing(),
+                first.record().revision(),
+                first.record().enabled(),
+                first.record().chunkLoadingRequested(),
+                first.record().mode());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> directory.update(first, new NetworkNodeDirectory.Entry(NETWORK_A, renumbered)));
         assertThrows(
                 IllegalArgumentException.class, () -> directory.update(first, entry(NETWORK_A, NODE_A, 1, "A", POS_B)));
         assertUnique(first, directory.byId(NODE_A));
@@ -137,6 +188,10 @@ final class NetworkNodeDirectoryTest {
                     directory::allUniqueEntries,
                     () -> directory.add(entry(NETWORK_A, NODE_B, 2, "B", POS_B)),
                     () -> directory.update(first, first),
+                    () -> directory.prepareNetworkReplacement(
+                            first,
+                            new NetworkNodeDirectory.Entry(
+                                    NETWORK_B, first.record().moveTo(2, new ManagedName("Moved")))),
                     () -> directory.remove(NETWORK_A, NODE_A, POS_A))) {
                 ExecutionException failure = assertThrows(
                         ExecutionException.class,
@@ -156,7 +211,8 @@ final class NetworkNodeDirectoryTest {
             UUID networkId, UUID nodeId, long number, String name, GlobalPos position) {
         return new NetworkNodeDirectory.Entry(
                 networkId,
-                new NetworkNodeRecord(nodeId, number, new ManagedName(name), position, NodeForm.BLOCK, Direction.DOWN));
+                NetworkNodeRecord.fresh(
+                        nodeId, number, new ManagedName(name), position, NodeForm.BLOCK, Direction.DOWN));
     }
 
     private static List<NetworkNodeDirectory.Entry> reversed(List<NetworkNodeDirectory.Entry> entries) {

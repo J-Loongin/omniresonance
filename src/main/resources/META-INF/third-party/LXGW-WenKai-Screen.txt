@@ -1,0 +1,50 @@
+Omni Resonance UI glyph subset
+
+This font asset is derived from LXGW WenKai Screen v1.522, using the GB Screen variant.
+Project: https://github.com/lxgw/LxgwWenKai-Screen
+Web distribution source: lxgw-wenkai-screen-web@1.522.0
+Web package: https://github.com/CMBill/lxgw-wenkai-screen-web
+Input chunks: lxgwwenkaigbscreen/{0,3,4,5,6,7,8,25,26,27,28,29,30,244,245}.woff2
+
+The source glyph ranges were taken from the Simplified Chinese web-font
+distribution, merged, restricted to characters used by the Omni Resonance
+English and Simplified Chinese language resources plus required interface
+symbols, and renamed internally to "Omni Resonance UI". The packaged file is
+a glyph subset, not the original installable font.
+
+Packaged asset:
+assets/omniresonance/font/omniresonance_ui_subset.ttf
+SHA-256: ee5b0a67edf11bd33ce50977793d90b8d65b8f7591041894b6b207ceef403e09
+
+The click subtitle adds U+51FB from the same distribution's 26.woff2 chunk.
+All existing glyph outlines, advances, character mappings, names and line
+metrics are unchanged. Source chunk SHA-256:
+cbb2ed6b99b0b9ac4050046b3347222c8b9cdd7bf92721479c4a7d1dc374c7f2
+
+Member management adds U+5217, U+5339, U+53BB, U+6DFB, U+770B, U+7EBF,
+U+7ECF and U+8868 from chunks 3, 6, 7 and 25 of the same versioned distribution.
+Existing outlines, advances, mappings, internal names and line metrics remain unchanged.
+
+Network settings adds U+4EC5, U+4F59, U+4FE1, U+50A8, U+590D, U+6062,
+U+606F, U+64CD, U+7A7A, U+80FD and U+9ED8 from chunks 3, 4, 5, 6, 25
+and 26 of the same versioned distribution. Existing outlines, advances,
+mappings, internal names and line metrics remain unchanged. Source chunk
+SHA-256 values:
+3.woff2  fc2c1190375a5abe65dbc697011c8c49e87d51e7e88077fa1b40025799e3b9d2
+4.woff2  24722504c585714a6655808634244c0b57d21db7cc0a7f8a7f2b2a2d8ba30841
+5.woff2  ec7fc6ca46d7220add973353864754e9e90e491de44a7c522cc0fa8c49f91e10
+6.woff2  7c3281d4fc6bde97f94c67c0fafffd14c5dffcd9155f86045a9013e8f32bd638
+25.woff2 76f3d89c9b88ec8ac5c99048614a43dc434c26bce00b8defab1cbfac8c17b908
+26.woff2 cbb2ed6b99b0b9ac4050046b3347222c8b9cdd7bf92721479c4a7d1dc374c7f2
+
+Font definitions:
+assets/omniresonance/font/ui.json
+assets/omniresonance/font/ui_title.json
+Additional raster profiles reuse the same subset file:
+assets/omniresonance/font/ui_scale_{3,4,8,16}.json
+assets/omniresonance/font/ui_title_scale_{3,4,8,16}.json
+Logical body/title sizes stay at 10/11; profiles change only raster precision.
+
+The font subset remains licensed under SIL Open Font License 1.1. The complete
+license and upstream copyright notices are included at:
+META-INF/licenses/LXGW-WenKai-Screen-OFL-1.1.txt

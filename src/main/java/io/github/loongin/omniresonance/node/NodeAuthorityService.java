@@ -87,6 +87,64 @@ public final class NodeAuthorityService implements AutoCloseable {
         return record;
     }
 
+    /**
+     * Moves one exact loaded LINKED node between two healthy network shards after all identity, physical, revision,
+     * target-capacity and directory checks. The generic physical LINKED hint is retained because network ownership
+     * exists only in SavedData and the derived directory. This trusted method performs no player authorization.
+     */
+    public NetworkNodeRecord moveNetwork(
+            UUID sourceNetworkId,
+            UUID targetNetworkId,
+            ResonanceNodeBlockEntity entity,
+            long expectedRevision,
+            ManagedName targetName) {
+        requireServerThread();
+        Objects.requireNonNull(sourceNetworkId, "sourceNetworkId");
+        Objects.requireNonNull(targetNetworkId, "targetNetworkId");
+        Objects.requireNonNull(entity, "entity");
+        Objects.requireNonNull(targetName, "targetName");
+        if (sourceNetworkId.equals(targetNetworkId) || expectedRevision < 0) {
+            throw new IllegalArgumentException("Node move requires distinct networks and a valid revision");
+        }
+        PhysicalNode physical = requirePhysicalNode(entity);
+        NodePersistentState.Valid state = entity.state()
+                .orElseThrow(() -> new IllegalStateException("Unavailable physical node cannot move networks"));
+        if (state.linkState() != NodeLinkState.LINKED) {
+            throw new IllegalStateException("Only a linked physical node can move networks");
+        }
+        NetworkNodeDirectory.Lookup lookup = directory().byId(state.nodeId());
+        if (lookup.status() != NetworkNodeDirectory.Status.UNIQUE) {
+            throw new IllegalStateException("Moved node authority is not unique");
+        }
+        NetworkNodeDirectory.Entry previous = lookup.entry().orElseThrow();
+        if (!previous.networkId().equals(sourceNetworkId)) {
+            throw new IllegalStateException("Moved node no longer belongs to the source network");
+        }
+        NetworkSavedData source = authoritativeNetwork(sourceNetworkId);
+        NetworkSavedData target = authoritativeNetwork(targetNetworkId);
+        NetworkNodeRecord sourceRecord = source.findNode(state.nodeId())
+                .orElseThrow(() -> new IllegalStateException("Source node authority disappeared"));
+        if (!sourceRecord.equals(previous.record())
+                || sourceRecord.revision() != expectedRevision
+                || !sourceRecord.position().equals(physical.position())
+                || sourceRecord.form() != physical.form()
+                || sourceRecord.facing() != physical.facing()) {
+            throw new IllegalStateException("Source node changed before network move");
+        }
+
+        NetworkSavedData.PreparedNodeMoveOut preparedOut =
+                source.prepareNodeMoveOut(sourceRecord.nodeId(), expectedRevision, sourceRecord.position());
+        NetworkSavedData.PreparedNodeMoveIn preparedIn = target.prepareNodeMoveIn(sourceRecord, targetName);
+        NetworkNodeDirectory.Entry updated = new NetworkNodeDirectory.Entry(targetNetworkId, preparedIn.moved());
+        NetworkNodeDirectory.PreparedNetworkReplacement preparedDirectory =
+                directory().prepareNetworkReplacement(previous, updated);
+
+        source.commitNodeMoveOut(preparedOut);
+        target.commitNodeMoveIn(preparedIn);
+        directory().commitNetworkReplacement(preparedDirectory);
+        return preparedIn.moved();
+    }
+
     /** Reconciles one exact loaded physical node against unique authority without retaining the entity. */
     public void reconcileLoaded(ResonanceNodeBlockEntity entity) {
         requireServerThread();

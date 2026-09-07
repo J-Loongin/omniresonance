@@ -41,6 +41,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @GameTestHolder(OmniResonanceMod.MOD_ID)
 @PrefixGameTestTemplate(false)
 public final class DragonBreathInfusionGameTests {
+    private static final AtomicInteger END_FIXTURE_SEQUENCE = new AtomicInteger();
+
     private DragonBreathInfusionGameTests() {}
 
     /** Verifies initial conversion and repeat infusion share one scheduled operation. */
@@ -267,8 +269,11 @@ public final class DragonBreathInfusionGameTests {
     @GameTest(template = "bootstrap")
     public static void dispenserFullAndOverflowRemaindersAreConserved(GameTestHelper helper) {
         EndFixture full = endFixture(helper, 28);
-        EndFixture overflow = endFixture(helper, 32);
+        EndFixture overflow = endFixture(helper, 64);
         try {
+            helper.assertTrue(
+                    !new ChunkPos(full.target()).equals(new ChunkPos(overflow.target())),
+                    "Dispenser remainder fixtures must not share a forced chunk");
             full.level()
                     .setBlockAndUpdate(
                             full.target(), ModBlocks.RESONATING_AMETHYST.get().defaultBlockState());
@@ -364,8 +369,8 @@ public final class DragonBreathInfusionGameTests {
         if (end == null) {
             throw new IllegalStateException("End level is unavailable");
         }
-        BlockPos origin = helper.absolutePos(new BlockPos(1 + xOffset, 2, 1));
-        BlockPos target = new BlockPos(origin.getX(), 80, origin.getZ());
+        int fixtureSequence = END_FIXTURE_SEQUENCE.getAndIncrement();
+        BlockPos target = new BlockPos(1024 + fixtureSequence * 256 + xOffset, 80, 1024);
         end.setChunkForced(target.getX() >> 4, target.getZ() >> 4, true);
         end.getChunkAt(target);
         end.setBlockAndUpdate(target.below(), Blocks.END_STONE.defaultBlockState());

@@ -7,20 +7,26 @@ import net.minecraft.util.Mth;
 /** Fixed code-rendered colors and geometry shared by terminal screens and controls. */
 final class TerminalTheme {
     static final int WORLD_DIM = 0x94000000;
-    static final int WINDOW_TOP = 0xEF0C1D29;
-    static final int WINDOW_BOTTOM = 0xED071119;
-    static final int TITLE = 0xE60C2635;
-    static final int PANEL = 0xCC142A38;
-    static final int RAISED = 0xD51E3948;
-    static final int RAISED_HOVERED = 0xDB25536A;
-    static final int RAISED_DISABLED = 0xB51A2C37;
-    static final int ACCENT_SOFT = 0xA9238CA6;
-    static final int ACCENT = 0xFF54D7EE;
-    static final int LINE = 0x9054BED8;
-    static final int TEXT = 0xFFEAF8FB;
-    static final int MUTED = 0xFF95ADB8;
+    static final int WINDOW_TOP = 0xEF0A2330;
+    static final int WINDOW_BOTTOM = 0xF006111A;
+    static final int TITLE = 0xD90D2938;
+    static final int PANEL = 0xBD122936;
+    static final int RAISED = 0xAC1C4050;
+    static final int RAISED_HOVERED = 0xD12A5B6A;
+    static final int RAISED_DISABLED = 0x94152733;
+    static final int ROW = 0x8C1B4050;
+    static final int ROW_HOVERED = 0xB4255766;
+    static final int ACCENT_SOFT = 0x7B328698;
+    static final int ICON_IDLE = 0xA112303D;
+    static final int ICON_HOVERED = 0xC12B5666;
+    static final int ACCENT = 0xFF66E5F1;
+    static final int VIOLET = 0xFFA294FF;
+    static final int LINE = 0x4562BCD0;
+    static final int FRAME_LINE = 0x9466DCE9;
+    static final int TEXT = 0xFFF0FBFD;
+    static final int MUTED = 0xFFA5BDC4;
     static final int ERROR = 0xFFFF7D86;
-    static final int SCANLINE = 0x1054D7EE;
+    static final int SCANLINE = 0x0666E5F1;
 
     static final int OUTER_RADIUS = 8;
     static final int PANEL_RADIUS = 5;
@@ -31,7 +37,13 @@ final class TerminalTheme {
     static void renderWindow(GuiGraphics graphics, TerminalLayout layout) {
         TerminalLayout.Rect window = layout.window();
         fillRounded(
-                graphics, window.x() - 1, window.y() - 1, window.width() + 2, window.height() + 2, OUTER_RADIUS, LINE);
+                graphics,
+                window.x() - 1,
+                window.y() - 1,
+                window.width() + 2,
+                window.height() + 2,
+                OUTER_RADIUS,
+                FRAME_LINE);
         fillRounded(graphics, window.x(), window.y(), window.width(), window.height(), OUTER_RADIUS, WINDOW_BOTTOM);
         graphics.fillGradient(
                 window.x() + 2, window.y() + 2, window.right() - 2, window.bottom() - 2, WINDOW_TOP, WINDOW_BOTTOM);
@@ -42,6 +54,8 @@ final class TerminalTheme {
         for (int y = window.y() + 5; y < window.bottom() - 2; y += 6) {
             graphics.fill(window.x() + 2, y, window.right() - 2, y + 1, SCANLINE);
         }
+        graphics.fillGradient(
+                window.right() - 2, window.y() + 10, window.right() - 1, window.bottom() - 10, 0x409B8CFF, 0x1066E5F1);
     }
 
     static void renderPanel(GuiGraphics graphics, TerminalLayout.Rect bounds) {

@@ -3,17 +3,25 @@ package io.github.loongin.omniresonance.bootstrap;
 
 import io.github.loongin.omniresonance.config.ServerConfig;
 import io.github.loongin.omniresonance.config.ServerSettings;
+import io.github.loongin.omniresonance.network.NetworkAdministrationService;
 import io.github.loongin.omniresonance.network.NetworkCreationService;
 import io.github.loongin.omniresonance.network.NetworkDirectory;
+import io.github.loongin.omniresonance.network.NetworkSettingsService;
 import io.github.loongin.omniresonance.network.NetworkTerminalService;
+import io.github.loongin.omniresonance.network.NetworkTopologyService;
+import io.github.loongin.omniresonance.network.ServerPlayerDirectory;
 import io.github.loongin.omniresonance.networking.NetworkTerminalRequest;
 import io.github.loongin.omniresonance.networking.NetworkTerminalResponse;
 import io.github.loongin.omniresonance.node.NetworkNodeDirectory;
 import io.github.loongin.omniresonance.node.NetworkNodeRecord;
 import io.github.loongin.omniresonance.node.NodeAuthorityService;
 import io.github.loongin.omniresonance.node.NodeLifecycleEvent;
+import io.github.loongin.omniresonance.node.NodeManagementService;
+import io.github.loongin.omniresonance.node.NodeMenuOpenEvent;
+import io.github.loongin.omniresonance.node.NodeMenuService;
 import io.github.loongin.omniresonance.node.NodeReconciliationQueue;
 import io.github.loongin.omniresonance.persistence.SavedNetworkRepository;
+import io.github.loongin.omniresonance.security.EditLockTable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -48,9 +56,41 @@ public final class NetworkRuntimeRegistry {
     }
 
     record RuntimeComponents(
-            NetworkTerminalService terminal, @Nullable NodeAuthorityService nodes) {
+            NetworkTerminalService terminal,
+            @Nullable NodeAuthorityService nodes,
+            @Nullable NodeManagementService nodeManagement,
+            @Nullable NodeMenuService nodeMenus,
+            @Nullable NetworkTopologyService topology) {
         RuntimeComponents {
             Objects.requireNonNull(terminal, "terminal");
+            if (nodeManagement != null && nodes == null) {
+                throw new IllegalArgumentException("Node management requires node authority");
+            }
+            if (nodeMenus != null && nodeManagement == null) {
+                throw new IllegalArgumentException("Node menus require node management");
+            }
+            if (topology != null && nodeManagement == null) {
+                throw new IllegalArgumentException("Topology management requires the shared node-management locks");
+            }
+        }
+
+        RuntimeComponents(NetworkTerminalService terminal, @Nullable NodeAuthorityService nodes) {
+            this(terminal, nodes, null, null, null);
+        }
+
+        RuntimeComponents(
+                NetworkTerminalService terminal,
+                @Nullable NodeAuthorityService nodes,
+                @Nullable NodeManagementService nodeManagement) {
+            this(terminal, nodes, nodeManagement, null, null);
+        }
+
+        RuntimeComponents(
+                NetworkTerminalService terminal,
+                @Nullable NodeAuthorityService nodes,
+                @Nullable NodeManagementService nodeManagement,
+                @Nullable NodeMenuService nodeMenus) {
+            this(terminal, nodes, nodeManagement, nodeMenus, null);
         }
     }
 
@@ -80,7 +120,7 @@ public final class NetworkRuntimeRegistry {
         this(
                 config,
                 (server, state) -> new RuntimeComponents(
-                        Objects.requireNonNull(factory, "factory").apply(server, state), null),
+                        Objects.requireNonNull(factory, "factory").apply(server, state), null, null, null, null),
                 true);
     }
 
@@ -119,6 +159,17 @@ public final class NetworkRuntimeRegistry {
     public void onChunkLoad(ChunkEvent.Load event) {
         if (event.getLevel() instanceof ServerLevel level) {
             onChunkLoaded(level, event.getChunk().getPos().x, event.getChunk().getPos().z);
+        }
+    }
+
+    /** Opens a physical node Menu only through the matching published runtime and actual interaction sender. */
+    public void onNodeMenuOpen(NodeMenuOpenEvent event) {
+        Objects.requireNonNull(event, "event");
+        ServerPlayer player = event.player();
+        MinecraftServer eventServer = player.server;
+        requireServerThread(eventServer);
+        if (server == eventServer && runtime != null && runtime.nodeMenus() != null) {
+            runtime.nodeMenus().open(player, event.position());
         }
     }
 
@@ -177,10 +228,19 @@ public final class NetworkRuntimeRegistry {
             return;
         }
         if (runtime != null) {
+            if (runtime.nodeMenus() != null) {
+                runtime.nodeMenus().close();
+            }
+            runtime.terminal().close();
+            if (runtime.topology() != null) {
+                runtime.topology().close();
+            }
+            if (runtime.nodeManagement() != null) {
+                runtime.nodeManagement().close();
+            }
             if (runtime.nodes() != null) {
                 runtime.nodes().close();
             }
-            runtime.terminal().close();
         }
         runtime = null;
         clearPending();
@@ -188,14 +248,14 @@ public final class NetworkRuntimeRegistry {
         unavailable = false;
     }
 
-    /** Releases a disconnected actual server-player instance; stale logout events cannot clear new sessions. */
+    /** Releases the disconnected instance's terminal session and every node-edit lease owned by its player UUID. */
     public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
             closePlayer(player);
         }
     }
 
-    /** Closes the original player instance after death or End return, never the replacement sharing its UUID. */
+    /** Closes the original terminal instance and releases its UUID's node-edit leases before player replacement. */
     public void onPlayerClone(PlayerEvent.Clone event) {
         if (event.getOriginal() instanceof ServerPlayer original) {
             closePlayer(original);
@@ -207,6 +267,16 @@ public final class NetworkRuntimeRegistry {
         requireServerThread(event.getServer());
         if (server == event.getServer() && runtime != null) {
             runtime.terminal().applyConfiguration(config.latest());
+            runtime.terminal().tick();
+            if (runtime.topology() != null) {
+                runtime.topology().applyConfiguration(config.latest());
+            }
+            if (runtime.nodeManagement() != null) {
+                runtime.nodeManagement().tick();
+            }
+            if (runtime.topology() != null) {
+                runtime.topology().tick();
+            }
             if (runtime.nodes() != null) {
                 runtime.nodes().tick();
             }
@@ -237,6 +307,9 @@ public final class NetworkRuntimeRegistry {
         requireServerThread(senderServer);
         if (server == senderServer && runtime != null) {
             runtime.terminal().closePlayer(player);
+            if (runtime.nodeManagement() != null) {
+                runtime.nodeManagement().releasePlayer(player.getUUID());
+            }
         }
     }
 
@@ -320,10 +393,30 @@ public final class NetworkRuntimeRegistry {
         }
         NetworkNodeDirectory nodes = new NetworkNodeDirectory(entries);
         NetworkCreationService creation = new NetworkCreationService(repository, networks, UUID::randomUUID);
-        NetworkTerminalService terminal =
-                new NetworkTerminalService(server, networks, creation, initial, UUID::randomUUID);
         NodeAuthorityService authority = new NodeAuthorityService(server, repository, nodes, UUID::randomUUID);
-        return new RuntimeComponents(terminal, authority);
+        EditLockTable locks = new EditLockTable();
+        NodeManagementService nodeManagement =
+                new NodeManagementService(server, networks, repository, nodes, authority, locks);
+        NetworkTopologyService topology =
+                new NetworkTopologyService(server, networks, repository, nodes, locks, initial, UUID::randomUUID);
+        NodeMenuService nodeMenus = new NodeMenuService(server, nodeManagement, topology, networks, UUID::randomUUID);
+        ServerPlayerDirectory players = new ServerPlayerDirectory(server);
+        NetworkAdministrationService administration =
+                new NetworkAdministrationService(server, repository, networks, locks, players, initial);
+        NetworkSettingsService networkSettings =
+                new NetworkSettingsService(server, repository, networks, locks, players);
+        NetworkTerminalService terminal = new NetworkTerminalService(
+                server,
+                networks,
+                creation,
+                topology,
+                administration,
+                networkSettings,
+                nodeMenus,
+                initial,
+                UUID::randomUUID,
+                (player, response) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, response));
+        return new RuntimeComponents(terminal, authority, nodeManagement, nodeMenus, topology);
     }
 
     private static void requireServerThread(MinecraftServer server) {

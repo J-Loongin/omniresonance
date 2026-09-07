@@ -23,6 +23,14 @@ record TerminalLayout(Rect window, Rect titleBar, Rect content, boolean compact)
         return new TerminalLayout(window, titleBar, content, panelWidth < 400);
     }
 
+    /** Returns a stable inner width that reserves the scrollbar slot even when content currently fits. */
+    public static int reservedScrollContentWidth(int panelWidth, int horizontalPadding) {
+        if (panelWidth < 0 || horizontalPadding < 0) {
+            throw new IllegalArgumentException("Scrollable geometry must be nonnegative");
+        }
+        return Math.max(0, panelWidth - horizontalPadding * 2 - SCROLLBAR_WIDTH);
+    }
+
     /** Integer bounds whose width and height are always non-negative. */
     public record Rect(int x, int y, int width, int height) {
         public Rect {

@@ -25,11 +25,57 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Indexes live only for this directory's lifetime, keyed by network, owner, player, and owner/name. Their size
  * derives from verified metadata, with at most 262144 networks per owner; no query adds entries. Updates happen
- * only through validated additions after an authoritative commit. No operation is a simulation, and no method
+ * only through validated additions or prepared replacements after an authoritative commit. No operation is a simulation, and no method
  * touches disk. Immutable snapshots may be shared; wrong-thread access fails before reading or changing indexes.
  * Owners affected by startup conflicts remain creation-blocked until a fresh directory is built after restart.
  */
 public final class NetworkDirectory {
+    /** Owner-bound preflight for a name-only metadata replacement; performs no mutation or I/O. */
+    public static final class PreparedRename {
+        private final NetworkDirectory owner;
+        private final NetworkMetadata previous;
+        private final NetworkMetadata next;
+
+        private PreparedRename(NetworkDirectory owner, NetworkMetadata previous, NetworkMetadata next) {
+            this.owner = owner;
+            this.previous = previous;
+            this.next = next;
+        }
+    }
+
+    /** Owner-bound preflight for removing one exact indexed network; performs no mutation or I/O. */
+    public static final class PreparedRemoval {
+        private final NetworkDirectory owner;
+        private final NetworkMetadata previous;
+
+        private PreparedRemoval(NetworkDirectory owner, NetworkMetadata previous) {
+            this.owner = owner;
+            this.previous = previous;
+        }
+    }
+
+    /** Owner-bound preflight result. It retains immutable metadata, changes no index and performs no I/O. */
+    public static final class PreparedMetadataReplacement {
+        private final NetworkDirectory owner;
+        private final NetworkMetadata previous;
+        private final NetworkMetadata next;
+        private final List<UUID> removed;
+        private final List<UUID> added;
+
+        private PreparedMetadataReplacement(
+                NetworkDirectory owner,
+                NetworkMetadata previous,
+                NetworkMetadata next,
+                List<UUID> removed,
+                List<UUID> added) {
+            this.owner = owner;
+            this.previous = previous;
+            this.next = next;
+            this.removed = List.copyOf(removed);
+            this.added = List.copyOf(added);
+        }
+    }
+
     static final int MAXIMUM_NETWORKS_PER_OWNER = 262144;
     private static final Logger LOGGER = LoggerFactory.getLogger(NetworkDirectory.class);
     private static final Comparator<NetworkMetadata> ORDER =
@@ -174,6 +220,24 @@ public final class NetworkDirectory {
         return owned == null || owned.isEmpty() ? Optional.empty() : Optional.of(owned.first());
     }
 
+    /**
+     * Returns the earliest owned network other than one exact identity in O(log N), without copying or mutation.
+     * The excluded identity need not be present; null and wrong-thread calls reject before index access.
+     */
+    public Optional<NetworkMetadata> firstOwnedExcluding(UUID owner, UUID excluded) {
+        requireOwningThread();
+        NavigableSet<NetworkMetadata> owned = byOwner.get(Objects.requireNonNull(owner, "owner"));
+        Objects.requireNonNull(excluded, "excluded");
+        if (owned == null || owned.isEmpty()) {
+            return Optional.empty();
+        }
+        NetworkMetadata first = owned.first();
+        if (!first.id().equals(excluded)) {
+            return Optional.of(first);
+        }
+        return Optional.ofNullable(owned.higher(first));
+    }
+
     /** Immutable bounded server-thread query result; construction copies only its page and has no side effects. */
     public record AccessPage(List<NetworkMetadata> entries, int totalCount, boolean hasPrevious, boolean hasNext) {
         public AccessPage {
@@ -236,6 +300,177 @@ public final class NetworkDirectory {
                         ignored ->
                                 new TreeSet<>((left, right) -> ORDER.compare(networks.get(left), networks.get(right))))
                 .add(network);
+    }
+
+    /**
+     * Preflights a membership-only metadata replacement on the owning server thread, without modifying indexes.
+     * Identity, owner, creation order and name must stay fixed. Stale/mismatched inputs are rejected before a
+     * caller commits authoritative data. Cost is O(A), where A is this network's administrator count, not all networks.
+     */
+    public PreparedMetadataReplacement prepareMetadataReplacement(NetworkMetadata previous, NetworkMetadata next) {
+        requireOwningThread();
+        Objects.requireNonNull(previous, "previous");
+        Objects.requireNonNull(next, "next");
+        NetworkMetadata current = networks.get(previous.id());
+        if (!previous.equals(current)
+                || !previous.id().equals(next.id())
+                || !previous.ownerId().equals(next.ownerId())
+                || previous.creationOrder() != next.creationOrder()
+                || !previous.name().equals(next.name())
+                || previous.equals(next)) {
+            throw new IllegalArgumentException("Invalid network metadata replacement");
+        }
+        List<UUID> removed = new ArrayList<>();
+        List<UUID> added = new ArrayList<>();
+        for (UUID player : previous.administrators()) {
+            if (!next.administrators().contains(player)) {
+                removed.add(player);
+            }
+        }
+        for (UUID player : next.administrators()) {
+            if (!previous.administrators().contains(player)) {
+                added.add(player);
+            }
+        }
+        return new PreparedMetadataReplacement(this, current, next, removed, added);
+    }
+
+    /**
+     * Applies an owner-bound preflight immediately after its authoritative commit on the same server thread.
+     * Wrong-directory or superseded values fail before mutation. Only this network and changed players' access
+     * sets are updated; other networks, owner names and ordering remain unchanged. No simulation or I/O occurs.
+     */
+    public void commitMetadataReplacement(PreparedMetadataReplacement prepared) {
+        requireOwningThread();
+        Objects.requireNonNull(prepared, "prepared");
+        if (prepared.owner != this || networks.get(prepared.previous.id()) != prepared.previous) {
+            throw new IllegalArgumentException("Stale or foreign metadata replacement");
+        }
+        UUID id = prepared.previous.id();
+        for (UUID player : prepared.removed) {
+            NavigableSet<UUID> accessible = byPlayer.get(player);
+            accessible.remove(id);
+            if (accessible.isEmpty()) {
+                byPlayer.remove(player);
+            }
+        }
+        NavigableSet<NetworkMetadata> owned = byOwner.get(prepared.previous.ownerId());
+        owned.remove(prepared.previous);
+        networks.put(id, prepared.next);
+        owned.add(prepared.next);
+        for (UUID player : prepared.added) {
+            addAccessible(player, id);
+        }
+    }
+
+    /**
+     * Preflights a name-only replacement without changing any index. Identity, owner, creation order and members
+     * must remain exact; unchanged and owner-scoped duplicate names reject before authoritative mutation.
+     */
+    public PreparedRename prepareRename(NetworkMetadata previous, NetworkMetadata next) {
+        requireOwningThread();
+        Objects.requireNonNull(previous, "previous");
+        Objects.requireNonNull(next, "next");
+        NetworkMetadata current = networks.get(previous.id());
+        if (current != previous
+                || !previous.id().equals(next.id())
+                || !previous.ownerId().equals(next.ownerId())
+                || previous.creationOrder() != next.creationOrder()
+                || !previous.administrators().equals(next.administrators())
+                || previous.name().equals(next.name())) {
+            throw new IllegalArgumentException("Invalid network rename");
+        }
+        ScopedName name = new ScopedName(next.ownerId(), next.name().uniquenessKey());
+        if (byName.containsKey(name)) {
+            throw new IllegalArgumentException("Duplicate owner-scoped network name");
+        }
+        return new PreparedRename(this, previous, next);
+    }
+
+    /**
+     * Applies one exact name-only preflight after its authoritative shard commit. Other network and player access
+     * indexes remain unchanged; stale or foreign values reject before mutation and no I/O occurs.
+     */
+    public void commitRename(PreparedRename prepared) {
+        requireOwningThread();
+        Objects.requireNonNull(prepared, "prepared");
+        if (prepared.owner != this || networks.get(prepared.previous.id()) != prepared.previous) {
+            throw new IllegalArgumentException("Stale or foreign network rename");
+        }
+        ScopedName previousName = new ScopedName(
+                prepared.previous.ownerId(), prepared.previous.name().uniquenessKey());
+        ScopedName nextName =
+                new ScopedName(prepared.next.ownerId(), prepared.next.name().uniquenessKey());
+        if (!Objects.equals(byName.get(previousName), prepared.previous.id()) || byName.containsKey(nextName)) {
+            throw new IllegalArgumentException("Network name index changed after preflight");
+        }
+        NavigableSet<NetworkMetadata> owned = byOwner.get(prepared.previous.ownerId());
+        if (owned == null || !owned.remove(prepared.previous)) {
+            throw new IllegalArgumentException("Network owner index changed after preflight");
+        }
+        byName.remove(previousName);
+        networks.put(prepared.previous.id(), prepared.next);
+        byName.put(nextName, prepared.next.id());
+        owned.add(prepared.next);
+    }
+
+    /** Preflights removal of one exact current metadata object without modifying indexes or persistent state. */
+    public PreparedRemoval prepareRemoval(NetworkMetadata previous) {
+        requireOwningThread();
+        Objects.requireNonNull(previous, "previous");
+        if (networks.get(previous.id()) != previous) {
+            throw new IllegalArgumentException("Stale or absent network removal");
+        }
+        return new PreparedRemoval(this, previous);
+    }
+
+    /**
+     * Removes one exact preflight from every derived index. Other networks and their access remain unchanged;
+     * wrong-directory, stale, or reused values reject before mutation and no I/O occurs.
+     */
+    public void commitRemoval(PreparedRemoval prepared) {
+        requireOwningThread();
+        Objects.requireNonNull(prepared, "prepared");
+        NetworkMetadata previous = prepared.previous;
+        if (prepared.owner != this || networks.get(previous.id()) != previous) {
+            throw new IllegalArgumentException("Stale or foreign network removal");
+        }
+        ScopedName name = new ScopedName(previous.ownerId(), previous.name().uniquenessKey());
+        NavigableSet<NetworkMetadata> owned = byOwner.get(previous.ownerId());
+        if (!Objects.equals(byName.get(name), previous.id()) || owned == null || !owned.contains(previous)) {
+            throw new IllegalArgumentException("Network indexes changed after removal preflight");
+        }
+        requireAccessible(previous.ownerId(), previous.id());
+        for (UUID administrator : previous.administrators()) {
+            requireAccessible(administrator, previous.id());
+        }
+        removeAccessible(previous.ownerId(), previous.id());
+        for (UUID administrator : previous.administrators()) {
+            removeAccessible(administrator, previous.id());
+        }
+        owned.remove(previous);
+        if (owned.isEmpty()) {
+            byOwner.remove(previous.ownerId());
+        }
+        byName.remove(name);
+        networks.remove(previous.id());
+    }
+
+    private void requireAccessible(UUID player, UUID network) {
+        NavigableSet<UUID> accessible = byPlayer.get(player);
+        if (accessible == null || !accessible.contains(network)) {
+            throw new IllegalArgumentException("Network access index changed after removal preflight");
+        }
+    }
+
+    private void removeAccessible(UUID player, UUID network) {
+        NavigableSet<UUID> accessible = byPlayer.get(player);
+        if (accessible == null || !accessible.remove(network)) {
+            throw new IllegalArgumentException("Network access index changed after removal preflight");
+        }
+        if (accessible.isEmpty()) {
+            byPlayer.remove(player);
+        }
     }
 
     void requireCreationAllowed(UUID owner) {

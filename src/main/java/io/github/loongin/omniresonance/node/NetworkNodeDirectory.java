@@ -30,6 +30,19 @@ import org.slf4j.LoggerFactory;
  * reads or mutation. Conflict markers are session-only and bounded by the supplied record count.
  */
 public final class NetworkNodeDirectory {
+    /** Opaque prevalidated cross-network replacement used by the trusted authority commit. */
+    public static final class PreparedNetworkReplacement {
+        private final NetworkNodeDirectory owner;
+        private final Entry previous;
+        private final Entry updated;
+
+        private PreparedNetworkReplacement(NetworkNodeDirectory owner, Entry previous, Entry updated) {
+            this.owner = owner;
+            this.previous = previous;
+            this.updated = updated;
+        }
+    }
+
     private static final Logger LOGGER = LoggerFactory.getLogger(NetworkNodeDirectory.class);
     private static final Comparator<Entry> ORDER = Comparator.comparing(Entry::networkId)
             .thenComparingLong(entry -> entry.record().nodeNumber())
@@ -170,8 +183,9 @@ public final class NetworkNodeDirectory {
     }
 
     /**
-     * Replaces only the physical form/facing snapshot for the exact current entry.
-     * Network, UUID, number, name and position changes are rejected before any index mutation.
+     * Replaces mutable fields for the exact current entry while preserving every directory key.
+     * Network, UUID, number and position changes are rejected before any index mutation; name, physical snapshot,
+     * revision, enabled state, chunk-loading request and mode may change together in the immutable value.
      */
     public Entry update(Entry previous, Entry updated) {
         requireOwningThread();
@@ -182,13 +196,44 @@ public final class NetworkNodeDirectory {
                 || !previous.networkId().equals(updated.networkId())
                 || !previous.record().nodeId().equals(updated.record().nodeId())
                 || previous.record().nodeNumber() != updated.record().nodeNumber()
-                || !previous.record().name().equals(updated.record().name())
                 || !previous.record().position().equals(updated.record().position())) {
             throw new IllegalArgumentException("Node directory update changed authority fields");
         }
         if (previous.equals(updated)) {
             return previous;
         }
+        byId.put(updated.record().nodeId(), updated);
+        byPosition.put(updated.record().position(), updated);
+        NavigableSet<Entry> chunkEntries = byChunk.get(chunkKey(updated.record().position()));
+        chunkEntries.remove(previous);
+        chunkEntries.add(updated);
+        return updated;
+    }
+
+    /** Prevalidates a network/number change while retaining exact UUID, position and current directory identity. */
+    public PreparedNetworkReplacement prepareNetworkReplacement(Entry previous, Entry updated) {
+        requireOwningThread();
+        Objects.requireNonNull(previous, "previous");
+        Objects.requireNonNull(updated, "updated");
+        Entry current = byId.get(previous.record().nodeId());
+        if (!previous.equals(current)
+                || previous.networkId().equals(updated.networkId())
+                || !previous.record().nodeId().equals(updated.record().nodeId())
+                || !previous.record().position().equals(updated.record().position())
+                || byPosition.get(previous.record().position()) != current) {
+            throw new IllegalArgumentException("Invalid cross-network node directory replacement");
+        }
+        return new PreparedNetworkReplacement(this, previous, updated);
+    }
+
+    /** Commits an exact prevalidated replacement without re-running any caller-controlled validation. */
+    public Entry commitNetworkReplacement(PreparedNetworkReplacement prepared) {
+        requireOwningThread();
+        if (Objects.requireNonNull(prepared, "prepared").owner != this) {
+            throw new IllegalArgumentException("Prepared replacement belongs to another node directory");
+        }
+        Entry previous = prepared.previous;
+        Entry updated = prepared.updated;
         byId.put(updated.record().nodeId(), updated);
         byPosition.put(updated.record().position(), updated);
         NavigableSet<Entry> chunkEntries = byChunk.get(chunkKey(updated.record().position()));

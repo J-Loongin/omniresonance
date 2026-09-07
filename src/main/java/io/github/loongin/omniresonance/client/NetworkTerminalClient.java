@@ -39,9 +39,11 @@ public final class NetworkTerminalClient {
 
     private boolean connected;
     private boolean firstPromptDismissed;
+    private final ResonanceNodeClient nodeClient;
 
     /** Installs client events and the immutable protocol response consumer without accessing a world. */
     public NetworkTerminalClient(IEventBus modBus) {
+        nodeClient = new ResonanceNodeClient(modBus);
         modBus.addListener(this::registerKeyMappings);
         NeoForge.EVENT_BUS.addListener(this::onClientTick);
         NeoForge.EVENT_BUS.addListener(this::onLoggingIn);
@@ -54,6 +56,10 @@ public final class NetworkTerminalClient {
     }
 
     Component translatedKey() {
+        return terminalKeyText();
+    }
+
+    static Component terminalKeyText() {
         return TERMINAL_KEY.getTranslatedKeyMessage();
     }
 

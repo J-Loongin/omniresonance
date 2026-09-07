@@ -5,38 +5,78 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.loongin.omniresonance.networking.ChannelPage;
+import io.github.loongin.omniresonance.networking.NetworkSummary;
+import io.github.loongin.omniresonance.networking.NetworkTerminalState;
+import io.github.loongin.omniresonance.networking.TunnelPage;
+import io.github.loongin.omniresonance.networking.TunnelSummary;
+import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
-import org.lwjgl.glfw.GLFW;
 
 final class TerminalInteractionPolicyTest {
     @Test
-    void focusedShiftModifiedPrintableBindingPrioritizesText() {
-        assertTrue(TerminalInteractionPolicy.prioritizeTextInput(true, true, "e", GLFW.GLFW_MOD_SHIFT));
+    void topBarChoosesCreationSettingsOrNoActionForTheCurrentPage() {
+        NetworkSummary network = new NetworkSummary(new UUID(1, 1), new UUID(2, 2), "Network");
+        NetworkTerminalState.TunnelList tunnels =
+                new NetworkTerminalState.TunnelList(network, new TunnelPage(List.of(), 0, false, false));
+        assertEquals(TerminalHeaderLayout.Action.CREATE, TerminalInteractionPolicy.topBarAction(true, null));
+        assertEquals(
+                TerminalHeaderLayout.Action.CREATE,
+                TerminalInteractionPolicy.topBarAction(true, new NetworkTerminalState.NetworkRoot(network)));
+        assertEquals(TerminalHeaderLayout.Action.CREATE, TerminalInteractionPolicy.topBarAction(true, tunnels));
+        assertEquals(
+                TerminalInteractionPolicy.CreateTarget.TUNNEL, TerminalInteractionPolicy.createTarget(true, tunnels));
+        assertEquals(TerminalHeaderLayout.Action.NONE, TerminalInteractionPolicy.topBarAction(false, null));
+        TunnelSummary tunnel = new TunnelSummary(new UUID(3, 3), "Tunnel", 0, true, 1, 0);
+        assertEquals(
+                TerminalHeaderLayout.Action.SETTINGS,
+                TerminalInteractionPolicy.topBarAction(
+                        true,
+                        new NetworkTerminalState.ChannelList(
+                                network, tunnel, new ChannelPage(List.of(), 0, false, false))));
+        assertEquals(
+                TerminalHeaderLayout.Action.NONE,
+                TerminalInteractionPolicy.topBarAction(true, new NetworkTerminalState.TunnelSettings(network, tunnel)));
     }
 
     @Test
-    void focusedKeypadBindingPrioritizesText() {
-        assertTrue(TerminalInteractionPolicy.prioritizeTextInput(true, true, "6", GLFW.GLFW_MOD_NUM_LOCK));
+    void createIconTargetsOnlyTheObjectOwnedByTheCurrentView() {
+        NetworkSummary network = new NetworkSummary(new UUID(1, 1), new UUID(2, 2), "Network");
+
+        assertEquals(
+                TerminalInteractionPolicy.CreateTarget.NETWORK, TerminalInteractionPolicy.createTarget(true, null));
+        assertEquals(
+                TerminalInteractionPolicy.CreateTarget.TUNNEL,
+                TerminalInteractionPolicy.createTarget(
+                        true,
+                        new NetworkTerminalState.TunnelList(network, new TunnelPage(List.of(), 0, false, false))));
+        assertEquals(
+                TerminalInteractionPolicy.CreateTarget.NETWORK,
+                TerminalInteractionPolicy.createTarget(true, new NetworkTerminalState.NetworkRoot(network)));
+        assertEquals(
+                TerminalInteractionPolicy.CreateTarget.NONE,
+                TerminalInteractionPolicy.createTarget(
+                        true,
+                        new NetworkTerminalState.ChannelList(
+                                network,
+                                new TunnelSummary(new UUID(3, 3), "Tunnel", 0, true, 1, 0),
+                                new ChannelPage(List.of(), 0, false, false))));
+        assertEquals(TerminalInteractionPolicy.CreateTarget.NONE, TerminalInteractionPolicy.createTarget(false, null));
     }
 
     @Test
-    void focusedUnicodePrintableBindingPrioritizesText() {
-        assertTrue(TerminalInteractionPolicy.prioritizeTextInput(true, true, "é", 0));
+    void createOverlaySuppressesTheEmptyDirectoryUnderlay() {
+        assertFalse(TerminalInteractionPolicy.renderEmptyDirectory(true));
+        assertTrue(TerminalInteractionPolicy.renderEmptyDirectory(false));
     }
 
     @Test
-    void focusedNonPrintableBindingDoesNotPrioritizeText() {
-        assertFalse(TerminalInteractionPolicy.prioritizeTextInput(true, true, null, 0));
-    }
-
-    @Test
-    void controlModifiedBindingDoesNotPrioritizeText() {
-        assertFalse(TerminalInteractionPolicy.prioritizeTextInput(true, true, "f", GLFW.GLFW_MOD_CONTROL));
-    }
-
-    @Test
-    void nonMatchingBindingDoesNotPrioritizeText() {
-        assertFalse(TerminalInteractionPolicy.prioritizeTextInput(true, false, "e", GLFW.GLFW_MOD_SHIFT));
+    void selectedNetworkEntersHomeUnlessCreationOverlayOwnsTheScreen() {
+        assertTrue(TerminalInteractionPolicy.enterNetworkHome(true, false, false));
+        assertFalse(TerminalInteractionPolicy.enterNetworkHome(false, false, false));
+        assertFalse(TerminalInteractionPolicy.enterNetworkHome(true, true, false));
+        assertFalse(TerminalInteractionPolicy.enterNetworkHome(true, false, true));
     }
 
     @Test
@@ -127,5 +167,21 @@ final class TerminalInteractionPolicyTest {
         assertTrue(snapshot.draftState().dirty());
         assertFalse(snapshot.draftState().createPending());
         assertTrue(snapshot.onboardingSkipped());
+    }
+
+    @Test
+    void topologyBackBlocksPendingAndConfirmsOnlyDirtyEdits() {
+        assertEquals(
+                TerminalInteractionPolicy.TopologyBackAction.BLOCK,
+                TerminalInteractionPolicy.topologyBackAction(true, false, true));
+        assertEquals(
+                TerminalInteractionPolicy.TopologyBackAction.CLOSE_CONFIRMATION,
+                TerminalInteractionPolicy.topologyBackAction(false, true, true));
+        assertEquals(
+                TerminalInteractionPolicy.TopologyBackAction.CONFIRM_DRAFT,
+                TerminalInteractionPolicy.topologyBackAction(false, false, true));
+        assertEquals(
+                TerminalInteractionPolicy.TopologyBackAction.SEND_BACK,
+                TerminalInteractionPolicy.topologyBackAction(false, false, false));
     }
 }

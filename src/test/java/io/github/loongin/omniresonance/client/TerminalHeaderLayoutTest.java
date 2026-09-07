@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+package io.github.loongin.omniresonance.client;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+final class TerminalHeaderLayoutTest {
+    @Test
+    void topBarStartsAtTheWindowInsetWithoutReservingABackButton() {
+        TerminalLayout.Rect window = new TerminalLayout.Rect(8, 12, 304, 216);
+        assertEquals(new TerminalLayout.Rect(12, 16, 296, 20), TerminalHeaderLayout.topBarContent(window));
+    }
+
+    @Test
+    void actionIsAnchoredToTheFarRightAndReservesSpaceForTheOtherControls() {
+        TerminalHeaderLayout.ActionLayout layout =
+                TerminalHeaderLayout.atRightEdge(new TerminalLayout.Rect(80, 16, 200, 20), true);
+        assertEquals(new TerminalLayout.Rect(260, 16, 20, 20), layout.action());
+        assertEquals(new TerminalLayout.Rect(80, 16, 174, 20), layout.remaining());
+        assertEquals(6, layout.action().x() - layout.remaining().right());
+    }
+
+    @Test
+    void missingActionReleasesTheTitleSpaceInsteadOfCreatingAnEmptyButton() {
+        TerminalLayout.Rect available = new TerminalLayout.Rect(80, 16, 200, 20);
+        TerminalHeaderLayout.ActionLayout layout = TerminalHeaderLayout.atRightEdge(available, false);
+        assertEquals(available, layout.remaining());
+        assertEquals(0, layout.action().width());
+        assertEquals(0, layout.action().height());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"320,240", "427,240", "640,360", "1920,1080"})
+    void nodeActionIsRightOfChunkLoadingAndLeavesBothNamesVisible(int width, int height) {
+        TerminalLayout windowLayout = TerminalLayout.calculate(width, height);
+        TerminalLayout.Rect window = windowLayout.window();
+        int enabledWidth = windowLayout.compact() ? 52 : 66;
+        int chunkWidth = windowLayout.compact() ? 64 : 92;
+        TerminalLayout.Rect available = TerminalHeaderLayout.topBarContent(window);
+        int left = available.x();
+        TerminalHeaderLayout.ActionLayout action = TerminalHeaderLayout.atRightEdge(available, true);
+        int chunkRight = action.remaining().right();
+        int namesRight = chunkRight - chunkWidth - 6 - enabledWidth - 6;
+        int nameWidth = (namesRight - left) * 54 / 100;
+        int networkWidth = namesRight - left - nameWidth - 6;
+
+        assertEquals(20, action.action().width());
+        assertEquals(20, action.action().height());
+        assertEquals(window.right() - 4, action.action().right());
+        assertTrue(nameWidth > 0);
+        assertTrue(networkWidth > 0);
+        assertEquals(6, action.action().x() - chunkRight);
+        assertTrue(action.action().bottom() < windowLayout.content().y());
+    }
+
+    @Test
+    void contentTitleUsesTheFullInsetWidthWithoutInlineActionSpace() {
+        assertEquals(
+                new TerminalLayout.Rect(14, 20, 92, 20),
+                TerminalHeaderLayout.contentTitle(new TerminalLayout.Rect(10, 20, 100, 200)));
+    }
+}

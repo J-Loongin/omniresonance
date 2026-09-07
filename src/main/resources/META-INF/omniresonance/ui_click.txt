@@ -1,0 +1,21 @@
+Omni Resonance UI click V4.2
+SPDX-License-Identifier: LGPL-3.0-or-later
+
+Original procedurally synthesized sound for this project. No third-party
+recordings or sound samples are included.
+
+Authoring source: META-INF/omniresonance/ui_click_source.py
+Run with Python 3 and an output WAV path to reproduce the approved PCM.
+Reference: 48,000 Hz, mono, 16-bit PCM, 4,320 samples (90 ms).
+Reference WAV SHA-256:
+3a67a19b6b8d10e0a90a89e352621037c2e275ebd6a572a288b12961ab4cdfd8
+
+Game asset: assets/omniresonance/sounds/ui_click.ogg
+Encoded as Ogg Vorbis using SoundFile 0.13.1 / libsndfile 1.2.2,
+compression_level=0.0 (maximum quality). These offline authoring tools
+are not shipped as runtime dependencies.
+Game asset SHA-256:
+0b165189c6638583d417257a7f00792fa88b3462e709fd6d566775f7e54e3f14
+
+Playback uses fixed pitch 1.0 and volume 1.0 before the player's master
+volume setting. It is local UI feedback, not positional world audio.

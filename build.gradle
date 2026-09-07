@@ -24,6 +24,11 @@ java {
 
 repositories {
     mavenCentral()
+    maven {
+        name = 'Modrinth'
+        url = 'https://api.modrinth.com/maven'
+        content { includeModule('maven.modrinth', 'justenoughcharacters') }
+    }
 }
 
 sourceSets {
@@ -178,6 +183,7 @@ tasks.named('runGameTestServer') {
 }
 
 dependencies {
+    compileOnly('maven.modrinth:justenoughcharacters:XPKoy65e') { transitive = false }
     testImplementation platform('org.junit:junit-bom:5.14.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -266,7 +272,10 @@ def verifyModJar = tasks.register('verifyModJar') {
             def forbidden = entries.findAll {
                 it.contains('/fixtures/') || it.contains('GameTests') ||
                         it.contains('TestStructureGenerator') || it.endsWith('.snbt') ||
-                        it.startsWith('.cache/')
+                        it.startsWith('.cache/') || it.startsWith('me/towdium/') ||
+                        (it.endsWith('.jar') &&
+                                (it.toLowerCase(Locale.ROOT).contains('pinin') ||
+                                        it.toLowerCase(Locale.ROOT).contains('jecharacters')))
             }
             if (!forbidden.empty) {
                 throw new GradleException('Development-only entries in release JAR: ' + forbidden)

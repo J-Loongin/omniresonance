@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.config;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -20,6 +21,37 @@ import org.junit.jupiter.api.Test;
 
 class ServerConfigTest {
     private static final String KEY = "network_limits.networks_per_owner";
+    private static final String TUNNELS_KEY = "network_limits.tunnels_per_network";
+    private static final String CHANNELS_KEY = "network_limits.channels_per_tunnel";
+    private static final String BINDINGS_KEY = "network_limits.channel_bindings_per_direct_node";
+    private static final String ADMINISTRATORS_KEY = "network_limits.administrators_per_network";
+
+    @Test
+    void administratorQuotaUsesConfirmedDefaultsBoundsAndBilingualComments() {
+        ServerConfig config = new ServerConfig();
+        CommentedConfig values = CommentedConfig.inMemory();
+        config.spec().correct(values);
+        assertEquals(128, values.getInt(ADMINISTRATORS_KEY));
+        String comment = values.getComment(ADMINISTRATORS_KEY);
+        for (String label :
+                List.of("Type/类型", "Unit/单位", "Default/默认值", "Range/合法范围", "Special values/特殊值", "Reload/重载")) {
+            assertTrue(comment.contains(label));
+        }
+        assertTrue(comment.contains("128"));
+        assertTrue(comment.contains("0..1024"));
+        assertTrue(comment.contains("每网络管理员数量"));
+        for (int value : new int[] {-1, 0, 128, 1024}) {
+            values.set(ADMINISTRATORS_KEY, value);
+            config.spec().correct(values);
+            acceptNative(config, values);
+            assertEquals(value, config.captureLoading(true).settings().administratorsPerNetwork());
+        }
+        for (int value : new int[] {-2, 1025}) {
+            assertThrows(IllegalArgumentException.class, () -> new ServerSettings(32, 1024, 256, 16, value));
+        }
+        assertEquals(128, new ServerSettings(32).administratorsPerNetwork());
+        assertEquals(128, new ServerSettings(32, 1024, 256, 16).administratorsPerNetwork());
+    }
 
     @Test
     void nativeCorrectionGeneratesTheConfiguredDefault() {
@@ -29,6 +61,9 @@ class ServerConfigTest {
         config.spec().correct(values);
 
         assertEquals(32, values.getInt(KEY));
+        assertEquals(1024, values.getInt(TUNNELS_KEY));
+        assertEquals(256, values.getInt(CHANNELS_KEY));
+        assertEquals(16, values.getInt(BINDINGS_KEY));
         assertTrue(config.spec().isCorrect(values));
     }
 
@@ -40,7 +75,44 @@ class ServerConfigTest {
         assertEquals(0, state.revision());
         assertFalse(state.loaded());
         assertEquals(32, state.settings().networksPerOwner());
+        assertEquals(1024, state.settings().tunnelsPerNetwork());
+        assertEquals(256, state.settings().channelsPerTunnel());
+        assertEquals(16, state.settings().channelBindingsPerDirectNode());
         assertEquals(state.settings(), ServerSettings.defaults());
+    }
+
+    @Test
+    void topologyQuotasAcceptOnlyTheirConfirmedSpecialValuesAndBounds() {
+        for (String toml : List.of(
+                topologyValues("-1", "-1", "-1"),
+                topologyValues("0", "0", "1"),
+                topologyValues("65535", "65535", "1024"))) {
+            ServerConfig config = new ServerConfig();
+            CommentedConfig values = new TomlParser().parse(toml);
+            config.spec().correct(values);
+            acceptNative(config, values);
+
+            ServerSettings settings = config.captureLoading(true).settings();
+            assertEquals(values.getInt(TUNNELS_KEY), settings.tunnelsPerNetwork());
+            assertEquals(values.getInt(CHANNELS_KEY), settings.channelsPerTunnel());
+            assertEquals(values.getInt(BINDINGS_KEY), settings.channelBindingsPerDirectNode());
+        }
+
+        for (String toml : List.of(
+                topologyValues("-2", "256", "16"),
+                topologyValues("65536", "256", "16"),
+                topologyValues("1024", "-2", "16"),
+                topologyValues("1024", "65536", "16"),
+                topologyValues("1024", "256", "0"),
+                topologyValues("1024", "256", "1025"))) {
+            ServerConfig config = new ServerConfig();
+            CommentedConfig values = new TomlParser().parse(toml);
+            config.spec().correct(values);
+
+            assertEquals(1024, values.getInt(TUNNELS_KEY));
+            assertEquals(256, values.getInt(CHANNELS_KEY));
+            assertEquals(16, values.getInt(BINDINGS_KEY));
+        }
     }
 
     @Test
@@ -115,6 +187,13 @@ class ServerConfigTest {
         assertTrue(comment.contains("调低不删已有对象，回到限制内前拒绝新增。"));
         assertFalse(comment.contains("Old handwritten comment"));
         assertTrue(toml.indexOf("Reload/重载") < toml.indexOf("networks_per_owner = 1"));
+        for (String key : List.of(TUNNELS_KEY, CHANNELS_KEY, BINDINGS_KEY)) {
+            String topologyComment = parsed.getComment(key);
+            assertTrue(topologyComment.contains("Type/类型"), key);
+            assertTrue(topologyComment.contains("Special values/特殊值"), key);
+            assertTrue(topologyComment.contains("Reload/重载"), key);
+            assertTrue(topologyComment.matches("(?s).*\\p{IsHan}.*"), key);
+        }
     }
 
     @Test
@@ -231,6 +310,10 @@ class ServerConfigTest {
         for (int value : new int[] {Integer.MIN_VALUE, -2, 1025, Integer.MAX_VALUE}) {
             assertThrows(IllegalArgumentException.class, () -> new ServerSettings(value));
         }
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class, () -> new ServerSettings(32, -2, 256, 16)),
+                () -> assertThrows(IllegalArgumentException.class, () -> new ServerSettings(32, 1024, 65536, 16)),
+                () -> assertThrows(IllegalArgumentException.class, () -> new ServerSettings(32, 1024, 256, 0)));
     }
 
     @Test
@@ -272,6 +355,16 @@ class ServerConfigTest {
 
     private static CommentedConfig parseValue(String value) {
         return new TomlParser().parse("[network_limits]\nnetworks_per_owner = " + value + "\n");
+    }
+
+    private static String topologyValues(String tunnels, String channels, String bindings) {
+        return """
+                [network_limits]
+                networks_per_owner = 32
+                tunnels_per_network = %s
+                channels_per_tunnel = %s
+                channel_bindings_per_direct_node = %s
+                """.formatted(tunnels, channels, bindings);
     }
 
     private static CommentedConfig loadNative(ServerConfig config, int value) {

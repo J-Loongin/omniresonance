@@ -6,6 +6,11 @@ import java.util.UUID;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.ItemInteractionResult;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.BaseEntityBlock;
@@ -20,6 +25,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.DirectionProperty;
+import net.minecraft.world.phys.BlockHitResult;
 import net.neoforged.neoforge.common.NeoForge;
 import org.jetbrains.annotations.Nullable;
 
@@ -77,6 +83,25 @@ public abstract class AbstractResonanceNodeBlock extends BaseEntityBlock {
     public <T extends BlockEntity> @Nullable BlockEntityTicker<T> getTicker(
             Level level, BlockState state, BlockEntityType<T> blockEntityType) {
         return null;
+    }
+
+    @Override
+    protected ItemInteractionResult useItemOn(
+            ItemStack stack,
+            BlockState state,
+            Level level,
+            BlockPos pos,
+            Player player,
+            InteractionHand hand,
+            BlockHitResult hitResult) {
+        if (level.isClientSide) {
+            return ItemInteractionResult.SUCCESS;
+        }
+        if (player instanceof ServerPlayer serverPlayer) {
+            NeoForge.EVENT_BUS.post(new NodeMenuOpenEvent(serverPlayer, pos));
+            return ItemInteractionResult.SUCCESS;
+        }
+        return ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
     }
 
     @Override

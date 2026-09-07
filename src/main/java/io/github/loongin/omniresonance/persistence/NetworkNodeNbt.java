@@ -4,6 +4,7 @@ package io.github.loongin.omniresonance.persistence;
 import io.github.loongin.omniresonance.network.ManagedName;
 import io.github.loongin.omniresonance.node.NetworkNodeRecord;
 import io.github.loongin.omniresonance.node.NodeForm;
+import io.github.loongin.omniresonance.node.NodeMode;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -24,12 +25,24 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 
-/** Strict network-v2 node-list codec; decoded values and output tags are independently owned. */
+/** Strict network-v3 node-list codec; decoded values and output tags are independently owned. */
 final class NetworkNodeNbt {
     static final int MAXIMUM_NODES = 262144;
     private static final int MAXIMUM_DIMENSION_UTF8_BYTES = 256;
-    private static final Set<String> FIELDS =
-            Set.of("node_id", "node_number", "name", "dimension", "x", "y", "z", "form", "facing");
+    private static final Set<String> FIELDS = Set.of(
+            "node_id",
+            "node_number",
+            "name",
+            "dimension",
+            "x",
+            "y",
+            "z",
+            "form",
+            "facing",
+            "revision",
+            "enabled",
+            "chunk_loading_requested",
+            "mode");
     private static final Comparator<NetworkNodeRecord> ORDER =
             Comparator.comparingLong(NetworkNodeRecord::nodeNumber).thenComparing(NetworkNodeRecord::nodeId);
 
@@ -89,6 +102,10 @@ final class NetworkNodeNbt {
             tag.putInt("z", record.position().pos().getZ());
             tag.putString("form", record.form().serializedName());
             tag.putString("facing", record.facing().getSerializedName());
+            tag.putLong("revision", record.revision());
+            tag.putBoolean("enabled", record.enabled());
+            tag.putBoolean("chunk_loading_requested", record.chunkLoadingRequested());
+            tag.putString("mode", record.mode().serializedName());
             encoded.add(tag);
         }
         return encoded;
@@ -116,7 +133,23 @@ final class NetworkNodeNbt {
         if (facing == null) {
             throw new IllegalArgumentException("Unknown node facing");
         }
-        return new NetworkNodeRecord(nodeId, nodeNumber, name, position, form, facing);
+        ManagedDataNbt.requireType(tag, "revision", Tag.TAG_LONG);
+        long revision = tag.getLong("revision");
+        boolean enabled = readBoolean(tag, "enabled");
+        boolean chunkLoadingRequested = readBoolean(tag, "chunk_loading_requested");
+        ManagedDataNbt.requireType(tag, "mode", Tag.TAG_STRING);
+        NodeMode mode = NodeMode.fromSerialized(tag.getString("mode"));
+        return new NetworkNodeRecord(
+                nodeId, nodeNumber, name, position, form, facing, revision, enabled, chunkLoadingRequested, mode);
+    }
+
+    private static boolean readBoolean(CompoundTag tag, String key) {
+        ManagedDataNbt.requireType(tag, key, Tag.TAG_BYTE);
+        byte value = tag.getByte(key);
+        if (value != 0 && value != 1) {
+            throw new IllegalArgumentException("Invalid boolean node field: " + key);
+        }
+        return value == 1;
     }
 
     private static ResourceLocation readDimension(CompoundTag tag) {

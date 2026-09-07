@@ -6,11 +6,15 @@ import io.github.loongin.omniresonance.datagen.OmniDataGenerators;
 import io.github.loongin.omniresonance.material.DragonBreathDispenseBehavior;
 import io.github.loongin.omniresonance.material.DragonBreathPlayerInteraction;
 import io.github.loongin.omniresonance.networking.NetworkPayloads;
+import io.github.loongin.omniresonance.networking.NodeMenuPayloads;
 import io.github.loongin.omniresonance.node.NodeLifecycleEvent;
+import io.github.loongin.omniresonance.node.NodeMenuOpenEvent;
 import io.github.loongin.omniresonance.registry.ModBlockEntities;
 import io.github.loongin.omniresonance.registry.ModBlocks;
 import io.github.loongin.omniresonance.registry.ModCreativeTabs;
 import io.github.loongin.omniresonance.registry.ModItems;
+import io.github.loongin.omniresonance.registry.ModMenus;
+import io.github.loongin.omniresonance.registry.ModSounds;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -41,6 +45,8 @@ public final class OmniResonanceMod {
         ModCreativeTabs.register(modBus);
         ModBlocks.register(modBus);
         ModBlockEntities.register(modBus);
+        ModMenus.register(modBus);
+        ModSounds.register(modBus);
         modBus.addListener(OmniDataGenerators::gatherData);
         serverConfig = new ServerConfig();
         container.registerConfig(ModConfig.Type.SERVER, serverConfig.spec(), "omniresonance-server.toml");
@@ -49,6 +55,7 @@ public final class OmniResonanceMod {
         modBus.addListener(serverConfig::onUnloading);
         networkRuntime = new NetworkRuntimeRegistry(serverConfig);
         modBus.addListener((RegisterPayloadHandlersEvent event) -> NetworkPayloads.register(event, networkRuntime));
+        modBus.addListener(NodeMenuPayloads::register);
         modBus.addListener(OmniResonanceMod::onCommonSetup);
         NeoForge.EVENT_BUS.addListener(
                 EventPriority.LOWEST,
@@ -62,6 +69,7 @@ public final class OmniResonanceMod {
         NeoForge.EVENT_BUS.addListener(networkRuntime::onServerTick);
         NeoForge.EVENT_BUS.addListener(NodeLifecycleEvent.Loaded.class, networkRuntime::onNodeLifecycle);
         NeoForge.EVENT_BUS.addListener(NodeLifecycleEvent.Removed.class, networkRuntime::onNodeLifecycle);
+        NeoForge.EVENT_BUS.addListener(NodeMenuOpenEvent.class, networkRuntime::onNodeMenuOpen);
         NeoForge.EVENT_BUS.addListener(ChunkEvent.Load.class, networkRuntime::onChunkLoad);
         LOGGER.info("Initializing {} {}", MOD_ID, container.getModInfo().getVersion());
     }

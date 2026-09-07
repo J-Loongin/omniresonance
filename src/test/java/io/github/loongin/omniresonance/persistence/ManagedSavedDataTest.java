@@ -9,10 +9,16 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.loongin.omniresonance.network.DirectNodeBinding;
+import io.github.loongin.omniresonance.network.DomainNodeConfiguration;
 import io.github.loongin.omniresonance.network.ManagedName;
+import io.github.loongin.omniresonance.network.NetworkChannelRecord;
 import io.github.loongin.omniresonance.network.NetworkMetadata;
+import io.github.loongin.omniresonance.network.NetworkTunnelRecord;
+import io.github.loongin.omniresonance.network.TransferDirection;
 import io.github.loongin.omniresonance.node.NetworkNodeRecord;
 import io.github.loongin.omniresonance.node.NodeForm;
+import io.github.loongin.omniresonance.node.NodeMode;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -50,6 +56,10 @@ class ManagedSavedDataTest {
     private static final UUID ADMIN = new UUID(3, 1);
     private static final UUID NODE_A = new UUID(4, 1);
     private static final UUID NODE_B = new UUID(4, 2);
+    private static final UUID TUNNEL_A = new UUID(5, 1);
+    private static final UUID TUNNEL_B = new UUID(5, 2);
+    private static final UUID CHANNEL_A = new UUID(6, 1);
+    private static final UUID CHANNEL_B = new UUID(6, 2);
     private static final ManagedName NAME = new ManagedName("主网络");
     private static final GlobalPos POS_A = GlobalPos.of(Level.OVERWORLD, new BlockPos(12, 64, -9));
     private static final GlobalPos POS_B = GlobalPos.of(Level.NETHER, new BlockPos(-8, 72, 31));
@@ -100,12 +110,154 @@ class ManagedSavedDataTest {
     }
 
     @Test
-    void newNetworkIsDirtyAndSavesExactV2Fields() {
+    void newNetworkIsDirtyAndSavesExactV5Fields() {
         NetworkSavedData data = NetworkSavedData.create(metadata());
 
         assertTrue(data.isDirty());
         assertEquals(networkTag(), data.save(new CompoundTag(), RegistryAccess.EMPTY));
         assertTrue(data.isDirty());
+    }
+
+    @Test
+    void v3NetworkMigratesInMemoryWithoutInventingTopologyOrDirtying() {
+        CompoundTag v3 = networkV3Tag();
+        CompoundTag node = nodeTag(NODE_A, 1, "Direct", POS_A, "block", "down");
+        node.putString("mode", "direct");
+        v3.putLong("last_node_number", 1);
+        ListTag nodes = new ListTag();
+        nodes.add(node);
+        v3.put("nodes", nodes);
+        CompoundTag before = v3.copy();
+
+        NetworkSavedData migrated = NetworkSavedData.load(NETWORK, v3);
+
+        assertEquals(before, v3);
+        assertFalse(migrated.isDirty());
+        assertEquals(0, migrated.topologyRevision());
+        assertTrue(migrated.tunnels().isEmpty());
+        assertTrue(migrated.channels(TUNNEL_A).isEmpty());
+        assertTrue(migrated.directBindings(NODE_A).isEmpty());
+        assertTrue(migrated.domainConfiguration(NODE_A).isEmpty());
+        assertEquals(NodeMode.DIRECT, migrated.findNode(NODE_A).orElseThrow().mode());
+        CompoundTag saved = migrated.save(new CompoundTag(), RegistryAccess.EMPTY);
+        assertEquals(5, saved.getInt("schema_version"));
+        assertEquals(0, saved.getLong("management_revision"));
+        assertEquals(0, saved.getLong("last_tunnel_number"));
+        assertEquals(0, saved.getLong("topology_revision"));
+        assertTrue(saved.getList("tunnels", Tag.TAG_COMPOUND).isEmpty());
+        assertTrue(saved.getList("channels", Tag.TAG_COMPOUND).isEmpty());
+        assertTrue(saved.getList("direct_bindings", Tag.TAG_COMPOUND).isEmpty());
+        assertTrue(saved.getList("domain_configurations", Tag.TAG_COMPOUND).isEmpty());
+    }
+
+    @Test
+    void completeV4TopologyMigratesToStableOwnedSnapshots() {
+        CompoundTag input = topologyNetworkTag();
+        input.putInt("schema_version", 4);
+        input.remove("management_revision");
+        CompoundTag before = input.copy();
+
+        NetworkSavedData loaded = NetworkSavedData.load(NETWORK, input);
+
+        assertEquals(before, input);
+        assertFalse(loaded.isDirty());
+        assertEquals(9, loaded.topologyRevision());
+        assertEquals(
+                List.of(
+                        new NetworkTunnelRecord(TUNNEL_A, 1, new ManagedName("Primary"), 3, true, 2),
+                        new NetworkTunnelRecord(TUNNEL_B, 2, new ManagedName("Secondary"), 4, false, 1)),
+                loaded.tunnels());
+        assertEquals(
+                List.of(
+                        new NetworkChannelRecord(CHANNEL_A, TUNNEL_A, 1, new ManagedName("Input"), 5),
+                        new NetworkChannelRecord(CHANNEL_B, TUNNEL_A, 2, new ManagedName("Output"), 6)),
+                loaded.channels(TUNNEL_A));
+        assertEquals(
+                List.of(new DirectNodeBinding(NODE_A, CHANNEL_A, TransferDirection.INPUT)),
+                loaded.directBindings(NODE_A));
+        assertEquals(
+                Optional.of(new DomainNodeConfiguration(NODE_B, TransferDirection.OUTPUT)),
+                loaded.domainConfiguration(NODE_B));
+        CompoundTag currentExpected = before.copy();
+        currentExpected.putInt("schema_version", 5);
+        currentExpected.putLong("management_revision", 0);
+        assertEquals(currentExpected, loaded.save(new CompoundTag(), RegistryAccess.EMPTY));
+        assertThrows(UnsupportedOperationException.class, () -> loaded.tunnels().clear());
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> loaded.channels(TUNNEL_A).clear());
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> loaded.directBindings(NODE_A).clear());
+    }
+
+    @Test
+    void v4RejectsDuplicateAndDanglingTopologyWithoutChangingInput() {
+        CompoundTag emptyTunnel = topologyNetworkTag();
+        emptyTunnel.getList("channels", Tag.TAG_COMPOUND).remove(2);
+        assertRejectedV4(emptyTunnel, "tunnel without a channel");
+
+        CompoundTag duplicateTunnel = topologyNetworkTag();
+        CompoundTag duplicate =
+                duplicateTunnel.getList("tunnels", Tag.TAG_COMPOUND).getCompound(1);
+        duplicate.putString("name", "primary");
+        assertRejectedV4(duplicateTunnel, "duplicate tunnel name");
+
+        CompoundTag danglingChannel = topologyNetworkTag();
+        danglingChannel.getList("channels", Tag.TAG_COMPOUND).getCompound(0).putUUID("tunnel_id", new UUID(999, 1));
+        assertRejectedV4(danglingChannel, "dangling tunnel");
+
+        CompoundTag danglingBinding = topologyNetworkTag();
+        danglingBinding
+                .getList("direct_bindings", Tag.TAG_COMPOUND)
+                .getCompound(0)
+                .putUUID("channel_id", new UUID(999, 2));
+        assertRejectedV4(danglingBinding, "dangling channel");
+
+        CompoundTag crossTunnelBindings = topologyNetworkTag();
+        crossTunnelBindings
+                .getList("direct_bindings", Tag.TAG_COMPOUND)
+                .add(directionTag(NODE_A, "channel_id", new UUID(84, 3), "output"));
+        assertRejectedV4(crossTunnelBindings, "one direct node bound across tunnels");
+
+        CompoundTag wrongNodeMode = topologyNetworkTag();
+        wrongNodeMode
+                .getList("domain_configurations", Tag.TAG_COMPOUND)
+                .getCompound(0)
+                .putUUID("node_id", NODE_A);
+        assertRejectedV4(wrongNodeMode, "domain configuration on direct node");
+
+        CompoundTag invalidDirection = topologyNetworkTag();
+        invalidDirection
+                .getList("direct_bindings", Tag.TAG_COMPOUND)
+                .getCompound(0)
+                .putString("direction", "sideways");
+        assertRejectedV4(invalidDirection, "invalid direction");
+    }
+
+    @Test
+    void v4RejectsMissingUnexpectedAndOversizedTopologyEntries() {
+        CompoundTag legal = topologyNetworkTag();
+        for (String listKey : List.of("tunnels", "channels", "direct_bindings", "domain_configurations")) {
+            CompoundTag entry = legal.getList(listKey, Tag.TAG_COMPOUND).getCompound(0);
+            for (String field : entry.getAllKeys()) {
+                CompoundTag input = topologyNetworkTag();
+                input.getList(listKey, Tag.TAG_COMPOUND).getCompound(0).remove(field);
+                assertRejectedV4(input, listKey + " missing " + field);
+            }
+            CompoundTag input = topologyNetworkTag();
+            input.getList(listKey, Tag.TAG_COMPOUND).getCompound(0).putString("future", "field");
+            assertRejectedV4(input, listKey + " unknown field");
+        }
+
+        CompoundTag oversized = networkTag();
+        ListTag tunnels = new ListTag();
+        CompoundTag malformed = new CompoundTag();
+        for (int index = 0; index < 65536; index++) {
+            tunnels.add(malformed);
+        }
+        oversized.put("tunnels", tunnels);
+        assertRejectedV4(oversized, "tunnel hard limit before entry decode");
     }
 
     @Test
@@ -184,13 +336,15 @@ class ManagedSavedDataTest {
         CompoundTag unknown = networkTag();
         unknown.putString("future_field", "preserve me");
         assertThrows(IllegalArgumentException.class, () -> NetworkSavedData.load(NETWORK, unknown));
-        for (int schema : new int[] {-1, 0, 1, 3}) {
+        for (int schema : new int[] {-1, 0, 1, 2, 6}) {
             CompoundTag input = networkTag();
             input.putInt("schema_version", schema);
+            CompoundTag before = input.copy();
             assertThrows(IllegalArgumentException.class, () -> NetworkSavedData.load(NETWORK, input));
+            assertEquals(before, input);
         }
         CompoundTag wrongType = networkTag();
-        wrongType.putLong("schema_version", 2);
+        wrongType.putLong("schema_version", 4);
         assertThrows(IllegalArgumentException.class, () -> NetworkSavedData.load(NETWORK, wrongType));
     }
 
@@ -210,8 +364,25 @@ class ManagedSavedDataTest {
         assertEquals(2, nodes.getCompound(1).getLong("node_number"));
         assertEquals(NODE_A, nodes.getCompound(1).getUUID("node_id"));
         assertEquals(
-                Set.of("node_id", "node_number", "name", "dimension", "x", "y", "z", "form", "facing"),
+                Set.of(
+                        "node_id",
+                        "node_number",
+                        "name",
+                        "dimension",
+                        "x",
+                        "y",
+                        "z",
+                        "form",
+                        "facing",
+                        "revision",
+                        "enabled",
+                        "chunk_loading_requested",
+                        "mode"),
                 nodes.getCompound(0).getAllKeys());
+        assertEquals(0, nodes.getCompound(0).getLong("revision"));
+        assertTrue(nodes.getCompound(0).getBoolean("enabled"));
+        assertFalse(nodes.getCompound(0).getBoolean("chunk_loading_requested"));
+        assertEquals("unconfigured", nodes.getCompound(0).getString("mode"));
 
         NetworkSavedData loaded = NetworkSavedData.load(NETWORK, saved);
         assertEquals(List.of(first, second), loaded.nodes());
@@ -247,6 +418,7 @@ class ManagedSavedDataTest {
                 .orElseThrow();
         assertEquals(NodeForm.PANEL, updated.form());
         assertEquals(Direction.NORTH, updated.facing());
+        assertEquals(1, updated.revision());
         assertTrue(data.isDirty());
         data.setDirty(false);
         assertEquals(Optional.of(updated), data.removeNode(NODE_A, POS_A));
@@ -256,6 +428,89 @@ class ManagedSavedDataTest {
         NetworkNodeRecord second = data.createNode(NODE_B, new ManagedName("B"), POS_B, NodeForm.BLOCK, Direction.UP);
         assertEquals(2, second.nodeNumber());
         assertEquals(2, data.lastNodeNumber());
+    }
+
+    @Test
+    void networkNodeManagementMutationsAreRevisionedAndDirtyOnlyOnChange() {
+        NetworkSavedData data = NetworkSavedData.create(metadata());
+        NetworkNodeRecord created =
+                data.createNode(NODE_A, new ManagedName("Node A"), POS_A, NodeForm.BLOCK, Direction.DOWN);
+        data.setDirty(false);
+
+        NetworkNodeRecord renamed = data.renameNode(NODE_A, created.revision(), new ManagedName("Crusher input"))
+                .orElseThrow();
+        assertEquals(1, renamed.revision());
+        assertEquals("Crusher input", renamed.name().value());
+        assertTrue(data.isDirty());
+        data.setDirty(false);
+        assertSame(renamed, data.renameNode(NODE_A, 1, renamed.name()).orElseThrow());
+        assertFalse(data.isDirty());
+        NetworkNodeRecord recased =
+                data.renameNode(NODE_A, 1, new ManagedName("CRUSHER INPUT")).orElseThrow();
+        assertEquals(2, recased.revision());
+        assertEquals("CRUSHER INPUT", recased.name().value());
+
+        NetworkNodeRecord disabled = data.setNodeEnabled(NODE_A, 2, false).orElseThrow();
+        assertEquals(3, disabled.revision());
+        assertFalse(disabled.enabled());
+        data.setDirty(false);
+        assertThrows(IllegalStateException.class, () -> data.setNodeChunkLoadingRequested(NODE_A, 3, true));
+        assertThrows(IllegalStateException.class, () -> data.setNodeMode(NODE_A, 3, NodeMode.DIRECT, false));
+        assertEquals(disabled, data.findNode(NODE_A).orElseThrow());
+        assertFalse(data.isDirty());
+
+        NetworkNodeRecord enabled = data.setNodeEnabled(NODE_A, 3, true).orElseThrow();
+        NetworkNodeRecord requested = data.setNodeChunkLoadingRequested(NODE_A, enabled.revision(), true)
+                .orElseThrow();
+        NetworkNodeRecord direct = data.setNodeMode(NODE_A, requested.revision(), NodeMode.DIRECT, false)
+                .orElseThrow();
+        assertEquals(6, direct.revision());
+        assertTrue(direct.chunkLoadingRequested());
+        assertEquals(NodeMode.DIRECT, direct.mode());
+        data.setDirty(false);
+
+        assertThrows(
+                IllegalStateException.class, () -> data.setNodeMode(NODE_A, direct.revision(), NodeMode.DOMAIN, false));
+        assertEquals(direct, data.findNode(NODE_A).orElseThrow());
+        assertFalse(data.isDirty());
+        NetworkNodeRecord domain = data.setNodeMode(NODE_A, direct.revision(), NodeMode.DOMAIN, true)
+                .orElseThrow();
+        assertEquals(7, domain.revision());
+        assertEquals(NodeMode.DOMAIN, domain.mode());
+    }
+
+    @Test
+    void networkNodeManagementFailuresLeaveEveryIndexAndDirtyStateUnchanged() {
+        NetworkSavedData data = NetworkSavedData.create(metadata());
+        NetworkNodeRecord first =
+                data.createNode(NODE_A, new ManagedName("Node A"), POS_A, NodeForm.BLOCK, Direction.DOWN);
+        data.createNode(NODE_B, new ManagedName("Node B"), POS_B, NodeForm.PANEL, Direction.UP);
+        data.setDirty(false);
+
+        assertTrue(data.renameNode(NODE_A, 9, new ManagedName("Changed")).isEmpty());
+        assertTrue(data.setNodeEnabled(NODE_A, 9, false).isEmpty());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> data.renameNode(NODE_A, first.revision(), new ManagedName("node b")));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> data.setNodeMode(NODE_A, first.revision(), NodeMode.UNCONFIGURED, false));
+        assertEquals(first, data.findNode(NODE_A).orElseThrow());
+        assertFalse(data.isDirty());
+
+        CompoundTag exhaustedTag = networkTag();
+        exhaustedTag.putLong("last_node_number", 1);
+        CompoundTag exhaustedNode = nodeTag(NODE_A, 1, "Node A", POS_A, "block", "down");
+        exhaustedNode.putLong("revision", Long.MAX_VALUE);
+        ListTag nodes = new ListTag();
+        nodes.add(exhaustedNode);
+        exhaustedTag.put("nodes", nodes);
+        NetworkSavedData exhausted = NetworkSavedData.load(NETWORK, exhaustedTag);
+        assertThrows(
+                ArithmeticException.class,
+                () -> exhausted.renameNode(NODE_A, Long.MAX_VALUE, new ManagedName("Changed")));
+        assertEquals("Node A", exhausted.findNode(NODE_A).orElseThrow().name().value());
+        assertFalse(exhausted.isDirty());
     }
 
     @Test
@@ -293,6 +548,7 @@ class ManagedSavedDataTest {
         NetworkSavedData data = NetworkSavedData.create(metadata());
         ManagedName name = new ManagedName("Node");
         assertThrows(NullPointerException.class, () -> data.findNode(null));
+        assertThrows(NullPointerException.class, () -> data.containsNodeName(null));
         assertThrows(
                 NullPointerException.class, () -> data.createNode(null, name, POS_A, NodeForm.BLOCK, Direction.DOWN));
         assertThrows(
@@ -313,6 +569,13 @@ class ManagedSavedDataTest {
                 NullPointerException.class, () -> data.updateNodePhysicalSnapshot(NODE_A, POS_A, NodeForm.BLOCK, null));
         assertThrows(NullPointerException.class, () -> data.removeNode(null, POS_A));
         assertThrows(NullPointerException.class, () -> data.removeNode(NODE_A, null));
+        assertThrows(NullPointerException.class, () -> data.renameNode(null, 0, name));
+        assertThrows(NullPointerException.class, () -> data.renameNode(NODE_A, 0, null));
+        assertThrows(NullPointerException.class, () -> data.setNodeEnabled(null, 0, false));
+        assertThrows(NullPointerException.class, () -> data.setNodeChunkLoadingRequested(null, 0, true));
+        assertThrows(NullPointerException.class, () -> data.setNodeMode(null, 0, NodeMode.DIRECT, false));
+        assertThrows(NullPointerException.class, () -> data.setNodeMode(NODE_A, 0, null, false));
+        assertThrows(IllegalArgumentException.class, () -> data.renameNode(NODE_A, -1, name));
         assertTrue(data.nodes().isEmpty());
         assertEquals(0, data.lastNodeNumber());
     }
@@ -329,7 +592,11 @@ class ManagedSavedDataTest {
             CompoundTag node = legal.copy();
             node.put(
                     key,
-                    key.equals("name") || key.equals("dimension") || key.equals("form") || key.equals("facing")
+                    key.equals("name")
+                                    || key.equals("dimension")
+                                    || key.equals("form")
+                                    || key.equals("facing")
+                                    || key.equals("mode")
                             ? IntTag.valueOf(1)
                             : StringTag.valueOf("wrong"));
             assertRejectedNodeList(List.of(node), 1, "wrong type " + key);
@@ -339,6 +606,19 @@ class ManagedSavedDataTest {
         assertRejectedNodeList(List.of(nodeTag(NODE_A, 2, "Node A", POS_A, "block", "down")), 1, "number above last");
         assertRejectedNodeList(List.of(nodeTag(NODE_A, 1, "Node A", POS_A, "unknown", "down")), 1, "unknown form");
         assertRejectedNodeList(List.of(nodeTag(NODE_A, 1, "Node A", POS_A, "block", "sideways")), 1, "unknown facing");
+        CompoundTag negativeRevision = legal.copy();
+        negativeRevision.putLong("revision", -1);
+        assertRejectedNodeList(List.of(negativeRevision), 1, "negative revision");
+        CompoundTag unknownMode = legal.copy();
+        unknownMode.putString("mode", "future");
+        assertRejectedNodeList(List.of(unknownMode), 1, "unknown mode");
+        for (String key : List.of("enabled", "chunk_loading_requested")) {
+            for (byte value : new byte[] {-1, 2}) {
+                CompoundTag invalidBoolean = legal.copy();
+                invalidBoolean.putByte(key, value);
+                assertRejectedNodeList(List.of(invalidBoolean), 1, key + " raw value " + value);
+            }
+        }
         CompoundTag invalidDimension = legal.copy();
         invalidDimension.putString("dimension", "Bad:Dimension");
         assertRejectedNodeList(List.of(invalidDimension), 1, "invalid dimension");
@@ -362,6 +642,13 @@ class ManagedSavedDataTest {
         duplicatePosition.putInt("y", 64);
         duplicatePosition.putInt("z", -9);
         assertRejectedNodeList(List.of(legal, duplicatePosition), 2, "duplicate position");
+    }
+
+    @Test
+    void networkNodeModesRoundTripFromLiteralTags() {
+        assertModeLoaded("unconfigured", NodeMode.UNCONFIGURED);
+        assertModeLoaded("direct", NodeMode.DIRECT);
+        assertModeLoaded("domain", NodeMode.DOMAIN);
     }
 
     @Test
@@ -607,9 +894,37 @@ class ManagedSavedDataTest {
                 data::metadata,
                 data::nodes,
                 data::lastNodeNumber,
+                data::topologyRevision,
+                data::lastTunnelNumber,
+                data::tunnels,
+                () -> data.channels(TUNNEL_A),
+                () -> data.directBindings(NODE_A),
+                () -> data.domainConfiguration(NODE_A),
+                () -> data.findTunnel(TUNNEL_A),
+                () -> data.findChannel(CHANNEL_A),
+                () -> data.pageTunnels(null, false, 128),
+                () -> data.pageChannels(TUNNEL_A, null, false, 128),
+                () -> data.createTunnel(TUNNEL_A, new ManagedName("T"), CHANNEL_A, new ManagedName("Channel 1"), -1),
+                () -> data.renameTunnel(TUNNEL_A, 0, new ManagedName("T")),
+                () -> data.setTunnelEnabled(TUNNEL_A, 0, false),
+                () -> data.createChannel(TUNNEL_A, 0, CHANNEL_A, new ManagedName("C"), -1),
+                () -> data.renameChannel(CHANNEL_A, 0, new ManagedName("C")),
+                () -> data.summarizeTunnelDeletion(TUNNEL_A),
+                () -> data.summarizeChannelDeletion(CHANNEL_A),
+                () -> data.deleteTunnel(TUNNEL_A, 0, 0),
+                () -> data.deleteChannel(CHANNEL_A, 0, 0),
+                () -> data.setDirectBinding(NODE_A, 0, CHANNEL_A, TransferDirection.INPUT, false, -1),
+                () -> data.removeDirectBinding(NODE_A, 0, CHANNEL_A),
+                () -> data.setDomainConfiguration(NODE_A, 0, TransferDirection.INPUT, false),
+                () -> data.removeDomainConfiguration(NODE_A, 0),
                 () -> data.findNode(NODE_A),
+                () -> data.containsNodeName(new ManagedName("A")),
                 () -> data.createNode(NODE_A, new ManagedName("A"), POS_A, NodeForm.BLOCK, Direction.DOWN),
                 () -> data.updateNodePhysicalSnapshot(NODE_A, POS_A, NodeForm.PANEL, Direction.UP),
+                () -> data.renameNode(NODE_A, 0, new ManagedName("B")),
+                () -> data.setNodeEnabled(NODE_A, 0, false),
+                () -> data.setNodeChunkLoadingRequested(NODE_A, 0, true),
+                () -> data.setNodeMode(NODE_A, 0, NodeMode.DIRECT, false),
                 () -> data.removeNode(NODE_A, POS_A),
                 data::isDirty,
                 data::setDirty,
@@ -644,8 +959,21 @@ class ManagedSavedDataTest {
     }
 
     private static CompoundTag networkTag() {
+        CompoundTag tag = networkV3Tag();
+        tag.putInt("schema_version", 5);
+        tag.putLong("management_revision", 0);
+        tag.putLong("last_tunnel_number", 0);
+        tag.putLong("topology_revision", 0);
+        tag.put("tunnels", new ListTag());
+        tag.put("channels", new ListTag());
+        tag.put("direct_bindings", new ListTag());
+        tag.put("domain_configurations", new ListTag());
+        return tag;
+    }
+
+    private static CompoundTag networkV3Tag() {
         CompoundTag tag = new CompoundTag();
-        tag.putInt("schema_version", 2);
+        tag.putInt("schema_version", 3);
         tag.putUUID("network_id", NETWORK);
         tag.putUUID("owner_id", OWNER);
         tag.putString("name", "主网络");
@@ -656,6 +984,79 @@ class ManagedSavedDataTest {
         tag.putLong("last_node_number", 0);
         tag.put("nodes", new ListTag());
         return tag;
+    }
+
+    private static CompoundTag topologyNetworkTag() {
+        CompoundTag tag = networkTag();
+        tag.putLong("last_node_number", 2);
+        ListTag nodes = new ListTag();
+        CompoundTag direct = nodeTag(NODE_A, 1, "Direct", POS_A, "block", "down");
+        direct.putString("mode", "direct");
+        nodes.add(direct);
+        CompoundTag domain = nodeTag(NODE_B, 2, "Domain", POS_B, "panel", "north");
+        domain.putString("mode", "domain");
+        nodes.add(domain);
+        tag.put("nodes", nodes);
+        tag.putLong("last_tunnel_number", 2);
+        tag.putLong("topology_revision", 9);
+
+        ListTag tunnels = new ListTag();
+        tunnels.add(tunnelTag(TUNNEL_A, 1, "Primary", 3, true, 2));
+        tunnels.add(tunnelTag(TUNNEL_B, 2, "Secondary", 4, false, 1));
+        tag.put("tunnels", tunnels);
+        ListTag channels = new ListTag();
+        channels.add(channelTag(CHANNEL_A, TUNNEL_A, 1, "Input", 5));
+        channels.add(channelTag(CHANNEL_B, TUNNEL_A, 2, "Output", 6));
+        channels.add(channelTag(new UUID(84, 3), TUNNEL_B, 1, "Default", 0));
+        tag.put("channels", channels);
+        ListTag bindings = new ListTag();
+        bindings.add(directionTag(NODE_A, "channel_id", CHANNEL_A, "input"));
+        tag.put("direct_bindings", bindings);
+        ListTag domains = new ListTag();
+        CompoundTag domainConfiguration = new CompoundTag();
+        domainConfiguration.putUUID("node_id", NODE_B);
+        domainConfiguration.putString("direction", "output");
+        domains.add(domainConfiguration);
+        tag.put("domain_configurations", domains);
+        return tag;
+    }
+
+    private static CompoundTag tunnelTag(
+            UUID id, long number, String name, long revision, boolean enabled, long lastChannelNumber) {
+        CompoundTag tag = new CompoundTag();
+        tag.putUUID("tunnel_id", id);
+        tag.putLong("tunnel_number", number);
+        tag.putString("name", name);
+        tag.putLong("revision", revision);
+        tag.putBoolean("enabled", enabled);
+        tag.putLong("last_channel_number", lastChannelNumber);
+        return tag;
+    }
+
+    private static CompoundTag channelTag(UUID id, UUID tunnelId, long number, String name, long revision) {
+        CompoundTag tag = new CompoundTag();
+        tag.putUUID("channel_id", id);
+        tag.putUUID("tunnel_id", tunnelId);
+        tag.putLong("channel_number", number);
+        tag.putString("name", name);
+        tag.putLong("revision", revision);
+        return tag;
+    }
+
+    private static CompoundTag directionTag(UUID nodeId, String targetKey, UUID targetId, String direction) {
+        CompoundTag tag = new CompoundTag();
+        tag.putUUID("node_id", nodeId);
+        tag.putUUID(targetKey, targetId);
+        tag.putString("direction", direction);
+        return tag;
+    }
+
+    private static void assertRejectedV4(CompoundTag input, String description) {
+        input.putInt("schema_version", 4);
+        input.remove("management_revision");
+        CompoundTag before = input.copy();
+        assertThrows(IllegalArgumentException.class, () -> NetworkSavedData.load(NETWORK, input), description);
+        assertEquals(before, input, description);
     }
 
     private static CompoundTag nodeTag(
@@ -670,6 +1071,10 @@ class ManagedSavedDataTest {
         tag.putInt("z", position.pos().getZ());
         tag.putString("form", form);
         tag.putString("facing", facing);
+        tag.putLong("revision", 0);
+        tag.putBoolean("enabled", true);
+        tag.putBoolean("chunk_loading_requested", false);
+        tag.putString("mode", "unconfigured");
         return tag;
     }
 
@@ -680,6 +1085,26 @@ class ManagedSavedDataTest {
         nodeTags.forEach(nodes::add);
         input.put("nodes", nodes);
         assertThrows(IllegalArgumentException.class, () -> NetworkSavedData.load(NETWORK, input), description);
+    }
+
+    private static void assertModeLoaded(String encodedMode, NodeMode expectedMode) {
+        CompoundTag node = nodeTag(NODE_A, 1, "Node A", POS_A, "block", "down");
+        node.putLong("revision", 7);
+        node.putBoolean("enabled", false);
+        node.putBoolean("chunk_loading_requested", true);
+        node.putString("mode", encodedMode);
+        CompoundTag input = networkTag();
+        input.putLong("last_node_number", 1);
+        ListTag nodes = new ListTag();
+        nodes.add(node);
+        input.put("nodes", nodes);
+
+        NetworkNodeRecord loaded =
+                NetworkSavedData.load(NETWORK, input).findNode(NODE_A).orElseThrow();
+        assertEquals(7, loaded.revision());
+        assertFalse(loaded.enabled());
+        assertTrue(loaded.chunkLoadingRequested());
+        assertEquals(expectedMode, loaded.mode());
     }
 
     private static CompoundTag ownerTag(boolean withDefault) {

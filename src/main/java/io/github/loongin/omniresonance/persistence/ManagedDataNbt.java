@@ -17,9 +17,9 @@ import net.minecraft.nbt.Tag;
 
 /** Strict versioned checks shared by managed SavedData codecs; inputs are never retained or modified. */
 final class ManagedDataNbt {
-    static final int NETWORK_SCHEMA_VERSION = 2;
+    static final int NETWORK_SCHEMA_VERSION = 5;
     static final int OWNER_SCHEMA_VERSION = 1;
-    static final Set<String> NETWORK_FIELDS = Set.of(
+    static final Set<String> NETWORK_V3_FIELDS = Set.of(
             "schema_version",
             "network_id",
             "owner_id",
@@ -28,9 +28,46 @@ final class ManagedDataNbt {
             "administrators",
             "last_node_number",
             "nodes");
+    static final Set<String> NETWORK_V4_FIELDS = Set.of(
+            "schema_version",
+            "network_id",
+            "owner_id",
+            "name",
+            "creation_order",
+            "administrators",
+            "last_node_number",
+            "nodes",
+            "last_tunnel_number",
+            "topology_revision",
+            "tunnels",
+            "channels",
+            "direct_bindings",
+            "domain_configurations");
+    static final Set<String> NETWORK_FIELDS = currentNetworkFields();
     static final Set<String> OWNER_FIELDS = Set.of("schema_version", "owner_id", "default_network_id");
 
     private ManagedDataNbt() {}
+
+    private static Set<String> currentNetworkFields() {
+        Set<String> fields = new HashSet<>(NETWORK_V4_FIELDS);
+        fields.add("management_revision");
+        return Set.copyOf(fields);
+    }
+
+    static long readManagementRevision(CompoundTag tag) {
+        requireType(tag, "management_revision", Tag.TAG_LONG);
+        long revision = tag.getLong("management_revision");
+        if (revision < 0) {
+            throw new IllegalArgumentException("Negative network management revision");
+        }
+        return revision;
+    }
+
+    static int readSchemaVersion(CompoundTag tag) {
+        Objects.requireNonNull(tag, "tag");
+        requireType(tag, "schema_version", Tag.TAG_INT);
+        return tag.getInt("schema_version");
+    }
 
     static void validateSchemaAndFields(CompoundTag tag, int expectedVersion, Set<String> allowedFields) {
         Objects.requireNonNull(tag, "tag");

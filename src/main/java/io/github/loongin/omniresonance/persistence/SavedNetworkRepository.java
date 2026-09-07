@@ -22,6 +22,7 @@ import java.util.Set;
 import java.util.UUID;
 import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.level.storage.DimensionDataStorage;
+import net.neoforged.neoforge.common.IOUtilities;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -198,6 +199,59 @@ public final class SavedNetworkRepository {
         register(name, owner);
         reservedNames.add(name);
         return owner;
+    }
+
+    /**
+     * Detaches one exact loaded network from the native save cache and this repository, then queues deletion of
+     * only its standard file behind prior native saves. The identity remains reserved for this repository's
+     * lifetime. Missing networks reject before mutation; completion is an in-memory commit, not an I/O receipt.
+     */
+    public void removeNetwork(UUID id) {
+        requireOwningThread();
+        Objects.requireNonNull(id, "id");
+        NetworkSavedData removed = loadedNetworks.get(id);
+        if (removed == null) {
+            throw new IllegalArgumentException("Network is not loaded");
+        }
+        String name = ManagedSavedDataNames.network(id);
+        Path file = dataDirectory.resolve(name + ".dat");
+        storage.set(name, null);
+        if (!loadedNetworks.remove(id, removed)) {
+            throw new IllegalStateException("Network authority changed during removal");
+        }
+        IOUtilities.withIOWorker(() -> deleteNetworkFile(file, id));
+    }
+
+    /**
+     * Verifies that one loaded healthy network has no current bucket path and only an absent/regular main path.
+     * Exactly 64 canonical bucket paths are inspected with no link following; no files are parsed, listed, changed
+     * or retained. Occupied, nonregular and unreadable paths fail closed with {@link IllegalStateException}.
+     */
+    public void requireEmptyNetworkStorage(UUID id) {
+        requireOwningThread();
+        Objects.requireNonNull(id, "id");
+        if (!loadedNetworks.containsKey(id)) {
+            throw new IllegalArgumentException("Network is not loaded");
+        }
+        String mainName = ManagedSavedDataNames.network(id);
+        BasicFileAttributes main = attributes(dataDirectory.resolve(mainName + ".dat"));
+        if (main != null && !main.isRegularFile()) {
+            throw new IllegalStateException("Network shard path is not a regular file");
+        }
+        for (int bucket = 0; bucket < 64; bucket++) {
+            Path path = dataDirectory.resolve(ManagedSavedDataNames.networkBucket(id, bucket) + ".dat");
+            if (attributes(path) != null) {
+                throw new IllegalStateException("Network storage bucket prevents deletion");
+            }
+        }
+    }
+
+    private static void deleteNetworkFile(Path file, UUID id) {
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException | RuntimeException failure) {
+            LOGGER.error("Could not delete removed network shard {} at {}", id, file, failure);
+        }
     }
 
     private void register(String name, SavedData data) {

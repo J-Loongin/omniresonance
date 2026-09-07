@@ -18,6 +18,21 @@ import org.slf4j.LoggerFactory;
  */
 public final class ServerConfig {
     private static final Logger LOGGER = LoggerFactory.getLogger(ServerConfig.class);
+    private static final NetworkQuotaDefinition ADMINISTRATORS_PER_NETWORK = new NetworkQuotaDefinition(
+            List.of("network_limits", "administrators_per_network"),
+            "Administrators in a network.",
+            "每网络管理员数量。",
+            "int",
+            "players",
+            "玩家",
+            128,
+            0,
+            1024,
+            "-1 removes only the gameplay quota; 0 rejects additions.",
+            "-1仅取消玩法限额；0禁止新增。",
+            "QUOTA",
+            "Lowering keeps existing administrators and rejects additions until within quota.",
+            "调低不删已有管理员，回到限制内前拒绝新增。");
     private static final NetworkQuotaDefinition NETWORKS_PER_OWNER = new NetworkQuotaDefinition(
             List.of("network_limits", "networks_per_owner"),
             "Networks owned by one player.",
@@ -26,16 +41,65 @@ public final class ServerConfig {
             "networks",
             "网络",
             32,
-            -1,
+            0,
             1024,
             "-1 removes only the gameplay quota; 0 rejects additions.",
             "-1仅取消玩法限额；0禁止新增。",
             "QUOTA",
             "Lowering keeps existing objects and rejects additions until within quota.",
             "调低不删已有对象，回到限制内前拒绝新增。");
+    private static final NetworkQuotaDefinition TUNNELS_PER_NETWORK = new NetworkQuotaDefinition(
+            List.of("network_limits", "tunnels_per_network"),
+            "Tunnels in one network.",
+            "每网络隧道数量。",
+            "int",
+            "tunnels",
+            "隧道",
+            1024,
+            0,
+            65535,
+            "-1 removes only the gameplay quota; 0 rejects additions.",
+            "-1仅取消玩法限额；0禁止新增。",
+            "QUOTA",
+            "Lowering keeps existing objects and rejects additions until within quota.",
+            "调低不删已有对象，回到限制内前拒绝新增。");
+    private static final NetworkQuotaDefinition CHANNELS_PER_TUNNEL = new NetworkQuotaDefinition(
+            List.of("network_limits", "channels_per_tunnel"),
+            "Channels in one tunnel.",
+            "每隧道频道数量。",
+            "int",
+            "channels",
+            "频道",
+            256,
+            0,
+            65535,
+            "-1 removes only the gameplay quota; 0 rejects additions.",
+            "-1仅取消玩法限额；0禁止新增。",
+            "QUOTA",
+            "Lowering keeps existing objects and rejects additions until within quota.",
+            "调低不删已有对象，回到限制内前拒绝新增。");
+    private static final NetworkQuotaDefinition CHANNEL_BINDINGS_PER_DIRECT_NODE = new NetworkQuotaDefinition(
+            List.of("network_limits", "channel_bindings_per_direct_node"),
+            "Direct-channel configurations on one node.",
+            "每直连节点频道配置数量。",
+            "int",
+            "configurations",
+            "配置",
+            16,
+            1,
+            1024,
+            "-1 uses only the hard limit; 0 is invalid.",
+            "-1仅使用硬上限；0无效。",
+            "QUOTA",
+            "Lowering keeps existing configurations and rejects additions until within quota.",
+            "调低不删已有配置，回到限制内前拒绝新增。");
 
     private final ModConfigSpec spec;
     private final ModConfigSpec.ConfigValue<Integer> networksPerOwner;
+    private final ModConfigSpec.ConfigValue<Integer> tunnelsPerNetwork;
+    private final ModConfigSpec.ConfigValue<Integer> channelsPerTunnel;
+    private final ModConfigSpec.ConfigValue<Integer> channelBindingsPerDirectNode;
+    private final ModConfigSpec.ConfigValue<Integer> administratorsPerNetwork;
     private final AtomicReference<State> latest =
             new AtomicReference<>(new State(0, 0, false, ServerSettings.defaults()));
 
@@ -48,6 +112,10 @@ public final class ServerConfig {
                         NETWORKS_PER_OWNER::defaultValue,
                         NETWORKS_PER_OWNER::accepts,
                         Integer.class);
+        tunnelsPerNetwork = define(builder, TUNNELS_PER_NETWORK);
+        channelsPerTunnel = define(builder, CHANNELS_PER_TUNNEL);
+        channelBindingsPerDirectNode = define(builder, CHANNEL_BINDINGS_PER_DIRECT_NODE);
+        administratorsPerNetwork = define(builder, ADMINISTRATORS_PER_NETWORK);
         spec = builder.build();
     }
 
@@ -109,16 +177,56 @@ public final class ServerConfig {
         return NETWORKS_PER_OWNER.defaultValue();
     }
 
+    static int defaultAdministratorsPerNetwork() {
+        return ADMINISTRATORS_PER_NETWORK.defaultValue();
+    }
+
+    static void validateAdministratorsPerNetwork(int value) {
+        validate(ADMINISTRATORS_PER_NETWORK, value, "Administrator quota is outside its supported range");
+    }
+
     static void validateNetworksPerOwner(int value) {
         if (!NETWORKS_PER_OWNER.accepts(value)) {
             throw new IllegalArgumentException("Network quota is outside its supported range");
         }
     }
 
+    static int defaultTunnelsPerNetwork() {
+        return TUNNELS_PER_NETWORK.defaultValue();
+    }
+
+    static int defaultChannelsPerTunnel() {
+        return CHANNELS_PER_TUNNEL.defaultValue();
+    }
+
+    static int defaultChannelBindingsPerDirectNode() {
+        return CHANNEL_BINDINGS_PER_DIRECT_NODE.defaultValue();
+    }
+
+    static void validateTunnelsPerNetwork(int value) {
+        validate(TUNNELS_PER_NETWORK, value, "Tunnel quota is outside its supported range");
+    }
+
+    static void validateChannelsPerTunnel(int value) {
+        validate(CHANNELS_PER_TUNNEL, value, "Channel quota is outside its supported range");
+    }
+
+    static void validateChannelBindingsPerDirectNode(int value) {
+        validate(
+                CHANNEL_BINDINGS_PER_DIRECT_NODE,
+                value,
+                "Direct-channel configuration quota is outside its supported range");
+    }
+
     private State capture(State fallback) {
         State candidate;
         try {
-            ServerSettings settings = new ServerSettings(networksPerOwner.get());
+            ServerSettings settings = new ServerSettings(
+                    networksPerOwner.get(),
+                    tunnelsPerNetwork.get(),
+                    channelsPerTunnel.get(),
+                    channelBindingsPerDirectNode.get(),
+                    administratorsPerNetwork.get());
             candidate = new State(fallback.epoch(), Math.incrementExact(fallback.revision()), true, settings);
         } catch (RuntimeException failure) {
             LOGGER.warn("Rejected server configuration candidate; retaining validated lifecycle settings");
@@ -141,6 +249,18 @@ public final class ServerConfig {
         }
     }
 
+    private static ModConfigSpec.ConfigValue<Integer> define(
+            ModConfigSpec.Builder builder, NetworkQuotaDefinition definition) {
+        return builder.comment(definition.comment())
+                .define(definition.path(), definition::defaultValue, definition::accepts, Integer.class);
+    }
+
+    private static void validate(NetworkQuotaDefinition definition, int value, String message) {
+        if (!definition.accepts(value)) {
+            throw new IllegalArgumentException(message);
+        }
+    }
+
     /**
      * Immutable candidate identity and settings, safe to retain on any thread. Epochs start on local
      * loading; revisions count successful captures within that epoch. Loaded means a local lifecycle
@@ -157,7 +277,7 @@ public final class ServerConfig {
             String unitEn,
             String unitZh,
             int defaultValue,
-            int minimum,
+            int ordinaryMinimum,
             int maximum,
             String specialEn,
             String specialZh,
@@ -165,7 +285,7 @@ public final class ServerConfig {
             String reloadEn,
             String reloadZh) {
         boolean accepts(Object value) {
-            return value instanceof Integer number && number >= minimum && number <= maximum;
+            return value instanceof Integer number && (number == -1 || number >= ordinaryMinimum && number <= maximum);
         }
 
         String comment() {
@@ -176,7 +296,8 @@ public final class ServerConfig {
                     "Type/类型: " + type,
                     "Unit/单位: " + unitEn + " / " + unitZh,
                     "Default/默认值: " + defaultValue,
-                    "Range/合法范围: " + minimum + " or 0.." + maximum + " / " + minimum + "或0.." + maximum,
+                    "Range/合法范围: -1 or " + ordinaryMinimum + ".." + maximum + " / -1或" + ordinaryMinimum + ".."
+                            + maximum,
                     "Special values/特殊值: " + specialEn + " / " + specialZh,
                     "Reload/重载: " + reloadPolicy + " - " + reloadEn + " / " + reloadZh);
         }

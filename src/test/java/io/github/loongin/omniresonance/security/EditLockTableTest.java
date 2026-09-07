@@ -220,6 +220,19 @@ class EditLockTableTest {
     }
 
     @Test
+    void pollingExpiryReturnsOnlyDueTokensInDeadlineOrder() {
+        EditLockTable table = new EditLockTable();
+        Token first = table.tryAcquire(OBJECT, ALICE, 0).orElseThrow();
+        Token second = table.tryAcquire(OTHER_OBJECT, BOB, 1).orElseThrow();
+
+        assertTrue(table.pollExpired(199).isEmpty());
+        assertEquals(first, table.pollExpired(200).orElseThrow());
+        assertTrue(table.pollExpired(200).isEmpty());
+        assertEquals(second, table.pollExpired(201).orElseThrow());
+        assertTrue(table.pollExpired(201).isEmpty());
+    }
+
+    @Test
     void repeatedHeartbeatsExpireAtOnlyTheFinalDeadline() {
         EditLockTable table = new EditLockTable();
         Token token = table.tryAcquire(OBJECT, ALICE, 0).orElseThrow();
@@ -246,6 +259,7 @@ class EditLockTableTest {
         assertThrows(IllegalArgumentException.class, () -> table.isHeld(token, ALICE, -1));
         assertThrows(IllegalArgumentException.class, () -> table.hasConflictingLocks(List.of(), null, -1));
         assertThrows(IllegalArgumentException.class, () -> table.expire(-1));
+        assertThrows(IllegalArgumentException.class, () -> table.pollExpired(-1));
         assertTrue(table.isHeld(token, ALICE, 199));
     }
 

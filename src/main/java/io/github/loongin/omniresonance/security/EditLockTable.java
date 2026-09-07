@@ -209,6 +209,24 @@ public final class EditLockTable {
         }
     }
 
+    /**
+     * Removes and returns one due lease in deadline/generation order on the owning thread.
+     *
+     * <p>This lets a lifecycle owner release associated bounded context without scanning live leases. Empty or only
+     * future deadlines return empty without mutation. Negative ticks reject before access; no authorization,
+     * simulation or external state mutation is performed.
+     */
+    public Optional<Token> pollExpired(long nowTick) {
+        checkThread();
+        checkTick(nowTick);
+        if (expirations.isEmpty() || expirations.first().expiresAtTick() > nowTick) {
+            return Optional.empty();
+        }
+        Lease expired = expirations.pollFirst();
+        locks.remove(expired.token().objectId(), expired);
+        return Optional.of(expired.token());
+    }
+
     private @Nullable Lease matchingLease(Token token, UUID sender) {
         Objects.requireNonNull(token, "token");
         Objects.requireNonNull(sender, "sender");

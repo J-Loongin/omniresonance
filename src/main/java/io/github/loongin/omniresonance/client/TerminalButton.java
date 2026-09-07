@@ -2,17 +2,17 @@
 package io.github.loongin.omniresonance.client;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.network.chat.Component;
 
 /** Terminal-themed button with a text state in addition to its shared colors. */
-final class TerminalButton extends Button {
+final class TerminalButton extends TerminalClickButton {
     private final boolean primary;
     private boolean selected;
 
     TerminalButton(int x, int y, int width, int height, Component message, OnPress onPress, boolean primary) {
-        super(x, y, width, height, message, onPress, DEFAULT_NARRATION);
+        super(x, y, width, height, TerminalText.body(message), onPress);
         this.primary = primary;
     }
 
@@ -22,7 +22,7 @@ final class TerminalButton extends Button {
 
     @Override
     protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        int border = selected || isHoveredOrFocused() ? TerminalTheme.ACCENT : TerminalTheme.LINE;
+        int border = active && (selected || isHoveredOrFocused()) ? TerminalTheme.FRAME_LINE : TerminalTheme.LINE;
         int background;
         if (!active) {
             background = TerminalTheme.RAISED_DISABLED;
@@ -42,11 +42,13 @@ final class TerminalButton extends Button {
                 Math.max(0, TerminalTheme.BUTTON_RADIUS - 1),
                 background);
         int color = active ? TerminalTheme.TEXT : TerminalTheme.MUTED;
-        graphics.drawCenteredString(
-                Minecraft.getInstance().font,
+        Font font = TerminalText.font(Minecraft.getInstance());
+        graphics.drawString(
+                font,
                 getMessage(),
-                getX() + getWidth() / 2,
+                getX() + (getWidth() - font.width(getMessage())) / 2,
                 getY() + (getHeight() - 8) / 2,
-                color);
+                color,
+                false);
     }
 }

@@ -1,0 +1,18 @@
+{
+  "providers": [
+    {
+      "type": "ttf",
+      "file": "omniresonance:omniresonance_ui_subset.ttf",
+      "size": 11,
+      "oversample": 16,
+      "shift": [
+        0,
+        0
+      ]
+    },
+    {
+      "type": "reference",
+      "id": "minecraft:default"
+    }
+  ]
+}

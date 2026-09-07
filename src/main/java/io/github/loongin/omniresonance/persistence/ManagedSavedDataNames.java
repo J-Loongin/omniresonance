@@ -28,6 +28,15 @@ public final class ManagedSavedDataNames {
         return OWNER_PREFIX + compactId(id);
     }
 
+    /** Returns one of the fixed extension-free network bucket IDs without performing I/O or parsing data. */
+    public static String networkBucket(UUID id, int bucket) {
+        Objects.requireNonNull(id, "id");
+        if (bucket < 0 || bucket >= 64) {
+            throw new IllegalArgumentException("Network bucket index must be between 0 and 63");
+        }
+        return NETWORK_PREFIX + compactId(id) + "_bucket_" + (bucket < 10 ? "0" : "") + bucket;
+    }
+
     /**
      * Parses only a canonical network filename, including its {@code .dat} extension.
      *

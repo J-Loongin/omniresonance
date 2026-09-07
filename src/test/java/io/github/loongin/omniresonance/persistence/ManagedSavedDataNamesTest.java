@@ -17,6 +17,12 @@ class ManagedSavedDataNamesTest {
     void createsStableLowercaseIdsWithoutAnExtension() {
         assertEquals("omniresonance_network_abcdef0123456789abcdef0123456789", ManagedSavedDataNames.network(ID));
         assertEquals("omniresonance_owner_abcdef0123456789abcdef0123456789", ManagedSavedDataNames.owner(ID));
+        assertEquals(
+                "omniresonance_network_abcdef0123456789abcdef0123456789_bucket_00",
+                ManagedSavedDataNames.networkBucket(ID, 0));
+        assertEquals(
+                "omniresonance_network_abcdef0123456789abcdef0123456789_bucket_63",
+                ManagedSavedDataNames.networkBucket(ID, 63));
     }
 
     @Test
@@ -60,6 +66,9 @@ class ManagedSavedDataNamesTest {
     void rejectsMissingInputs() {
         assertThrows(NullPointerException.class, () -> ManagedSavedDataNames.network(null));
         assertThrows(NullPointerException.class, () -> ManagedSavedDataNames.owner(null));
+        assertThrows(NullPointerException.class, () -> ManagedSavedDataNames.networkBucket(null, 0));
+        assertThrows(IllegalArgumentException.class, () -> ManagedSavedDataNames.networkBucket(ID, -1));
+        assertThrows(IllegalArgumentException.class, () -> ManagedSavedDataNames.networkBucket(ID, 64));
         assertThrows(NullPointerException.class, () -> ManagedSavedDataNames.parseNetworkFileName(null));
     }
 }
