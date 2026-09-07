@@ -7,6 +7,7 @@ recordings or sound samples are included.
 Authoring source: META-INF/omniresonance/ui_click_source.py
 Run with Python 3 and an output WAV path to reproduce the approved PCM.
 Reference: 48,000 Hz, mono, 16-bit PCM, 4,320 samples (90 ms).
+The WAV is generated on demand and is not packaged or retained in the project.
 Reference WAV SHA-256:
 3a67a19b6b8d10e0a90a89e352621037c2e275ebd6a572a288b12961ab4cdfd8
 
