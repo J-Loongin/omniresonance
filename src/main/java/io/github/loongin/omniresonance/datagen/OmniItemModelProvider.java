@@ -8,7 +8,7 @@ import net.neoforged.neoforge.client.model.generators.ItemModelProvider;
 import net.neoforged.neoforge.client.model.generators.ModelFile;
 import net.neoforged.neoforge.common.data.ExistingFileHelper;
 
-/** Generates item models that deliberately reference documented temporary vanilla art. */
+/** Generates material item models and block-model-backed node items. */
 public final class OmniItemModelProvider extends ItemModelProvider {
     public OmniItemModelProvider(PackOutput output, ExistingFileHelper existingFileHelper) {
         super(output, OmniResonanceMod.MOD_ID, existingFileHelper);

@@ -1,7 +1,52 @@
 {
-  "parent": "minecraft:block/cube_column",
+  "parent": "minecraft:block/block",
+  "elements": [
+    {
+      "faces": {
+        "down": {
+          "cullface": "down",
+          "texture": "#bottom"
+        },
+        "east": {
+          "cullface": "east",
+          "texture": "#left"
+        },
+        "north": {
+          "cullface": "north",
+          "texture": "#front"
+        },
+        "south": {
+          "cullface": "south",
+          "texture": "#back"
+        },
+        "up": {
+          "cullface": "up",
+          "texture": "#top"
+        },
+        "west": {
+          "cullface": "west",
+          "texture": "#right"
+        }
+      },
+      "from": [
+        0,
+        0,
+        0
+      ],
+      "to": [
+        16,
+        16,
+        16
+      ]
+    }
+  ],
   "textures": {
-    "end": "minecraft:block/quartz_block_top",
-    "side": "minecraft:block/quartz_block_side"
+    "back": "omniresonance:block/resonance_transfer_node_back",
+    "bottom": "omniresonance:block/resonance_transfer_node_bottom",
+    "front": "omniresonance:block/resonance_transfer_node_front",
+    "left": "omniresonance:block/resonance_transfer_node_left",
+    "particle": "omniresonance:block/resonance_transfer_node_front",
+    "right": "omniresonance:block/resonance_transfer_node_right",
+    "top": "omniresonance:block/resonance_transfer_node_top"
   }
 }

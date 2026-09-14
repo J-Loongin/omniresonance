@@ -70,7 +70,7 @@ final class MaterialDataContractTest {
     }
 
     @Test
-    void physicalNodeRecipesModelsAndLootMatchBlankFormContracts() throws IOException {
+    void physicalNodeRecipesAndLootMatchBlankFormContracts() throws IOException {
         assertShapelessConversion(
                 "resonance_transfer_node",
                 List.of("omniresonance:resonance_substrate", "omniresonance:resonance_core"),
@@ -84,28 +84,82 @@ final class MaterialDataContractTest {
                 List.of("omniresonance:resonance_transfer_panel"),
                 "omniresonance:resonance_transfer_node");
 
-        JsonObject nodeState = generatedJson("assets/omniresonance/blockstates/resonance_transfer_node.json");
-        assertEquals(
-                "omniresonance:block/resonance_transfer_node",
-                nodeState
-                        .getAsJsonObject("variants")
-                        .getAsJsonObject("")
-                        .get("model")
-                        .getAsString());
+        assertPlainSelfLoot("resonance_transfer_node");
+        assertPlainSelfLoot("resonance_transfer_panel");
+        assertNull(resource("assets/omniresonance/textures/block/resonance_transfer_node.png"));
+        assertNull(resource("assets/omniresonance/textures/block/resonance_transfer_panel.png"));
+    }
+
+    @Test
+    void transferNodeUsesDistinctCanonicalFacesAndRotatesBackTowardEveryFacing() throws IOException {
         JsonObject nodeModel = generatedJson("assets/omniresonance/models/block/resonance_transfer_node.json");
-        assertEquals("minecraft:block/cube_column", nodeModel.get("parent").getAsString());
         assertEquals(
-                "minecraft:block/quartz_block_side",
-                nodeModel.getAsJsonObject("textures").get("side").getAsString());
-        assertEquals(
-                "minecraft:block/quartz_block_top",
-                nodeModel.getAsJsonObject("textures").get("end").getAsString());
+                Map.of(
+                        "particle", "omniresonance:block/resonance_transfer_node_front",
+                        "front", "omniresonance:block/resonance_transfer_node_front",
+                        "top", "omniresonance:block/resonance_transfer_node_top",
+                        "left", "omniresonance:block/resonance_transfer_node_left",
+                        "right", "omniresonance:block/resonance_transfer_node_right",
+                        "bottom", "omniresonance:block/resonance_transfer_node_bottom",
+                        "back", "omniresonance:block/resonance_transfer_node_back"),
+                stringMap(nodeModel.getAsJsonObject("textures")));
+
+        JsonObject element = nodeModel.getAsJsonArray("elements").get(0).getAsJsonObject();
+        assertEquals(List.of(0, 0, 0), integerArray(element.getAsJsonArray("from")));
+        assertEquals(List.of(16, 16, 16), integerArray(element.getAsJsonArray("to")));
+        JsonObject faces = element.getAsJsonObject("faces");
+        assertFaceTexture(faces, Direction.NORTH, "#front");
+        assertFaceTexture(faces, Direction.SOUTH, "#back");
+        assertFaceTexture(faces, Direction.UP, "#top");
+        assertFaceTexture(faces, Direction.DOWN, "#bottom");
+        assertFaceTexture(faces, Direction.EAST, "#left");
+        assertFaceTexture(faces, Direction.WEST, "#right");
+
+        JsonObject variants = generatedJson("assets/omniresonance/blockstates/resonance_transfer_node.json")
+                .getAsJsonObject("variants");
+        Map<Direction, List<Integer>> rotations = Map.of(
+                Direction.DOWN, List.of(270, 0),
+                Direction.UP, List.of(90, 0),
+                Direction.NORTH, List.of(0, 180),
+                Direction.SOUTH, List.of(0, 0),
+                Direction.WEST, List.of(0, 90),
+                Direction.EAST, List.of(0, 270));
+        Map<Direction, Direction> expectedFrontNormals = Map.of(
+                Direction.DOWN, Direction.UP,
+                Direction.UP, Direction.DOWN,
+                Direction.NORTH, Direction.SOUTH,
+                Direction.SOUTH, Direction.NORTH,
+                Direction.WEST, Direction.EAST,
+                Direction.EAST, Direction.WEST);
+        Map<Direction, Direction> expectedTopNormals = Map.of(
+                Direction.DOWN, Direction.SOUTH,
+                Direction.UP, Direction.NORTH,
+                Direction.NORTH, Direction.UP,
+                Direction.SOUTH, Direction.UP,
+                Direction.WEST, Direction.UP,
+                Direction.EAST, Direction.UP);
+        for (Direction facing : Direction.values()) {
+            JsonObject variant = variants.getAsJsonObject("facing=" + facing.getSerializedName());
+            assertEquals(
+                    "omniresonance:block/resonance_transfer_node",
+                    variant.get("model").getAsString());
+            int rotationX = variant.has("x") ? variant.get("x").getAsInt() : 0;
+            int rotationY = variant.has("y") ? variant.get("y").getAsInt() : 0;
+            assertEquals(rotations.get(facing), List.of(rotationX, rotationY));
+            assertEquals(expectedFrontNormals.get(facing), rotateModelDirection(Direction.NORTH, rotationX, rotationY));
+            assertEquals(facing, rotateModelDirection(Direction.SOUTH, rotationX, rotationY));
+            assertEquals(expectedTopNormals.get(facing), rotateModelDirection(Direction.UP, rotationX, rotationY));
+        }
+
         assertEquals(
                 "omniresonance:block/resonance_transfer_node",
                 generatedJson("assets/omniresonance/models/item/resonance_transfer_node.json")
                         .get("parent")
                         .getAsString());
+    }
 
+    @Test
+    void transferPanelsKeepBoundsAndReserveFullFaceArtForExposedAndContactPlanes() throws IOException {
         Map<Direction, List<Integer>> bounds = Map.of(
                 Direction.DOWN, List.of(0, 0, 0, 16, 2, 16),
                 Direction.UP, List.of(0, 14, 0, 16, 16, 16),
@@ -114,35 +168,75 @@ final class MaterialDataContractTest {
                 Direction.WEST, List.of(0, 0, 0, 2, 16, 16),
                 Direction.EAST, List.of(14, 0, 0, 16, 16, 16));
         JsonObject panelState = generatedJson("assets/omniresonance/blockstates/resonance_transfer_panel.json");
-        for (Direction direction : Direction.values()) {
-            String modelId = "omniresonance:block/resonance_transfer_panel_" + direction.getSerializedName();
-            assertEquals(
-                    modelId,
-                    panelState
-                            .getAsJsonObject("variants")
-                            .getAsJsonObject("facing=" + direction.getSerializedName())
-                            .get("model")
-                            .getAsString());
+        for (Direction facing : Direction.values()) {
+            String modelId = "omniresonance:block/resonance_transfer_panel_" + facing.getSerializedName();
+            JsonObject variant =
+                    panelState.getAsJsonObject("variants").getAsJsonObject("facing=" + facing.getSerializedName());
+            assertEquals(modelId, variant.get("model").getAsString());
+            assertFalse(variant.has("x"));
+            assertFalse(variant.has("y"));
+
             JsonObject model = generatedJson("assets/omniresonance/models/block/resonance_transfer_panel_"
-                    + direction.getSerializedName()
+                    + facing.getSerializedName()
                     + ".json");
-            JsonObject element = model.getAsJsonArray("elements").get(0).getAsJsonObject();
-            assertEquals(bounds.get(direction).subList(0, 3), integerArray(element.getAsJsonArray("from")));
-            assertEquals(bounds.get(direction).subList(3, 6), integerArray(element.getAsJsonArray("to")));
             assertEquals(
-                    "minecraft:block/quartz_block_side",
-                    model.getAsJsonObject("textures").get("all").getAsString());
+                    Map.of(
+                            "particle", "omniresonance:block/resonance_transfer_panel_edge",
+                            "front", "omniresonance:block/resonance_transfer_node_front",
+                            "back", "omniresonance:block/resonance_transfer_node_back",
+                            "edge", "omniresonance:block/resonance_transfer_panel_edge"),
+                    stringMap(model.getAsJsonObject("textures")));
+            JsonObject element = model.getAsJsonArray("elements").get(0).getAsJsonObject();
+            List<Integer> from = integerArray(element.getAsJsonArray("from"));
+            List<Integer> to = integerArray(element.getAsJsonArray("to"));
+            assertEquals(bounds.get(facing).subList(0, 3), from);
+            assertEquals(bounds.get(facing).subList(3, 6), to);
+
+            JsonObject faces = element.getAsJsonObject("faces");
+            Direction front = facing.getOpposite();
+            assertFaceTexture(faces, front, "#front");
+            assertFaceTexture(faces, facing, "#back");
+            assertEquals(List.of(0, 0, 16, 16), effectiveFaceUv(faces, front, from, to));
+            assertEquals(List.of(0, 0, 16, 16), effectiveFaceUv(faces, facing, from, to));
+            for (Direction edge : Direction.values()) {
+                if (edge != front && edge != facing) {
+                    assertFaceTexture(faces, edge, "#edge");
+                    assertFalse(effectiveFaceUv(faces, edge, from, to).equals(List.of(0, 0, 16, 16)));
+                }
+            }
         }
         assertEquals(
                 "omniresonance:block/resonance_transfer_panel_south",
                 generatedJson("assets/omniresonance/models/item/resonance_transfer_panel.json")
                         .get("parent")
                         .getAsString());
+    }
 
-        assertPlainSelfLoot("resonance_transfer_node");
-        assertPlainSelfLoot("resonance_transfer_panel");
-        assertNull(resource("assets/omniresonance/textures/block/resonance_transfer_node.png"));
-        assertNull(resource("assets/omniresonance/textures/block/resonance_transfer_panel.png"));
+    @Test
+    void customBlockModelsInheritItemTransformsAndKeepPanelArtAligned() throws IOException {
+        assertEquals(
+                "minecraft:block/block",
+                optionalString(
+                        generatedJson("assets/omniresonance/models/block/resonance_transfer_node.json"), "parent"));
+        Map<Direction, List<Integer>> expectedFrontAndBackRotations = Map.of(
+                Direction.DOWN, List.of(180, 0),
+                Direction.UP, List.of(180, 0),
+                Direction.NORTH, List.of(0, 0),
+                Direction.SOUTH, List.of(0, 0),
+                Direction.WEST, List.of(0, 0),
+                Direction.EAST, List.of(0, 0));
+        for (Direction facing : Direction.values()) {
+            JsonObject model = generatedJson("assets/omniresonance/models/block/resonance_transfer_panel_"
+                    + facing.getSerializedName()
+                    + ".json");
+            assertEquals("minecraft:block/block", optionalString(model, "parent"));
+            JsonObject faces =
+                    model.getAsJsonArray("elements").get(0).getAsJsonObject().getAsJsonObject("faces");
+            assertEquals(
+                    expectedFrontAndBackRotations.get(facing),
+                    List.of(faceRotation(faces, facing.getOpposite()), faceRotation(faces, facing)),
+                    facing.getSerializedName());
+        }
     }
 
     private static void assertItemTexture(String item, String expectedTexture) throws IOException {
@@ -168,6 +262,65 @@ final class MaterialDataContractTest {
 
     private static List<Integer> integerArray(com.google.gson.JsonArray array) {
         return array.asList().stream().map(JsonElement::getAsInt).toList();
+    }
+
+    private static Map<String, String> stringMap(JsonObject object) {
+        return object.entrySet().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        Map.Entry::getKey, entry -> entry.getValue().getAsString()));
+    }
+
+    private static String optionalString(JsonObject object, String property) {
+        return object.has(property) ? object.get(property).getAsString() : null;
+    }
+
+    private static int faceRotation(JsonObject faces, Direction face) {
+        JsonObject faceData = faces.getAsJsonObject(face.getSerializedName());
+        return faceData.has("rotation") ? faceData.get("rotation").getAsInt() : 0;
+    }
+
+    private static void assertFaceTexture(JsonObject faces, Direction face, String expectedTexture) {
+        assertEquals(
+                expectedTexture,
+                faces.getAsJsonObject(face.getSerializedName()).get("texture").getAsString());
+    }
+
+    private static List<Integer> effectiveFaceUv(
+            JsonObject faces, Direction face, List<Integer> from, List<Integer> to) {
+        JsonObject faceData = faces.getAsJsonObject(face.getSerializedName());
+        if (faceData.has("uv")) {
+            return integerArray(faceData.getAsJsonArray("uv"));
+        }
+        return switch (face) {
+            case DOWN -> List.of(from.get(0), 16 - to.get(2), to.get(0), 16 - from.get(2));
+            case UP -> List.of(from.get(0), from.get(2), to.get(0), to.get(2));
+            case NORTH -> List.of(16 - to.get(0), 16 - to.get(1), 16 - from.get(0), 16 - from.get(1));
+            case SOUTH -> List.of(from.get(0), 16 - to.get(1), to.get(0), 16 - from.get(1));
+            case WEST -> List.of(from.get(2), 16 - to.get(1), to.get(2), 16 - from.get(1));
+            case EAST -> List.of(16 - to.get(2), 16 - to.get(1), 16 - from.get(2), 16 - from.get(1));
+        };
+    }
+
+    private static Direction rotateModelDirection(Direction direction, int rotationX, int rotationY) {
+        int x = direction.getStepX();
+        int y = direction.getStepY();
+        int z = direction.getStepZ();
+        for (int degrees = 0; degrees < rotationX; degrees += 90) {
+            int previousY = y;
+            y = z;
+            z = -previousY;
+        }
+        for (int degrees = 0; degrees < rotationY; degrees += 90) {
+            int previousX = x;
+            x = -z;
+            z = previousX;
+        }
+        for (Direction candidate : Direction.values()) {
+            if (candidate.getStepX() == x && candidate.getStepY() == y && candidate.getStepZ() == z) {
+                return candidate;
+            }
+        }
+        throw new AssertionError("Rotated normal is not a cardinal direction");
     }
 
     private static void assertPlainSelfLoot(String block) throws IOException {

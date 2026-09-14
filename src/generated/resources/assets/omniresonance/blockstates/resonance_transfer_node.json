@@ -1,7 +1,27 @@
 {
   "variants": {
-    "": {
+    "facing=down": {
+      "model": "omniresonance:block/resonance_transfer_node",
+      "x": 270
+    },
+    "facing=east": {
+      "model": "omniresonance:block/resonance_transfer_node",
+      "y": 270
+    },
+    "facing=north": {
+      "model": "omniresonance:block/resonance_transfer_node",
+      "y": 180
+    },
+    "facing=south": {
       "model": "omniresonance:block/resonance_transfer_node"
+    },
+    "facing=up": {
+      "model": "omniresonance:block/resonance_transfer_node",
+      "x": 90
+    },
+    "facing=west": {
+      "model": "omniresonance:block/resonance_transfer_node",
+      "y": 90
     }
   }
 }

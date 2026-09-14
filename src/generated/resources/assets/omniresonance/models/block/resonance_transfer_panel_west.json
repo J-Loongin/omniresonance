@@ -1,24 +1,25 @@
 {
+  "parent": "minecraft:block/block",
   "elements": [
     {
       "faces": {
         "down": {
-          "texture": "#all"
+          "texture": "#edge"
         },
         "east": {
-          "texture": "#all"
+          "texture": "#front"
         },
         "north": {
-          "texture": "#all"
+          "texture": "#edge"
         },
         "south": {
-          "texture": "#all"
+          "texture": "#edge"
         },
         "up": {
-          "texture": "#all"
+          "texture": "#edge"
         },
         "west": {
-          "texture": "#all"
+          "texture": "#back"
         }
       },
       "from": [
@@ -34,6 +35,9 @@
     }
   ],
   "textures": {
-    "all": "minecraft:block/quartz_block_side"
+    "back": "omniresonance:block/resonance_transfer_node_back",
+    "edge": "omniresonance:block/resonance_transfer_panel_edge",
+    "front": "omniresonance:block/resonance_transfer_node_front",
+    "particle": "omniresonance:block/resonance_transfer_panel_edge"
   }
 }
