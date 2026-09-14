@@ -7,6 +7,7 @@ import io.github.loongin.omniresonance.network.ManagedName;
 import io.github.loongin.omniresonance.network.NetworkChannelRecord;
 import io.github.loongin.omniresonance.network.NetworkTunnelRecord;
 import io.github.loongin.omniresonance.network.TransferDirection;
+import io.github.loongin.omniresonance.network.WorkingFaces;
 import io.github.loongin.omniresonance.node.NetworkNodeRecord;
 import io.github.loongin.omniresonance.node.NodeMode;
 import java.util.ArrayList;
@@ -22,7 +23,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 
-/** Strict network-v4 topology codec; all decoded values and encoded tags are independently owned. */
+/** Strict legacy/v8 network topology codec; all decoded values and encoded tags are independently owned. */
 final class NetworkTopologyNbt {
     static final int MAXIMUM_TUNNELS = 65535;
     static final int MAXIMUM_MANAGED_ENTRIES = 262144;
@@ -32,6 +33,11 @@ final class NetworkTopologyNbt {
     private static final Set<String> CHANNEL_FIELDS =
             Set.of("channel_id", "tunnel_id", "channel_number", "name", "revision");
     private static final Set<String> DIRECT_FIELDS = Set.of("node_id", "channel_id", "direction");
+    private static final Set<String> DIRECT_V6_FIELDS = Set.of("node_id", "channel_id", "direction", "item_policy");
+    private static final Set<String> DIRECT_V7_FIELDS =
+            Set.of("node_id", "channel_id", "direction", "item_policy", "working_face_mask", "working_face_attached");
+    private static final Set<String> DIRECT_V8_FIELDS = Set.of(
+            "node_id", "channel_id", "direction", "resource_policy", "working_face_mask", "working_face_attached");
     private static final Set<String> DOMAIN_FIELDS = Set.of("node_id", "direction");
     private static final Comparator<NetworkTunnelRecord> TUNNEL_ORDER =
             Comparator.comparingLong(NetworkTunnelRecord::tunnelNumber).thenComparing(NetworkTunnelRecord::tunnelId);
@@ -50,7 +56,10 @@ final class NetworkTopologyNbt {
         return new Decoded(0, 0, Map.of(), Map.of(), List.of(), Map.of());
     }
 
-    static Decoded decode(CompoundTag tag, Map<UUID, NetworkNodeRecord> nodes) {
+    static Decoded decode(
+            CompoundTag tag,
+            Map<UUID, NetworkNodeRecord> nodes,
+            Set<net.minecraft.resources.ResourceLocation> registeredTypes) {
         ManagedDataNbt.requireType(tag, "last_tunnel_number", Tag.TAG_LONG);
         ManagedDataNbt.requireType(tag, "topology_revision", Tag.TAG_LONG);
         long lastTunnelNumber = tag.getLong("last_tunnel_number");
@@ -62,7 +71,7 @@ final class NetworkTopologyNbt {
         Map<UUID, NetworkTunnelRecord> tunnels = decodeTunnels(tag, lastTunnelNumber);
         Map<UUID, NetworkChannelRecord> channels = decodeChannels(tag, tunnels);
         requireEveryTunnelHasChannel(tunnels, channels);
-        List<DirectNodeBinding> directBindings = decodeDirectBindings(tag, nodes, channels);
+        List<DirectNodeBinding> directBindings = decodeDirectBindings(tag, nodes, channels, registeredTypes);
         Map<UUID, DomainNodeConfiguration> domains = decodeDomains(tag, nodes);
         return new Decoded(lastTunnelNumber, topologyRevision, tunnels, channels, directBindings, domains);
     }
@@ -121,6 +130,9 @@ final class NetworkTopologyNbt {
             tag.putUUID("node_id", binding.nodeId());
             tag.putUUID("channel_id", binding.channelId());
             tag.putString("direction", binding.direction().serializedName());
+            tag.put("resource_policy", ResourcePolicyNbt.encode(binding.storedPolicy()));
+            tag.putInt("working_face_mask", binding.workingFaces().mask());
+            tag.putBoolean("working_face_attached", binding.workingFaces().attached());
             encoded.add(tag);
         }
         return encoded;
@@ -204,14 +216,24 @@ final class NetworkTopologyNbt {
     }
 
     private static List<DirectNodeBinding> decodeDirectBindings(
-            CompoundTag root, Map<UUID, NetworkNodeRecord> nodes, Map<UUID, NetworkChannelRecord> channels) {
+            CompoundTag root,
+            Map<UUID, NetworkNodeRecord> nodes,
+            Map<UUID, NetworkChannelRecord> channels,
+            Set<net.minecraft.resources.ResourceLocation> registeredTypes) {
         ListTag entries = readCompoundList(root, "direct_bindings", MAXIMUM_MANAGED_ENTRIES);
         List<DirectNodeBinding> bindings = new ArrayList<>(entries.size());
         Set<BindingKey> keys = new HashSet<>(entries.size());
         Map<UUID, Integer> perNode = new HashMap<>();
         for (int index = 0; index < entries.size(); index++) {
             CompoundTag tag = entries.getCompound(index);
-            requireExactFields(tag, DIRECT_FIELDS, "direct binding");
+            boolean current = ManagedDataNbt.readSchemaVersion(root) >= 6;
+            boolean facesPresent = ManagedDataNbt.readSchemaVersion(root) >= 7;
+            requireExactFields(
+                    tag,
+                    ManagedDataNbt.readSchemaVersion(root) >= 8
+                            ? DIRECT_V8_FIELDS
+                            : facesPresent ? DIRECT_V7_FIELDS : current ? DIRECT_V6_FIELDS : DIRECT_FIELDS,
+                    "direct binding");
             UUID nodeId = ManagedDataNbt.readUuid(tag, "node_id");
             UUID channelId = ManagedDataNbt.readUuid(tag, "channel_id");
             TransferDirection direction = readDirection(tag);
@@ -224,7 +246,27 @@ final class NetworkTopologyNbt {
                     || count > MAXIMUM_BINDINGS_PER_NODE) {
                 throw new IllegalArgumentException("Invalid direct-node binding relationship");
             }
-            bindings.add(new DirectNodeBinding(nodeId, channelId, direction));
+            if (ManagedDataNbt.readSchemaVersion(root) >= 8)
+                ManagedDataNbt.requireType(tag, "resource_policy", Tag.TAG_COMPOUND);
+            WorkingFaces faces = WorkingFaces.attachedFace();
+            if (facesPresent) {
+                ManagedDataNbt.requireType(tag, "working_face_mask", Tag.TAG_INT);
+                faces = new WorkingFaces(tag.getInt("working_face_mask"), readBoolean(tag, "working_face_attached"));
+            }
+            faces.validate(node.form());
+            bindings.add(new DirectNodeBinding(
+                    nodeId,
+                    channelId,
+                    ManagedDataNbt.readSchemaVersion(root) >= 8
+                            ? ResourcePolicyNbt.decode(tag.getCompound("resource_policy"), direction, registeredTypes)
+                            : new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                                    io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(
+                                            current
+                                                    ? ItemPolicyNbt.decode(tag, direction)
+                                                    : io.github.loongin.omniresonance.transfer.ItemTransferPolicy
+                                                            .defaults(direction)),
+                                    Map.of()),
+                    faces));
         }
         return List.copyOf(bindings);
     }

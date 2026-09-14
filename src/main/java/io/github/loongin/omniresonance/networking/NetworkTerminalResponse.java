@@ -20,7 +20,7 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
     StreamCodec<FriendlyByteBuf, NetworkTerminalResponse> STREAM_CODEC = new StreamCodec<>() {
         @Override
         public NetworkTerminalResponse decode(FriendlyByteBuf buffer) {
-            NetworkSummary.requirePayloadBound(buffer);
+            FullFilterCodec.requireBodyBound(buffer, TYPE.id());
             try {
                 return switch (buffer.readUnsignedByte()) {
                     case 0 ->
@@ -47,6 +47,34 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
                         new AccessRevoked(buffer.readUUID(), buffer.readUUID(), buffer.readLong(), buffer.readUUID());
                     case 4 ->
                         new NetworkDeleted(buffer.readUUID(), buffer.readUUID(), buffer.readLong(), buffer.readUUID());
+                    case 7 ->
+                        new FilterLibrary(
+                                buffer.readUUID(),
+                                buffer.readUUID(),
+                                buffer.readLong(),
+                                buffer.readUtf(256),
+                                FilterPresetPage.read(buffer));
+                    case 5 ->
+                        new FullRule(
+                                buffer.readUUID(),
+                                buffer.readUUID(),
+                                buffer.readLong(),
+                                buffer.readBoolean() ? buffer.readUUID() : null,
+                                buffer.readInt(),
+                                buffer.readInt(),
+                                buffer.readUtf(64),
+                                buffer.readByteArray(262144));
+                    case 6 ->
+                        new RuleTransferReady(
+                                buffer.readUUID(),
+                                buffer.readUUID(),
+                                buffer.readLong(),
+                                buffer.readUUID(),
+                                buffer.readInt(),
+                                buffer.readBoolean(),
+                                buffer.readBoolean() ? buffer.readUUID() : null,
+                                buffer.readInt(),
+                                buffer.readInt());
                     default -> throw new DecoderException("Unknown terminal response tag");
                 };
             } catch (IllegalArgumentException failure) {
@@ -58,6 +86,39 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
         public void encode(FriendlyByteBuf buffer, NetworkTerminalResponse response) {
             int start = buffer.writerIndex();
             switch (response) {
+                case FilterLibrary library -> {
+                    buffer.writeByte(7);
+                    buffer.writeUUID(library.viewId());
+                    buffer.writeUUID(library.sessionId());
+                    buffer.writeLong(library.sequence());
+                    buffer.writeUtf(library.query(), 256);
+                    library.page().write(buffer);
+                }
+                case FullRule rule -> {
+                    buffer.writeByte(5);
+                    buffer.writeUUID(rule.viewId());
+                    buffer.writeUUID(rule.sessionId());
+                    buffer.writeLong(rule.sequence());
+                    buffer.writeBoolean(rule.sampleToken() != null);
+                    if (rule.sampleToken() != null) buffer.writeUUID(rule.sampleToken());
+                    buffer.writeInt(rule.tanks());
+                    buffer.writeInt(rule.tank());
+                    buffer.writeUtf(rule.failure(), 64);
+                    buffer.writeByteArray(rule.snapshot());
+                }
+                case RuleTransferReady ready -> {
+                    buffer.writeByte(6);
+                    buffer.writeUUID(ready.viewId());
+                    buffer.writeUUID(ready.sessionId());
+                    buffer.writeLong(ready.sequence());
+                    buffer.writeUUID(ready.transferId());
+                    buffer.writeInt(ready.length());
+                    buffer.writeBoolean(ready.upload());
+                    buffer.writeBoolean(ready.sampleToken() != null);
+                    if (ready.sampleToken() != null) buffer.writeUUID(ready.sampleToken());
+                    buffer.writeInt(ready.tanks());
+                    buffer.writeInt(ready.tank());
+                }
                 case Success success -> {
                     buffer.writeByte(0);
                     buffer.writeUUID(success.viewId());
@@ -105,7 +166,7 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
                     buffer.writeUUID(deleted.networkId());
                 }
             }
-            NetworkSummary.requireEncodedBound(buffer, start);
+            FullFilterCodec.requireEncodedBodyBound(buffer, start, TYPE.id());
         }
     };
 
@@ -176,6 +237,63 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
             requireEnvelope(viewId, sequence);
             Objects.requireNonNull(sessionId, "sessionId");
             Objects.requireNonNull(networkId, "networkId");
+        }
+    }
+
+    record FilterLibrary(UUID viewId, UUID sessionId, long sequence, String query, FilterPresetPage page)
+            implements NetworkTerminalResponse {
+        public FilterLibrary {
+            requireEnvelope(viewId, sequence);
+            Objects.requireNonNull(sessionId);
+            Objects.requireNonNull(query);
+            Objects.requireNonNull(page);
+        }
+    }
+
+    record FullRule(
+            UUID viewId,
+            UUID sessionId,
+            long sequence,
+            @Nullable UUID sampleToken,
+            int tanks,
+            int tank,
+            String failure,
+            byte[] snapshot)
+            implements NetworkTerminalResponse {
+        public FullRule {
+            requireEnvelope(viewId, sequence);
+            Objects.requireNonNull(sessionId);
+            Objects.requireNonNull(failure);
+            if (snapshot.length > ManagementTransferPool.MAXIMUM_OBJECT_BYTES
+                    || failure.length() > 64
+                    || tanks < 0
+                    || tank < 0) throw new IllegalArgumentException("Invalid full rule result");
+            snapshot = snapshot.clone();
+        }
+
+        @Override
+        public byte[] snapshot() {
+            return snapshot.clone();
+        }
+    }
+
+    record RuleTransferReady(
+            UUID viewId,
+            UUID sessionId,
+            long sequence,
+            UUID transferId,
+            int length,
+            boolean upload,
+            @Nullable UUID sampleToken,
+            int tanks,
+            int tank)
+            implements NetworkTerminalResponse {
+        public RuleTransferReady {
+            requireEnvelope(viewId, sequence);
+            Objects.requireNonNull(sessionId);
+            Objects.requireNonNull(transferId);
+            if (length <= 0 || length > ManagementTransferPool.MAXIMUM_OBJECT_BYTES || tanks < 0 || tank < 0)
+                throw new IllegalArgumentException("Invalid full rule transfer");
         }
     }
 

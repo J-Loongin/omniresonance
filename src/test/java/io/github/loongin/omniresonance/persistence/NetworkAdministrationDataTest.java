@@ -144,13 +144,14 @@ class NetworkAdministrationDataTest {
         CompoundTag legacy = original.save(new CompoundTag(), RegistryAccess.EMPTY);
         legacy.putInt("schema_version", 4);
         legacy.remove("management_revision");
+        legacy.remove("recovery");
         CompoundTag before = legacy.copy();
 
         NetworkSavedData loaded = NetworkSavedData.load(NETWORK, legacy);
         CompoundTag saved = loaded.save(new CompoundTag(), RegistryAccess.EMPTY);
         assertEquals(before, legacy);
         assertFalse(loaded.isDirty());
-        assertEquals(5, saved.getInt("schema_version"));
+        assertEquals(8, saved.getInt("schema_version"));
         assertEquals(0L, saved.getLong("management_revision"));
         for (String key : before.getAllKeys()) {
             if (!key.equals("schema_version")) {
@@ -163,6 +164,7 @@ class NetworkAdministrationDataTest {
     void currentSchemaRejectsMissingWrongTypeAndNegativeManagementRevision() {
         CompoundTag current = NetworkSavedData.create(metadata(Set.of())).save(new CompoundTag(), RegistryAccess.EMPTY);
         current.putInt("schema_version", 5);
+        current.remove("recovery");
         for (String value : List.of("missing", "wrong_type", "negative")) {
             CompoundTag malformed = current.copy();
             malformed.remove("management_revision");

@@ -33,6 +33,21 @@ class NetworkDirectorySettingsTest {
     }
 
     @Test
+    void caseOnlyRenamePreservesNameOwnershipAndUuidAccess() {
+        NetworkDirectory directory = new NetworkDirectory(List.of(ALPHA, BETA));
+        NetworkMetadata renamed = metadata(ALPHA.id(), "ALPHA", 0);
+
+        directory.commitRename(directory.prepareRename(ALPHA, renamed));
+
+        assertEquals(renamed, directory.find(ALPHA.id()).orElseThrow());
+        assertEquals(List.of(renamed, BETA), directory.ownedBy(OWNER));
+        assertEquals(List.of(renamed, BETA), directory.accessibleTo(ADMINISTRATOR));
+        assertTrue(directory.containsName(OWNER, new ManagedName("Alpha")));
+        assertThrows(
+                IllegalArgumentException.class, () -> directory.prepareRename(BETA, metadata(BETA.id(), "alpha", 1)));
+    }
+
+    @Test
     void renameCollisionAndStalePreparedValueLeaveEveryIndexUnchanged() {
         NetworkDirectory directory = new NetworkDirectory(List.of(ALPHA, BETA));
         assertThrows(

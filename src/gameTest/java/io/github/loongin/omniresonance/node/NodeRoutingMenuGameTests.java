@@ -46,6 +46,14 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @GameTestHolder(OmniResonanceMod.MOD_ID)
 @PrefixGameTestTemplate(false)
 public final class NodeRoutingMenuGameTests {
+    private static io.github.loongin.omniresonance.transfer.ResourcePolicyEdit editIntent(
+            io.github.loongin.omniresonance.transfer.ItemTransferPolicy policy) {
+        return io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(
+                new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                        io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(policy),
+                        java.util.Map.of()));
+    }
+
     private static final UUID SOURCE = new UUID(510, 1);
     private static final UUID TARGET = new UUID(510, 2);
     private static final UUID OWNER = new UUID(511, 1);
@@ -513,6 +521,650 @@ public final class NodeRoutingMenuGameTests {
         }
     }
 
+    @GameTest(template = "bootstrap")
+    public static void itemPolicySaveUsesSharedLeaseAndRejectsForeignPreset(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            BlockPos position = helper.absolutePos(new BlockPos(2, 3, 2));
+            fixture.authority.link(SOURCE, place(helper, position), new ManagedName("Node"));
+            fixture.seedTunnels();
+            fixture.setDirectMode();
+            ServerPlayer owner = player(helper, OWNER, position);
+            ResonanceNodeMenu menu = fixture.menus.createMenu(81, owner, position, SESSION);
+            menu.handle(owner, new NodeMenuRequest.OpenTunnel(81, SESSION, 1, TUNNEL));
+            menu.handle(owner, new NodeMenuRequest.OpenChannel(81, SESSION, 2, CHANNEL));
+            menu.handle(owner, new NodeMenuRequest.BeginBinding(81, SESSION, 3, CHANNEL));
+            var policy = new io.github.loongin.omniresonance.transfer.ItemTransferPolicy.Input(
+                    17,
+                    31,
+                    io.github.loongin.omniresonance.transfer.RedstoneCondition.NO_SIGNAL,
+                    null,
+                    io.github.loongin.omniresonance.filter.FilterMode.BLACKLIST,
+                    Long.MAX_VALUE);
+            state(
+                    helper,
+                    menu.handle(
+                            owner, new NodeMenuRequest.SaveResourcePolicy(81, SESSION, 4, editIntent(policy), false)),
+                    NodeMenuState.DirectChannelRoot.class);
+            helper.assertTrue(
+                    fixture.source
+                            .directBindings(NODE)
+                            .getFirst()
+                            .policy()
+                            .equals(io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(policy)),
+                    "Saved item policy did not retain submitted values");
+            fixture.source.setDirty(false);
+            var polled = state(
+                    helper,
+                    menu.handle(owner, new NodeMenuRequest.PollItemStatus(81, SESSION, 5)),
+                    NodeMenuState.DirectChannelRoot.class);
+            helper.assertTrue(
+                    ((NodeMenuState.DirectChannelRoot) polled.state())
+                                    .policy()
+                                    .equals(io.github.loongin.omniresonance.networking.NodeResourcePolicySummary.from(
+                                            fixture.source
+                                                    .directBindings(NODE)
+                                                    .getFirst()
+                                                    .storedPolicy()))
+                            && !fixture.source.isDirty(),
+                    "Status poll mutated or dropped item policy");
+            var reopened = state(
+                    helper,
+                    menu.handle(owner, new NodeMenuRequest.BeginBinding(81, SESSION, 6, CHANNEL)),
+                    NodeMenuState.DirectBindingEdit.class);
+            helper.assertTrue(
+                    ((NodeMenuState.DirectBindingEdit) reopened.state())
+                            .policy()
+                            .equals(editIntent(policy)),
+                    "Node editor did not receive the complete saved item policy");
+            var paged = state(
+                    helper,
+                    menu.handle(owner, new NodeMenuRequest.PageItemPresets(81, SESSION, 7, 0)),
+                    NodeMenuState.DirectBindingEdit.class);
+            helper.assertTrue(
+                    ((NodeMenuState.DirectBindingEdit) paged.state()).policy().equals(editIntent(policy)),
+                    "Preset paging dropped item policy draft context");
+            menu.handle(owner, new NodeMenuRequest.CancelEdit(81, SESSION, 8));
+            helper.assertTrue(
+                    fixture.source
+                            .directBindings(NODE)
+                            .getFirst()
+                            .policy()
+                            .equals(io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(policy)),
+                    "Cancelled draft changed the policy");
+            failure(
+                    helper,
+                    menu.handle(
+                            owner, new NodeMenuRequest.SaveResourcePolicy(81, SESSION, 9, editIntent(policy), false)),
+                    NodeMenuResponse.Reason.INVALID_REQUEST);
+            menu.handle(owner, new NodeMenuRequest.BeginBinding(81, SESSION, 10, CHANNEL));
+            var forged = new io.github.loongin.omniresonance.transfer.ItemTransferPolicy.Input(
+                    1,
+                    1,
+                    io.github.loongin.omniresonance.transfer.RedstoneCondition.IGNORE,
+                    new UUID(600, 1),
+                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                    0);
+            fixture.repository
+                    .createOwner(new UUID(600, 2), null)
+                    .putPreset(
+                            new io.github.loongin.omniresonance.filter.ItemFilterPreset(
+                                    new UUID(600, 1), new ManagedName("Foreign"), 0, Set.of()),
+                            0,
+                            -1,
+                            -1);
+            failure(
+                    helper,
+                    menu.handle(
+                            owner, new NodeMenuRequest.SaveResourcePolicy(81, SESSION, 11, editIntent(forged), false)),
+                    NodeMenuResponse.Reason.UNAVAILABLE);
+            helper.assertTrue(
+                    fixture.source
+                            .directBindings(NODE)
+                            .getFirst()
+                            .policy()
+                            .equals(io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(policy)),
+                    "Foreign preset request changed saved policy");
+            menu.removed(owner);
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void workingFaceDraftPreviewsAndExplicitSaveStayBoundToTheNode(GameTestHelper helper)
+            throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            BlockPos position = helper.absolutePos(new BlockPos(2, 3, 2));
+            fixture.authority.link(SOURCE, place(helper, position), new ManagedName("Node"));
+            fixture.seedTunnels();
+            fixture.setDirectMode();
+            helper.getLevel()
+                    .setBlockAndUpdate(
+                            position.east(), net.minecraft.world.level.block.Blocks.CHEST.defaultBlockState());
+            helper.getLevel()
+                    .setBlockAndUpdate(
+                            position.above(), net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+            ServerPlayer owner = player(helper, OWNER, position);
+            ResonanceNodeMenu menu = fixture.menus.createMenu(91, owner, position, SESSION);
+            menu.handle(owner, new NodeMenuRequest.OpenTunnel(91, SESSION, 1, TUNNEL));
+            menu.handle(owner, new NodeMenuRequest.OpenChannel(91, SESSION, 2, CHANNEL));
+            NodeMenuState.DirectBindingEdit draft = (NodeMenuState.DirectBindingEdit) state(
+                            helper,
+                            menu.handle(owner, new NodeMenuRequest.BeginBinding(91, SESSION, 3, CHANNEL)),
+                            NodeMenuState.DirectBindingEdit.class)
+                    .state();
+            helper.assertTrue(
+                    draft.workingFaces().equals(io.github.loongin.omniresonance.network.WorkingFaces.explicit(0)),
+                    "New block draft was not empty");
+            helper.assertTrue(draft.previews().size() == 6, "Block preview must include six bounded neighbors");
+            helper.assertTrue(
+                    draft.previews().stream()
+                            .anyMatch(preview -> preview.direction() == Direction.EAST
+                                    && net.minecraft.resources.ResourceLocation.withDefaultNamespace("chest")
+                                            .equals(preview.blockId())),
+                    "Chest preview identity missing");
+            helper.assertTrue(
+                    draft.previews().stream()
+                            .anyMatch(preview -> preview.direction() == Direction.UP
+                                    && preview.status()
+                                            == io.github.loongin.omniresonance.networking.NodeFacePreview.Status.AIR),
+                    "Air was not distinct from unloaded");
+            var faces = io.github.loongin.omniresonance.network.WorkingFaces.explicit(48);
+            state(
+                    helper,
+                    menu.handle(
+                            owner,
+                            new NodeMenuRequest.SaveResourcePolicy(91, SESSION, 4, draft.policy(), faces, false)),
+                    NodeMenuState.DirectChannelRoot.class);
+            helper.assertTrue(
+                    fixture.source
+                            .directBindings(NODE)
+                            .getFirst()
+                            .workingFaces()
+                            .equals(faces),
+                    "Explicit selection was not atomically saved");
+            NodeMenuState.DirectBindingEdit reopened = (NodeMenuState.DirectBindingEdit) state(
+                            helper,
+                            menu.handle(owner, new NodeMenuRequest.BeginBinding(91, SESSION, 5, CHANNEL)),
+                            NodeMenuState.DirectBindingEdit.class)
+                    .state();
+            helper.assertTrue(reopened.workingFaces().equals(faces), "Saved selection missing on reopen");
+            helper.getLevel()
+                    .setBlockAndUpdate(
+                            position.east(), net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+            NodeMenuState.DirectBindingEdit refreshed = (NodeMenuState.DirectBindingEdit) state(
+                            helper,
+                            menu.handle(owner, new NodeMenuRequest.PageItemPresets(91, SESSION, 6, 0)),
+                            NodeMenuState.DirectBindingEdit.class)
+                    .state();
+            helper.assertTrue(
+                    refreshed.workingFaces().equals(faces)
+                            && refreshed.previews().stream()
+                                    .anyMatch(preview -> net.minecraft.resources.ResourceLocation.withDefaultNamespace(
+                                                    "stone")
+                                            .equals(preview.blockId())),
+                    "Refresh altered selection or retained stale preview");
+            var empty = (NodeMenuState.DirectChannelRoot) state(
+                            helper,
+                            menu.handle(
+                                    owner,
+                                    new NodeMenuRequest.SaveResourcePolicy(
+                                            91,
+                                            SESSION,
+                                            7,
+                                            draft.policy(),
+                                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(0),
+                                            false)),
+                            NodeMenuState.DirectChannelRoot.class)
+                    .state();
+            helper.assertTrue(
+                    empty.transferStatus()
+                            == io.github.loongin.omniresonance.networking.NodeTransferStatus.NO_WORK_FACES,
+                    "Empty save lacks explicit no-face status");
+            menu.removed(owner);
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void panelMenuPreviewAndSaveRejectExpandedWorkingFaces(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            BlockPos position = helper.absolutePos(new BlockPos(2, 3, 2));
+            helper.getLevel()
+                    .setBlockAndUpdate(
+                            position.below(), net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+            fixture.authority.link(SOURCE, place(helper, position, true), new ManagedName("Panel"));
+            fixture.seedTunnels();
+            fixture.setDirectMode();
+            ServerPlayer owner = player(helper, OWNER, position);
+            ResonanceNodeMenu menu = fixture.menus.createMenu(92, owner, position, SESSION);
+            menu.handle(owner, new NodeMenuRequest.OpenTunnel(92, SESSION, 1, TUNNEL));
+            menu.handle(owner, new NodeMenuRequest.OpenChannel(92, SESSION, 2, CHANNEL));
+            NodeMenuState.DirectBindingEdit draft = (NodeMenuState.DirectBindingEdit) state(
+                            helper,
+                            menu.handle(owner, new NodeMenuRequest.BeginBinding(92, SESSION, 3, CHANNEL)),
+                            NodeMenuState.DirectBindingEdit.class)
+                    .state();
+            helper.assertTrue(
+                    draft.workingFaces().attached()
+                            && draft.previews().size() == 1
+                            && draft.previews().getFirst().direction() == Direction.DOWN,
+                    "Panel preview expanded beyond attachment");
+            var rejected = menu.handle(
+                    owner,
+                    new NodeMenuRequest.SaveResourcePolicy(
+                            92,
+                            SESSION,
+                            4,
+                            draft.policy(),
+                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(63),
+                            false));
+            helper.assertTrue(
+                    rejected instanceof NodeMenuResponse.Failure
+                            && fixture.source.directBindings(NODE).isEmpty(),
+                    "Forged panel faces mutated binding");
+            menu.removed(owner);
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void resourceMenuRejectsForgedUnknownDefaultRowsAndReleasesExpiredTransfers(GameTestHelper helper)
+            throws IOException {
+        try (Fixture f = new Fixture(helper)) {
+            BlockPos position = helper.absolutePos(new BlockPos(2, 3, 2));
+            f.authority.link(SOURCE, place(helper, position), new ManagedName("Node"));
+            f.seedTunnels();
+            f.setDirectMode();
+            ServerPlayer owner = player(helper, OWNER, position);
+            var menu = f.menus.createMenu(93, owner, position, SESSION);
+            owner.containerMenu = menu;
+            menu.handle(owner, new NodeMenuRequest.OpenTunnel(93, SESSION, 1, TUNNEL));
+            menu.handle(owner, new NodeMenuRequest.OpenChannel(93, SESSION, 2, CHANNEL));
+            var edit = (NodeMenuState.DirectBindingEdit) state(
+                            helper,
+                            menu.handle(owner, new NodeMenuRequest.BeginBinding(93, SESSION, 3, CHANNEL)),
+                            NodeMenuState.DirectBindingEdit.class)
+                    .state();
+            helper.assertTrue(
+                    edit.policy().scope().kind() == io.github.loongin.omniresonance.transfer.ResourceScope.Kind.ALL
+                            && edit.workingFaces().mask() == 0,
+                    "New physical menu did not default ALL and empty block faces");
+            var seed = edit.policy();
+            var forged = new io.github.loongin.omniresonance.transfer.ResourcePolicyEdit(
+                    seed.intervalTicks(),
+                    seed.scope(),
+                    seed.redstoneCondition(),
+                    null,
+                    seed.filterMode(),
+                    seed.fields(),
+                    List.of(new io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.Row(
+                            net.minecraft.resources.ResourceLocation.parse("forged:default"),
+                            new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.InputOverride(
+                                    Integer.MAX_VALUE,
+                                    io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.BatchMode.GREEDY,
+                                    1))),
+                    List.of(),
+                    false);
+            f.source.setDirty(false);
+            helper.assertTrue(
+                    menu.handle(
+                                    owner,
+                                    registeredRequest(new NodeMenuRequest.SaveResourcePolicy(
+                                            93,
+                                            SESSION,
+                                            4,
+                                            forged,
+                                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(48),
+                                            false)))
+                            instanceof NodeMenuResponse.Failure,
+                    "Unknown default row was normalized into authority");
+            helper.assertTrue(
+                    !f.source.isDirty() && f.source.directBindings(NODE).isEmpty(),
+                    "Rejected unknown row mutated authority");
+            menu.removed(owner);
+            menu = f.menus.createMenu(93, owner, position, SESSION);
+            owner.containerMenu = menu;
+            menu.handle(owner, new NodeMenuRequest.OpenTunnel(93, SESSION, 1, TUNNEL));
+            menu.handle(owner, new NodeMenuRequest.OpenChannel(93, SESSION, 2, CHANNEL));
+            menu.handle(owner, new NodeMenuRequest.BeginBinding(93, SESSION, 3, CHANNEL));
+            byte[] bytes = io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encode(seed);
+            UUID first = new UUID(930, 1), second = new UUID(930, 2);
+            helper.assertTrue(
+                    menu.handle(
+                                    owner,
+                                    new NodeMenuRequest.BeginPolicyUpload(
+                                            93,
+                                            SESSION,
+                                            4,
+                                            first,
+                                            bytes.length,
+                                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(48),
+                                            false))
+                            instanceof NodeMenuResponse.UploadReady,
+                    "Upload metadata rejected");
+            menu.handleTransfer(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Abort(SESSION, first));
+            helper.assertTrue(f.menus.transfers().reservedBytes() == 0, "Cancel retained reservation");
+            menu.handle(
+                    owner,
+                    new NodeMenuRequest.BeginPolicyUpload(
+                            93,
+                            SESSION,
+                            5,
+                            second,
+                            bytes.length,
+                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(48),
+                            false));
+            menu.handleTransfer(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
+                            SESSION, first, 0, bytes));
+            helper.assertTrue(
+                    f.menus.transfers().reservedBytes() == bytes.length, "Old upload damaged current transfer");
+            menu.transferTick(owner, f.menus.currentTick() + 200, payload -> {});
+            helper.assertTrue(
+                    f.menus.transfers().reservedBytes() == 0 && !f.source.isDirty(),
+                    "Fixed timeout retained upload or mutated authority");
+            helper.assertTrue(
+                    menu.handleTransfer(
+                                    owner,
+                                    new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish(
+                                            SESSION, second))
+                            == null,
+                    "Expired finish resumed mutation");
+            UUID third = new UUID(930, 3);
+            menu.handle(
+                    owner,
+                    new NodeMenuRequest.BeginPolicyUpload(
+                            93,
+                            SESSION,
+                            6,
+                            third,
+                            bytes.length,
+                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(48),
+                            false));
+            for (int tick = 0; tick < 201; tick++) f.topology.tick();
+            helper.assertTrue(
+                    menu.handleTransfer(
+                                    owner,
+                                    new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
+                                            SESSION, third, 0, bytes))
+                            instanceof NodeMenuResponse.Failure,
+                    "Expired lease accepted transfer traffic");
+            helper.assertTrue(
+                    f.menus.transfers().reservedBytes() == 0 && !f.source.isDirty(),
+                    "Lease expiry retained callback or dirtied state");
+            menu.removed(owner);
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void largePolicyRoutesRegisteredFramesAndCommitsFacesExactlyOnce(GameTestHelper helper)
+            throws IOException {
+        try (Fixture f = new Fixture(helper)) {
+            BlockPos position = helper.absolutePos(new BlockPos(2, 3, 2));
+            f.authority.link(SOURCE, place(helper, position), new ManagedName("Node"));
+            f.seedTunnels();
+            f.setDirectMode();
+            var ids = new java.util.LinkedHashSet<net.minecraft.resources.ResourceLocation>();
+            for (int index = 0; index < 3000; index++)
+                ids.add(net.minecraft.resources.ResourceLocation.parse("missing:" + "a".repeat(100) + index));
+            var policy = new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.Input(
+                    20,
+                    io.github.loongin.omniresonance.transfer.ResourceScope.customSet(ids),
+                    io.github.loongin.omniresonance.transfer.RedstoneCondition.IGNORE,
+                    null,
+                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                    java.util.Map.of(),
+                    16);
+            var previous = f.nodes.byId(NODE).entry().orElseThrow();
+            var updated = f.source.setDirectBinding(
+                    NODE,
+                    previous.record().revision(),
+                    CHANNEL,
+                    new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(policy, java.util.Map.of()),
+                    io.github.loongin.omniresonance.network.WorkingFaces.explicit(1),
+                    false,
+                    -1);
+            f.nodes.update(previous, new NetworkNodeDirectory.Entry(SOURCE, updated));
+            ServerPlayer owner = player(helper, OWNER, position);
+            ResonanceNodeMenu menu = f.menus.createMenu(92, owner, position, SESSION);
+            owner.containerMenu = menu;
+            menu.handle(owner, registeredRequest(new NodeMenuRequest.OpenChannel(92, SESSION, 1, CHANNEL)));
+            var result = registeredResponse(
+                    menu.handle(owner, registeredRequest(new NodeMenuRequest.BeginBinding(92, SESSION, 2, CHANNEL))));
+            helper.assertTrue(
+                    result instanceof NodeMenuResponse.Download, "Large snapshot was not independently downloaded");
+            var download = (NodeMenuResponse.Download) result;
+            helper.assertTrue(
+                    download.length() > 262144
+                            && download.metadata().policy() == null
+                            && f.menus.transfers().reservedBytes() == download.length(),
+                    "Download was not reserved before publication");
+            var assembler = new io.github.loongin.omniresonance.networking.ManagementDownloadAssembler();
+            var pin = new io.github.loongin.omniresonance.networking.ManagementDownloadAssembler.Expected(
+                    SESSION,
+                    download.transfer(),
+                    io.github.loongin.omniresonance.networking.ManagementTransferMessage.Context.NODE,
+                    CHANNEL,
+                    io.github.loongin.omniresonance.networking.ManagementTransferMessage.Purpose.NODE_POLICY,
+                    download.length());
+            assembler.begin(
+                    new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Begin(
+                            SESSION,
+                            download.transfer(),
+                            io.github.loongin.omniresonance.networking.ManagementTransferMessage.Direction.DOWNLOAD,
+                            pin.context(),
+                            CHANNEL,
+                            pin.purpose(),
+                            download.length()),
+                    pin,
+                    f.menus.currentTick());
+            io.github.loongin.omniresonance.transfer.ResourcePolicyEdit[] decoded =
+                    new io.github.loongin.omniresonance.transfer.ResourcePolicyEdit[1];
+            for (int tick = 0; decoded[0] == null && tick < 70; tick++) {
+                int[] chunks = {0};
+                long now = f.menus.currentTick() + tick;
+                menu.transferTick(owner, now, payload -> {
+                    var message = (io.github.loongin.omniresonance.networking.ManagementTransferMessage)
+                            registeredClientPayload(payload);
+                    if (message
+                            instanceof
+                            io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk chunk) {
+                        chunks[0]++;
+                        assembler.append(chunk, now);
+                    } else if (message
+                            instanceof
+                            io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish finish)
+                        assembler.finish(
+                                finish,
+                                now,
+                                view -> decoded[0] =
+                                        io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.decode(
+                                                view));
+                });
+                helper.assertTrue(chunks[0] <= 1, "Tick queued more than one fragment");
+            }
+            helper.assertTrue(
+                    decoded[0] != null
+                            && decoded[0].scope().ids().size() == ids.size()
+                            && f.menus.transfers().reservedBytes() == 0,
+                    "Download did not complete or release");
+            var catalog = registeredResponse(
+                    menu.handle(owner, registeredRequest(new NodeMenuRequest.ResourceCatalog(92, SESSION, 3, 0))));
+            helper.assertTrue(
+                    catalog instanceof NodeMenuResponse.Catalog page
+                            && page.page().entries().size() == 3,
+                    "Catalog was bundled with policy or lost registered descriptors");
+            byte[] bytes = io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encode(decoded[0]);
+            UUID transfer = new UUID(920, 1);
+            var ready = menu.handle(
+                    owner,
+                    registeredRequest(new NodeMenuRequest.BeginPolicyUpload(
+                            92,
+                            SESSION,
+                            4,
+                            transfer,
+                            bytes.length,
+                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(48),
+                            false)));
+            helper.assertTrue(
+                    registeredResponse(ready) instanceof NodeMenuResponse.UploadReady
+                            && f.source.findNode(NODE).orElseThrow().revision() == updated.revision(),
+                    "Upload admission completed Save early");
+            for (int offset = 0; offset < bytes.length; ) {
+                int end = Math.min(
+                        bytes.length,
+                        offset
+                                + io.github.loongin.omniresonance.networking.ManagementTransferPool
+                                        .MAXIMUM_FRAGMENT_BYTES);
+                menu.handleTransfer(
+                        owner,
+                        registeredTransfer(
+                                new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
+                                        SESSION, transfer, offset, java.util.Arrays.copyOfRange(bytes, offset, end))));
+                offset = end;
+            }
+            var saved = registeredResponse(menu.handleTransfer(
+                    owner,
+                    registeredTransfer(new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish(
+                            SESSION, transfer))));
+            helper.assertTrue(
+                    saved instanceof NodeMenuResponse.State
+                            && saved.sequence() == 4
+                            && f.source.findNode(NODE).orElseThrow().revision() == updated.revision() + 1,
+                    "Logical save sequence or single revision commit lost");
+            helper.assertTrue(
+                    f.source
+                                    .findDirectBinding(NODE, CHANNEL)
+                                    .orElseThrow()
+                                    .workingFaces()
+                                    .equals(io.github.loongin.omniresonance.network.WorkingFaces.explicit(48))
+                            && f.menus.transfers().reservedBytes() == 0,
+                    "Multipart Save omitted working faces or retained reservation");
+            helper.assertTrue(
+                    menu.handleTransfer(
+                                    owner,
+                                    new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish(
+                                            SESSION, transfer))
+                            == null,
+                    "Completed transfer retried mutation");
+            menu.removed(owner);
+            assembler.close();
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void registeredNodeFrameUsesExactInlineLimit(GameTestHelper helper) {
+        var ids = new java.util.ArrayList<net.minecraft.resources.ResourceLocation>();
+        for (int index = 0; index < 2031; index++)
+            ids.add(net.minecraft.resources.ResourceLocation.parse(
+                    "x:" + "a".repeat(120) + String.format(java.util.Locale.ROOT, "%06d", index)));
+        var original = io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(
+                new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                        new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.Input(
+                                1,
+                                io.github.loongin.omniresonance.transfer.ResourceScope.customSet(ids),
+                                io.github.loongin.omniresonance.transfer.RedstoneCondition.IGNORE,
+                                null,
+                                io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                                java.util.Map.of(),
+                                0),
+                        java.util.Map.of()));
+        int padding = 262144 - io.github.loongin.omniresonance.networking.NodePolicyFrames.saveSize(200, original) - 1;
+        helper.assertTrue(padding >= 3 && padding <= 128, "Boundary fixture padding invalid");
+        ids.add(net.minecraft.resources.ResourceLocation.parse("z:" + "b".repeat(padding - 2)));
+        var exact = new io.github.loongin.omniresonance.transfer.ResourcePolicyEdit(
+                1,
+                io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.Scope.custom(ids),
+                original.redstoneCondition(),
+                null,
+                original.filterMode(),
+                original.fields(),
+                List.of(),
+                List.of(),
+                false);
+        helper.assertTrue(
+                io.github.loongin.omniresonance.networking.NodePolicyFrames.saveSize(200, exact) == 262144,
+                "Inline helper did not include exact envelope");
+        var request = new NodeMenuRequest.SaveResourcePolicy(
+                200, SESSION, 1, exact, io.github.loongin.omniresonance.network.WorkingFaces.explicit(48), false);
+        helper.assertTrue(
+                registeredRequest(request).equals(request), "Exact registered inline frame did not round trip");
+        ids.set(ids.size() - 1, net.minecraft.resources.ResourceLocation.parse(ids.getLast() + "c"));
+        var larger = new io.github.loongin.omniresonance.transfer.ResourcePolicyEdit(
+                1,
+                io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.Scope.custom(ids),
+                original.redstoneCondition(),
+                null,
+                original.filterMode(),
+                original.fields(),
+                List.of(),
+                List.of(),
+                false);
+        helper.assertTrue(
+                io.github.loongin.omniresonance.networking.NodePolicyFrames.saveSize(200, larger) == 262145,
+                "One-byte overflow was not routed to multipart");
+        boolean rejected = false;
+        try {
+            registeredRequest(new NodeMenuRequest.SaveResourcePolicy(
+                    200, SESSION, 2, larger, io.github.loongin.omniresonance.network.WorkingFaces.explicit(48), false));
+        } catch (RuntimeException expected) {
+            rejected = expected.getCause() instanceof io.netty.handler.codec.EncoderException;
+        }
+        helper.assertTrue(rejected, "Oversize registered inline frame was accepted");
+        helper.succeed();
+    }
+
+    private static NodeMenuRequest registeredRequest(NodeMenuRequest request) {
+        return (NodeMenuRequest) registeredServerPayload(request);
+    }
+
+    private static io.github.loongin.omniresonance.networking.ManagementTransferMessage registeredTransfer(
+            io.github.loongin.omniresonance.networking.ManagementTransferMessage request) {
+        return (io.github.loongin.omniresonance.networking.ManagementTransferMessage) registeredServerPayload(request);
+    }
+
+    private static net.minecraft.network.protocol.common.custom.CustomPacketPayload registeredServerPayload(
+            net.minecraft.network.protocol.common.custom.CustomPacketPayload payload) {
+        var buffer = new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
+        try {
+            net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket.STREAM_CODEC.encode(
+                    buffer, new net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket(payload));
+            if (buffer.readableBytes() > 262144) throw new IllegalArgumentException("Oversized registered frame");
+            return net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket.STREAM_CODEC
+                    .decode(buffer)
+                    .payload();
+        } finally {
+            buffer.release();
+        }
+    }
+
+    private static NodeMenuResponse registeredResponse(NodeMenuResponse response) {
+        return (NodeMenuResponse) registeredClientPayload(response);
+    }
+
+    private static net.minecraft.network.protocol.common.custom.CustomPacketPayload registeredClientPayload(
+            net.minecraft.network.protocol.common.custom.CustomPacketPayload payload) {
+        var buffer = new net.minecraft.network.RegistryFriendlyByteBuf(
+                io.netty.buffer.Unpooled.buffer(),
+                net.minecraft.core.RegistryAccess.EMPTY,
+                net.neoforged.neoforge.network.connection.ConnectionType.NEOFORGE);
+        try {
+            net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket.GAMEPLAY_STREAM_CODEC.encode(
+                    buffer, new net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket(payload));
+            if (buffer.readableBytes() > 262144) throw new IllegalArgumentException("Oversized registered frame");
+            return net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket.GAMEPLAY_STREAM_CODEC
+                    .decode(buffer)
+                    .payload();
+        } finally {
+            buffer.release();
+        }
+    }
+
     private static NodeMenuResponse.State state(
             GameTestHelper helper, NodeMenuResponse response, Class<? extends NodeMenuState> expected) {
         helper.assertTrue(
@@ -528,7 +1180,11 @@ public final class NodeRoutingMenuGameTests {
     }
 
     private static ResonanceNodeBlockEntity place(GameTestHelper helper, BlockPos position) {
-        BlockState state = ModBlocks.RESONANCE_TRANSFER_NODE
+        return place(helper, position, false);
+    }
+
+    private static ResonanceNodeBlockEntity place(GameTestHelper helper, BlockPos position, boolean panel) {
+        BlockState state = (panel ? ModBlocks.RESONANCE_TRANSFER_PANEL : ModBlocks.RESONANCE_TRANSFER_NODE)
                 .get()
                 .defaultBlockState()
                 .setValue(AbstractResonanceNodeBlock.FACING, Direction.DOWN);

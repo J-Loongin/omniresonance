@@ -49,6 +49,10 @@ public final class NetworkTerminalClient {
         NeoForge.EVENT_BUS.addListener(this::onLoggingIn);
         NeoForge.EVENT_BUS.addListener(this::onLoggingOut);
         NetworkPayloads.installClientReceiver(this::receive);
+        io.github.loongin.omniresonance.networking.NodeMenuPayloads.installTerminalTransferReceiver(message -> {
+            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen)
+                screen.receiveFilterTransfer(message);
+        });
     }
 
     boolean isTerminalKey(int keyCode, int scanCode) {

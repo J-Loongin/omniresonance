@@ -12,14 +12,15 @@ import io.github.loongin.omniresonance.networking.NetworkTerminalState;
 import io.github.loongin.omniresonance.networking.TopologyDeletionSummary;
 import io.github.loongin.omniresonance.networking.TunnelPage;
 import io.github.loongin.omniresonance.networking.TunnelSummary;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongFunction;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
+import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.Nullable;
@@ -41,6 +42,7 @@ final class NetworkSetupScreen extends Screen {
     private static final int EDIT_BOX_MAXIMUM_UTF16_UNITS = 256;
 
     private final NetworkTerminalClient client;
+    private final ModalBackdrop modalBackdrop = new ModalBackdrop();
     private final boolean retryOnboardingSkipped;
     private final UUID viewId = UUID.randomUUID();
 
@@ -48,7 +50,8 @@ final class NetworkSetupScreen extends Screen {
     private TerminalLayout.Rect listBounds = new TerminalLayout.Rect(0, 0, 0, 0);
     private TerminalLayout.Rect detailBounds = new TerminalLayout.Rect(0, 0, 0, 0);
     private TerminalLayout.Rect selectorBounds = new TerminalLayout.Rect(0, 0, 0, 0);
-    private TerminalLayout.Rect dropdownBounds = new TerminalLayout.Rect(0, 0, 0, 0);
+    private final TerminalNetworkContext networkContext = new TerminalNetworkContext();
+    private TerminalLayout.Rect createBounds = new TerminalLayout.Rect(0, 0, 0, 0);
     private TerminalLayout.Rect modalBounds = new TerminalLayout.Rect(0, 0, 0, 0);
     private int crumbLeft;
     private int crumbRight;
@@ -62,6 +65,7 @@ final class NetworkSetupScreen extends Screen {
     private @Nullable NetworkTerminalState topologyState;
     private @Nullable Component error;
     private PendingOperation pendingOperation = PendingOperation.NONE;
+    private boolean pendingDraftSubmitted;
     private PagedListScroll.PageRequest pendingPageRequest = PagedListScroll.PageRequest.NONE;
     private long pendingSequence;
     private long nextSequence = 1;
@@ -75,12 +79,12 @@ final class NetworkSetupScreen extends Screen {
     private boolean createOverlay;
     private boolean firstPrompt;
     private boolean confirmation;
-    private boolean dropdownOpen;
     private boolean compactDetails;
     private boolean errorAllowsRetry;
     private boolean settingNameField;
     private boolean topologyDraftDirty;
     private boolean topologyDiscardConfirmation;
+    private boolean closeAfterDiscard;
     private AutomaticNameCommit automaticNameCommit = AutomaticNameCommit.idle();
     private String draft = "";
     private String topologyDraft = "";
@@ -88,10 +92,18 @@ final class NetworkSetupScreen extends Screen {
     private int listScroll;
     private int detailScroll;
     private int dropdownScroll;
-    private final List<TerminalButton> dropdownButtons = new ArrayList<>();
     private @Nullable EditBox nameField;
     private final TerminalMemberView memberView = new TerminalMemberView(this, this::rebuildIfActive);
     private boolean memberBackPending;
+    private final io.github.loongin.omniresonance.networking.ManagementDownloadAssembler filterDownload =
+            new io.github.loongin.omniresonance.networking.ManagementDownloadAssembler();
+    private @Nullable NetworkTerminalResponse.RuleTransferReady filterTransfer;
+    private @Nullable io.github.loongin.omniresonance.filter.ResourceRuleIntent uploadIntent;
+    private byte @Nullable [] uploadBytes;
+    private int filterTransferOffset;
+    private long filterTransferStartedTick;
+    private @Nullable TerminalFilterView.Action.SaveFull pendingFilterSave;
+    private final TerminalFilterView filterView = new TerminalFilterView(this::rebuildIfActive);
 
     NetworkSetupScreen(NetworkTerminalClient client) {
         this(
@@ -114,12 +126,16 @@ final class NetworkSetupScreen extends Screen {
     }
 
     void disconnected() {
+        clearFilterTransfer();
+        filterDownload.close();
         disconnected = true;
         closeSent = true;
         sessionId = null;
         page = null;
         selected = null;
         topologyState = null;
+        networkContext.apply(topologyState);
+        filterView.apply(null);
         memberView.reset();
         memberBackPending = false;
         pendingOperation = PendingOperation.NONE;
@@ -134,6 +150,11 @@ final class NetworkSetupScreen extends Screen {
     TerminalInteractionPolicy.RetrySnapshot retrySnapshot() {
         return TerminalInteractionPolicy.RetrySnapshot.capture(
                 draft, draftState, retryOnboardingSkipped || client.firstPromptDismissed());
+    }
+
+    static void applyFilterResponse(TerminalFilterView filters, NetworkTerminalResponse response) {
+        if (response instanceof NetworkTerminalResponse.ViewState view) filters.apply(view.state());
+        else if (response instanceof NetworkTerminalResponse.Failure failure) filters.requestFailed(failure.state());
     }
 
     void applyResponse(NetworkTerminalResponse response) {
@@ -175,18 +196,74 @@ final class NetworkSetupScreen extends Screen {
                 || (pendingOperation == PendingOperation.NONE && response.sequence() != heartbeatSequence)) {
             return;
         }
+        if (response instanceof NetworkTerminalResponse.RuleTransferReady ready) {
+            if (filterTransfer != null) return;
+            filterTransfer = ready;
+            filterTransferOffset = 0;
+            filterTransferStartedTick = clientTicks;
+            try {
+                if (ready.upload()) {
+                    uploadBytes = io.github.loongin.omniresonance.networking.FullFilterCodec.intent(
+                            Objects.requireNonNull(uploadIntent));
+                    if (uploadBytes.length != ready.length())
+                        throw new IllegalArgumentException("Upload length changed");
+                } else {
+                    var pin = new io.github.loongin.omniresonance.networking.ManagementDownloadAssembler.Expected(
+                            ready.sessionId(),
+                            ready.transferId(),
+                            io.github.loongin.omniresonance.networking.ManagementTransferMessage.Context.TERMINAL,
+                            viewId,
+                            io.github.loongin.omniresonance.networking.ManagementTransferMessage.Purpose.RULE_SNAPSHOT,
+                            ready.length());
+                    filterDownload.begin(
+                            new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Begin(
+                                    ready.sessionId(),
+                                    ready.transferId(),
+                                    io.github.loongin.omniresonance.networking.ManagementTransferMessage.Direction
+                                            .DOWNLOAD,
+                                    pin.context(),
+                                    pin.contextId(),
+                                    pin.purpose(),
+                                    pin.totalLength()),
+                            pin,
+                            clientTicks);
+                }
+            } catch (RuntimeException failure) {
+                failFilterTransfer();
+            }
+            return;
+        }
         boolean heartbeatResponse = response.sequence() == heartbeatSequence && response.sequence() != pendingSequence;
         PendingOperation completed = heartbeatResponse ? PendingOperation.NONE : pendingOperation;
         PagedListScroll.PageRequest completedPage =
                 heartbeatResponse ? PagedListScroll.PageRequest.NONE : pendingPageRequest;
         if (!heartbeatResponse) {
+            if (filterTransfer != null) clearFilterTransfer();
             pendingOperation = PendingOperation.NONE;
+            pendingDraftSubmitted = false;
             pendingPageRequest = PagedListScroll.PageRequest.NONE;
         }
         if (response.sequence() == heartbeatSequence) {
             heartbeatSequence = 0;
         }
+        if (!heartbeatResponse) applyFilterResponse(filterView, response);
+        if (response instanceof NetworkTerminalResponse.FilterLibrary library) {
+            filterView.acceptLibrary(library);
+            rebuildIfActive();
+            return;
+        }
+        if (response instanceof NetworkTerminalResponse.FullRule full) {
+            clearFilterTransfer();
+            try {
+                filterView.acceptFull(full);
+            } catch (RuntimeException invalid) {
+                error = Component.translatable(NetworkTerminalResponse.Reason.INVALID_REQUEST.translationKey());
+            }
+            rebuildIfActive();
+            return;
+        }
         if (response instanceof NetworkTerminalResponse.Failure failure) {
+            clearFilterTransfer();
             automaticNameCommit =
                     automaticNameCommit.resolveTerminal(false, failure.state()).next();
             if (completed == PendingOperation.CREATE) {
@@ -194,7 +271,18 @@ final class NetworkSetupScreen extends Screen {
             }
             error = Component.translatable(failure.reason().translationKey());
             if (failure.state() != null) {
+                if (closeAfterDiscard
+                        && topologyDiscardConfirmation
+                        && !TerminalInteractionPolicy.sameEditor(topologyState, failure.state())) {
+                    topologyDiscardConfirmation = false;
+                    closeAfterDiscard = false;
+                }
+                TopologyDraft failedDraft = resolveFailedTopologyDraft(
+                        filterView, topologyState, failure.state(), topologyDraft, topologyDraftDirty);
+                topologyDraft = failedDraft.value();
+                topologyDraftDirty = failedDraft.dirty();
                 topologyState = failure.state();
+                networkContext.apply(topologyState);
                 memberView.apply(topologyState);
                 if (topologyState instanceof NetworkTerminalState.AdministratorCandidates) memberView.notice(error);
                 if (continueMemberCandidates()) return;
@@ -209,18 +297,25 @@ final class NetworkSetupScreen extends Screen {
         if (response instanceof NetworkTerminalResponse.ViewState view) {
             NetworkTerminalState previous = topologyState;
             topologyState = view.state();
+            networkContext.apply(topologyState);
             memberView.apply(topologyState);
             if (completedPage != PagedListScroll.PageRequest.NONE) {
                 listScroll = pageLanding(completedPage);
             } else if (previous == null || previous.getClass() != topologyState.getClass()) {
                 listScroll = 0;
             }
-            initializeTopologyDraft(previous, topologyState);
+            boolean preserveClosingDraft = closeAfterDiscard
+                    && topologyDiscardConfirmation
+                    && TerminalInteractionPolicy.sameEditor(previous, topologyState);
+            if (!preserveClosingDraft) initializeTopologyDraft(previous, topologyState);
             AutomaticNameCommit.Resolution automatic = automaticNameCommit.resolveTerminal(true, topologyState);
             automaticNameCommit = automatic.next();
             error = null;
             errorAllowsRetry = false;
-            topologyDiscardConfirmation = false;
+            if (!preserveClosingDraft) {
+                topologyDiscardConfirmation = false;
+                closeAfterDiscard = false;
+            }
             if (automatic.commit() == AutomaticNameCommit.Target.TUNNEL) {
                 submitTopologyName();
                 return;
@@ -231,6 +326,8 @@ final class NetworkSetupScreen extends Screen {
         }
         NetworkTerminalResponse.Success success = (NetworkTerminalResponse.Success) response;
         topologyState = null;
+        networkContext.apply(topologyState);
+        filterView.apply(null);
         memberView.reset();
         memberBackPending = false;
         page = success.page();
@@ -314,15 +411,18 @@ final class NetworkSetupScreen extends Screen {
     protected void init() {
         font = TerminalText.font(Objects.requireNonNull(minecraft, "minecraft"));
         layout = TerminalLayout.calculate(width, height);
-        dropdownButtons.clear();
+        networkContext.apply(topologyState);
+        networkContext.buttons.clear();
+        modalBackdrop.clear();
         configureBodyBounds();
         buildTopBar();
         nameField = null;
         if (topologyState != null) {
+            buildTopologyWidgets();
             if (topologyDiscardConfirmation) {
+                modalBackdrop.retain(children(), this::removeWidget);
+                setFocused(null);
                 buildTopologyDiscardConfirmation();
-            } else {
-                buildTopologyWidgets();
             }
         } else {
             if (page == null) {
@@ -330,15 +430,24 @@ final class NetworkSetupScreen extends Screen {
             } else if (!createOverlay) {
                 buildDirectoryWidgets();
             }
-            if (createOverlay && !confirmation) {
+            if (createOverlay) {
                 buildCreateOverlay();
-            } else if (confirmation) {
+                createBounds = modalBounds;
+            }
+            if (confirmation) {
+                modalBackdrop.retain(children(), this::removeWidget);
+                setFocused(null);
                 buildConfirmation();
             }
         }
-        if (dropdownOpen && page != null && !createOverlay) {
+        if (networkContext.intercepts()
+                && page != null
+                && !createOverlay
+                && !confirmation
+                && !topologyDiscardConfirmation) {
             buildDropdown();
         }
+        if (confirmation || topologyDiscardConfirmation) modalBackdrop.captureForeground(renderables);
         if (!openSent) {
             openSent = true;
             if (!client.send(new NetworkTerminalRequest.Open(viewId))) {
@@ -355,8 +464,12 @@ final class NetworkSetupScreen extends Screen {
 
     @Override
     protected void setInitialFocus() {
-        if (memberView.searchField() != null && memberView.searchField().active) {
+        if (confirmation || topologyDiscardConfirmation) {
+            super.setInitialFocus();
+        } else if (memberView.searchField() != null && memberView.searchField().active) {
             setInitialFocus(memberView.searchField());
+        } else if (filterView.searchField() != null && filterView.searchField().active) {
+            setInitialFocus(filterView.searchField());
         } else if (nameField != null && nameField.active) {
             setInitialFocus(nameField);
         } else {
@@ -391,16 +504,16 @@ final class NetworkSetupScreen extends Screen {
         crumbLeft = topBar.x();
 
         int right = topBar.right();
-        TerminalHeaderLayout.Action action = TerminalInteractionPolicy.topBarAction(
-                page != null,
-                topologyState,
-                minecraft != null && minecraft.player != null ? minecraft.player.getUUID() : null);
-        if (action != TerminalHeaderLayout.Action.NONE) {
-            TerminalHeaderLayout.ActionLayout header = TerminalHeaderLayout.atRightEdge(
-                    new TerminalLayout.Rect(crumbLeft, y, Math.max(0, right - crumbLeft), CONTROL_HEIGHT), true);
-            buildTopBarAction(action, header.action());
-            right = header.remaining().right();
-        }
+        TerminalHeaderLayout.Action action = filterView.managementOpen()
+                ? TerminalHeaderLayout.Action.NONE
+                : TerminalInteractionPolicy.topBarAction(
+                        page != null,
+                        topologyState,
+                        minecraft != null && minecraft.player != null ? minecraft.player.getUUID() : null);
+        TerminalHeaderLayout.ActionLayout header =
+                TerminalHeaderLayout.atRightEdge(topBar, action != TerminalHeaderLayout.Action.NONE);
+        if (action != TerminalHeaderLayout.Action.NONE) buildTopBarAction(action, header.action());
+        right = header.remaining().right();
 
         Component escape = Component.translatable("omniresonance.terminal.escape_hint", client.translatedKey());
         showEscapeHint = !layout.compact() && window.width() >= 520;
@@ -412,32 +525,25 @@ final class NetworkSetupScreen extends Screen {
         }
 
         selectorBounds = new TerminalLayout.Rect(0, 0, 0, 0);
-        if (page != null) {
-            int selectorWidth = layout.compact() ? 72 : 110;
-            int selectorX = right - selectorWidth;
-            selectorBounds = new TerminalLayout.Rect(selectorX, y, selectorWidth, CONTROL_HEIGHT);
-            String selectorText = selected == null
-                    ? Component.translatable("omniresonance.terminal.no_selection")
-                            .getString()
-                    : selected.name();
-            TerminalButton selector = new TerminalButton(
-                    selectorX,
-                    y,
-                    selectorWidth,
-                    CONTROL_HEIGHT,
-                    Component.literal(ellipsize(selectorText, selectorWidth - 8)),
-                    button -> {
-                        if (!createOverlay && pendingOperation == PendingOperation.NONE) {
-                            dropdownOpen = !dropdownOpen;
-                            rebuildIfActive();
-                        }
-                    },
-                    false);
-            selector.active = !createOverlay && !page.entries().isEmpty();
-            selector.setSelected(dropdownOpen);
-            selector.setTooltip(Tooltip.create(TerminalText.body(Component.literal(selectorText))));
-            addRenderableWidget(selector);
-            right = selectorX - TerminalLayout.GAP;
+        if (page != null && networkContext.network() != null) {
+            selectorBounds = TerminalNetworkContext.layout(
+                    new TerminalLayout.Rect(crumbLeft, y, Math.max(0, right - crumbLeft), CONTROL_HEIGHT),
+                    layout.compact(),
+                    networkContext.selectable());
+            TerminalButton selector = networkContext.buildSelector(
+                    selectorBounds,
+                    TerminalText.networkLabel(
+                            networkContext.network().name(),
+                            selectorBounds,
+                            candidate -> font.width(TerminalText.body(Component.literal(candidate)))),
+                    !createOverlay
+                            && !confirmation
+                            && !topologyDiscardConfirmation
+                            && pendingOperation == PendingOperation.NONE
+                            && !page.entries().isEmpty(),
+                    this::rebuildIfActive);
+            if (selector != null) addRenderableWidget(selector);
+            right = selectorBounds.x() - TerminalLayout.GAP;
         }
         crumbRight = Math.max(crumbLeft, right);
     }
@@ -446,18 +552,13 @@ final class NetworkSetupScreen extends Screen {
         TerminalClickButton button;
         if (action == TerminalHeaderLayout.Action.CREATE) {
             TerminalInteractionPolicy.CreateTarget target = TerminalInteractionPolicy.createTarget(true, topologyState);
-            button = new TerminalIconButton(
-                    bounds.x(),
-                    bounds.y(),
-                    bounds.width(),
-                    bounds.height(),
-                    Component.translatable(
-                            target == TerminalInteractionPolicy.CreateTarget.NETWORK
-                                    ? "omniresonance.terminal.create"
-                                    : target == TerminalInteractionPolicy.CreateTarget.ADMINISTRATOR
-                                            ? "omniresonance.terminal.members.add"
-                                            : "omniresonance.terminal.tunnel.create"),
-                    ignored -> runContextualCreate(target));
+            button = buildCreateButton(
+                    bounds,
+                    target,
+                    () -> openCreateOverlay(false),
+                    this::beginAutomaticTunnelCreate,
+                    () -> sendMemberAction(new TerminalMemberView.Action.OpenCandidates()),
+                    this::runFilterAction);
         } else if (action == TerminalHeaderLayout.Action.SEARCH) {
             button = new TerminalSearchButton(
                     bounds,
@@ -468,10 +569,11 @@ final class NetworkSetupScreen extends Screen {
                                     : "omniresonance.terminal.members.search"),
                     ignored -> memberView.toggleSearch());
         } else {
-            button = new TerminalSettingsButton(
+            button = buildSettingsButton(
                     bounds,
-                    Component.translatable("omniresonance.terminal.tunnel.manage"),
-                    ignored -> sendTopology(sequence ->
+                    topologyState,
+                    filterView::openManagement,
+                    () -> sendTopology(sequence ->
                             new NetworkTerminalRequest.OpenTunnelSettings(viewId, requireSessionId(), sequence)));
         }
         button.active = !createOverlay
@@ -564,22 +666,24 @@ final class NetworkSetupScreen extends Screen {
         int visibleRows = Math.min(MAX_VISIBLE_DROPDOWN_ROWS, entries.size());
         dropdownScroll = clampScroll(dropdownScroll, entries.size(), visibleRows);
         int height = Math.max(1, visibleRows * CONTROL_HEIGHT + 4);
-        dropdownBounds = new TerminalLayout.Rect(
+        networkContext.bounds = new TerminalLayout.Rect(
                 selectorBounds.x(), selectorBounds.bottom() + 1, selectorBounds.width(), height);
         for (int row = 0; row < visibleRows; row++) {
             NetworkSummary summary = entries.get(dropdownScroll + row);
             TerminalButton entry = new TerminalButton(
-                    dropdownBounds.x() + 2,
-                    dropdownBounds.y() + 2 + row * CONTROL_HEIGHT,
-                    Math.max(0, dropdownBounds.width() - 4),
+                    networkContext.bounds.x() + 2,
+                    networkContext.bounds.y() + 2 + row * CONTROL_HEIGHT,
+                    Math.max(0, networkContext.bounds.width() - 4),
                     CONTROL_HEIGHT,
-                    Component.literal(ellipsize(summary.name(), Math.max(0, dropdownBounds.width() - 12))),
-                    button -> select(summary),
+                    Component.literal(ellipsize(summary.name(), Math.max(0, networkContext.bounds.width() - 12))),
+                    button -> {
+                        if (networkContext.intercepts()) select(summary);
+                    },
                     false);
             entry.setSelected(selected != null && selected.id().equals(summary.id()));
             entry.setTooltip(Tooltip.create(TerminalText.body(Component.literal(summary.name()))));
             addRenderableWidget(entry);
-            dropdownButtons.add(entry);
+            networkContext.buttons.add(entry);
         }
     }
 
@@ -587,8 +691,9 @@ final class NetworkSetupScreen extends Screen {
         if (sessionId == null || pendingOperation != PendingOperation.NONE) {
             return;
         }
-        dropdownOpen = false;
+        networkContext.open = false;
         topologyState = null;
+        networkContext.apply(topologyState);
         createOverlay = true;
         firstPrompt = onboarding;
         confirmation = false;
@@ -716,6 +821,7 @@ final class NetworkSetupScreen extends Screen {
                 Component.translatable("omniresonance.terminal.confirm.continue"),
                 button -> {
                     confirmation = false;
+                    closeAfterDiscard = false;
                     rebuildIfActive();
                 },
                 false);
@@ -728,6 +834,9 @@ final class NetworkSetupScreen extends Screen {
             return;
         }
         switch (topologyState) {
+            case NetworkTerminalState.Filters filters -> buildFilterView(filters);
+            case NetworkTerminalState.Preset preset -> buildFilterView(preset);
+            case NetworkTerminalState.PresetEdit edit -> buildFilterView(edit);
             case NetworkTerminalState.NetworkSettings settings -> buildNetworkSettingsView(settings);
             case NetworkTerminalState.NetworkRename rename -> buildNetworkSettingsView(rename);
             case NetworkTerminalState.NetworkDelete delete -> buildNetworkSettingsView(delete);
@@ -753,28 +862,33 @@ final class NetworkSetupScreen extends Screen {
         String[] modules = {"nodes", "tunnels", "domain", "filters", "loading", "admins", "status", "settings"};
         for (int index = 0; index < modules.length; index++) {
             String module = modules[index];
-            boolean implemented = index == 1 || index == 5 || index == 7;
+            boolean implemented = index == 1 || index == 3 || index == 5 || index == 7;
             TerminalCardButton card = new TerminalCardButton(
                     cards.get(index),
                     Component.translatable("omniresonance.terminal.home." + module + ".mark"),
                     Component.translatable("omniresonance.terminal.home." + module),
                     Component.translatable(
-                            index == 1
-                                    ? "omniresonance.terminal.home.tunnels.meta"
-                                    : index == 5
-                                            ? "omniresonance.terminal.home.admins.meta"
-                                            : index == 7
-                                                    ? "omniresonance.terminal.home.settings.meta"
-                                                    : "omniresonance.terminal.home.unavailable"),
+                            index == 3
+                                    ? "omniresonance.terminal.filters.home_meta"
+                                    : index == 1
+                                            ? "omniresonance.terminal.home.tunnels.meta"
+                                            : index == 5
+                                                    ? "omniresonance.terminal.home.admins.meta"
+                                                    : index == 7
+                                                            ? "omniresonance.terminal.home.settings.meta"
+                                                            : "omniresonance.terminal.home.unavailable"),
                     ignored -> {
                         if (implemented) {
                             sendTopology(sequence -> module.equals("admins")
                                     ? new NetworkTerminalRequest.OpenMembers(viewId, requireSessionId(), sequence)
-                                    : module.equals("settings")
-                                            ? new NetworkTerminalRequest.OpenNetworkSettings(
+                                    : module.equals("filters")
+                                            ? new NetworkTerminalRequest.OpenFilters(
                                                     viewId, requireSessionId(), sequence)
-                                            : new NetworkTerminalRequest.OpenTunnels(
-                                                    viewId, requireSessionId(), sequence));
+                                            : module.equals("settings")
+                                                    ? new NetworkTerminalRequest.OpenNetworkSettings(
+                                                            viewId, requireSessionId(), sequence)
+                                                    : new NetworkTerminalRequest.OpenTunnels(
+                                                            viewId, requireSessionId(), sequence));
                         }
                     });
             card.active = implemented && pendingOperation == PendingOperation.NONE;
@@ -783,6 +897,239 @@ final class NetworkSetupScreen extends Screen {
                         TerminalText.body(Component.translatable("omniresonance.terminal.home.unavailable"))));
             }
             addRenderableWidget(card);
+        }
+    }
+
+    static TerminalSettingsButton buildSettingsButton(
+            TerminalLayout.Rect bounds,
+            @Nullable NetworkTerminalState state,
+            Runnable presetManagement,
+            Runnable tunnelManagement) {
+        boolean preset = state instanceof NetworkTerminalState.Preset;
+        return new TerminalSettingsButton(
+                bounds,
+                Component.translatable(
+                        preset ? "omniresonance.terminal.filters.manage" : "omniresonance.terminal.tunnel.manage"),
+                ignored -> {
+                    if (preset) presetManagement.run();
+                    else tunnelManagement.run();
+                });
+    }
+
+    private void buildFilterView(NetworkTerminalState state) {
+        nameField = filterView.build(
+                font,
+                layout,
+                state,
+                topologyDraft,
+                pendingOperation != PendingOperation.NONE,
+                this::addRenderableWidget,
+                value -> {
+                    if (!topologyDraft.equals(value)) {
+                        topologyDraft = value;
+                        topologyDraftDirty = true;
+                        error = null;
+                    }
+                },
+                this::runFilterAction);
+    }
+
+    static NetworkTerminalRequest presetEditRequest(
+            TerminalFilterView.Action action, UUID viewId, UUID sessionId, long sequence, String draft) {
+        return switch (action) {
+            case TerminalFilterView.Action.Begin begin ->
+                new NetworkTerminalRequest.BeginPresetEdit(
+                        viewId, sessionId, sequence, begin.operation(), begin.id(), begin.originalRule());
+            case TerminalFilterView.Action.Save ignored ->
+                new NetworkTerminalRequest.SavePresetEdit(viewId, sessionId, sequence, draft);
+            default -> throw new IllegalArgumentException("Not a preset edit action");
+        };
+    }
+
+    static NetworkTerminalRequest resourceRuleRequest(
+            TerminalFilterView.Action action, UUID view, UUID session, long sequence) {
+        return switch (action) {
+            case TerminalFilterView.Action.Read read ->
+                new NetworkTerminalRequest.ReadResourceRule(
+                        view, session, sequence, read.preset(), read.revision(), read.rule());
+            case TerminalFilterView.Action.BeginFull begin ->
+                new NetworkTerminalRequest.BeginResourceRule(
+                        view, session, sequence, begin.preset(), begin.rule(), begin.remove());
+            case TerminalFilterView.Action.Sample sample ->
+                new NetworkTerminalRequest.SampleResourceRule(
+                        view, session, sequence, sample.type(), sample.slot(), sample.tank());
+            case TerminalFilterView.Action.Query query ->
+                new NetworkTerminalRequest.QueryFilterLibrary(
+                        view, session, sequence, query.query(), query.offset(), query.revision());
+            case TerminalFilterView.Action.SaveFull save ->
+                new NetworkTerminalRequest.SaveResourceRule(view, session, sequence, save.intent());
+            default -> throw new IllegalArgumentException("Not a resource rule action");
+        };
+    }
+
+    private void runFilterAction(TerminalFilterView.Action action) {
+        switch (action) {
+            case TerminalFilterView.Action.Query query ->
+                sendTopology(sequence -> resourceRuleRequest(query, viewId, requireSessionId(), sequence));
+            case TerminalFilterView.Action.Read read ->
+                sendTopology(sequence -> resourceRuleRequest(read, viewId, requireSessionId(), sequence));
+            case TerminalFilterView.Action.BeginFull begin ->
+                sendTopology(sequence -> resourceRuleRequest(begin, viewId, requireSessionId(), sequence));
+            case TerminalFilterView.Action.SaveFull save -> {
+                if (topologyState instanceof NetworkTerminalState.PresetEdit edit
+                        && (edit.impact().bindingCount() > 0
+                                || edit.operation()
+                                        == io.github.loongin.omniresonance.filter.PresetEditOperation.REMOVE_RULE)) {
+                    pendingFilterSave = save;
+                    topologyDiscardConfirmation = true;
+                    closeAfterDiscard = false;
+                    rebuildIfActive();
+                } else submitResourceRule(save);
+            }
+            case TerminalFilterView.Action.Sample sample ->
+                sendTopology(sequence -> resourceRuleRequest(sample, viewId, requireSessionId(), sequence));
+            case TerminalFilterView.Action.Page page ->
+                sendTopology(sequence ->
+                        new NetworkTerminalRequest.PagePresets(viewId, requireSessionId(), sequence, page.offset()));
+            case TerminalFilterView.Action.Open open ->
+                sendTopology(sequence -> new NetworkTerminalRequest.OpenPreset(
+                        viewId, requireSessionId(), sequence, open.id(), open.revision(), open.offset()));
+            case TerminalFilterView.Action.Begin begin ->
+                sendTopology(sequence -> presetEditRequest(begin, viewId, requireSessionId(), sequence, topologyDraft));
+            case TerminalFilterView.Action.Save ignored -> {
+                try {
+                    sendTopology(
+                            sequence -> presetEditRequest(action, viewId, requireSessionId(), sequence, topologyDraft));
+                } catch (IllegalArgumentException invalidDraft) {
+                    error = Component.translatable(NetworkTerminalResponse.Reason.INVALID_REQUEST.translationKey());
+                    rebuildIfActive();
+                }
+            }
+            case TerminalFilterView.Action.Cancel ignored -> navigateTopologyBack();
+            case TerminalFilterView.Action.CopyRule copy -> {
+                if (minecraft != null) minecraft.keyboardHandler.setClipboard(copy.value());
+            }
+        }
+    }
+
+    private void submitResourceRule(TerminalFilterView.Action.SaveFull save) {
+
+        int size = save.intent() == null
+                ? 0
+                : io.github.loongin.omniresonance.networking.FullFilterCodec.intentSize(save.intent());
+        if (save.intent() == null || io.github.loongin.omniresonance.networking.FullFilterCodec.intentFitsPacket(size))
+            sendTopology(sequence -> resourceRuleRequest(save, viewId, requireSessionId(), sequence));
+        else {
+            uploadIntent = save.intent();
+            UUID transfer = UUID.randomUUID();
+            sendTopology(sequence -> new NetworkTerminalRequest.PrepareResourceRuleUpload(
+                    viewId, requireSessionId(), sequence, transfer, size));
+        }
+    }
+
+    void receiveFilterTransfer(io.github.loongin.omniresonance.networking.ManagementTransferMessage message) {
+        NetworkTerminalResponse.RuleTransferReady active = filterTransfer;
+        if (active == null
+                || active.upload()
+                || !active.sessionId().equals(message.session())
+                || !active.transferId().equals(message.transfer())
+                || closeSent) return;
+        try {
+            if (!(message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk chunk))
+                throw new IllegalArgumentException("Unexpected filter fragment");
+            if (!filterDownload.append(chunk, clientTicks)) return;
+            filterTransferOffset += chunk.data().length;
+            if (filterTransferOffset == active.length()) {
+                byte[][] data = new byte[1][];
+                filterDownload.finish(
+                        new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish(
+                                active.sessionId(), active.transferId()),
+                        clientTicks,
+                        object -> {
+                            byte[] bytes = new byte[object.length()];
+                            for (int i = 0; i < bytes.length; i++) bytes[i] = object.byteAt(i);
+                            data[0] = bytes;
+                        });
+                applyResponse(new NetworkTerminalResponse.FullRule(
+                        viewId,
+                        active.sessionId(),
+                        active.sequence(),
+                        active.sampleToken(),
+                        active.tanks(),
+                        active.tank(),
+                        "",
+                        data[0]));
+            }
+        } catch (RuntimeException failure) {
+            failFilterTransfer();
+        }
+    }
+
+    private void tickFilterTransfer() {
+        NetworkTerminalResponse.RuleTransferReady active = filterTransfer;
+        if (active == null) return;
+        if (clientTicks - filterTransferStartedTick >= 200) {
+            failFilterTransfer();
+            return;
+        }
+        if (!active.upload() || uploadBytes == null) return;
+        FilterUploadProgress progress = advanceFilterUpload(
+                active,
+                uploadBytes,
+                filterTransferOffset,
+                topologyDiscardConfirmation,
+                closeSent,
+                net.neoforged.neoforge.network.PacketDistributor::sendToServer,
+                () -> pendingDraftSubmitted = true);
+        filterTransferOffset = progress.offset();
+        if (progress.finished()) uploadBytes = null;
+    }
+
+    record FilterUploadProgress(int offset, boolean finished) {}
+
+    static FilterUploadProgress advanceFilterUpload(
+            NetworkTerminalResponse.RuleTransferReady active,
+            byte[] bytes,
+            int offset,
+            boolean discardDecisionOpen,
+            boolean closed,
+            java.util.function.Consumer<io.github.loongin.omniresonance.networking.ManagementTransferMessage> sender,
+            Runnable submitted) {
+        if (discardDecisionOpen || closed) return new FilterUploadProgress(offset, false);
+        int end = Math.min(
+                bytes.length,
+                offset + io.github.loongin.omniresonance.networking.ManagementTransferPool.MAXIMUM_FRAGMENT_BYTES);
+        if (offset < end)
+            sender.accept(new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
+                    active.sessionId(), active.transferId(), offset, java.util.Arrays.copyOfRange(bytes, offset, end)));
+        boolean finished = end == bytes.length;
+        if (finished) {
+            submitted.run();
+            sender.accept(new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish(
+                    active.sessionId(), active.transferId()));
+        }
+        return new FilterUploadProgress(end, finished);
+    }
+
+    private void failFilterTransfer() {
+        NetworkTerminalResponse.RuleTransferReady active = filterTransfer;
+        if (active == null) return;
+        clearFilterTransfer();
+        applyResponse(new NetworkTerminalResponse.Failure(
+                viewId, active.sessionId(), active.sequence(), NetworkTerminalResponse.Reason.INVALID_REQUEST));
+    }
+
+    private void clearFilterTransfer() {
+        NetworkTerminalResponse.RuleTransferReady active = filterTransfer;
+        filterTransfer = null;
+        uploadIntent = null;
+        uploadBytes = null;
+        if (active != null) {
+            filterDownload.abort(active.sessionId(), active.transferId());
+            if (client.canSend())
+                net.neoforged.neoforge.network.PacketDistributor.sendToServer(
+                        new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Abort(
+                                active.sessionId(), active.transferId()));
         }
     }
 
@@ -935,7 +1282,7 @@ final class NetworkSetupScreen extends Screen {
         });
         field.active = pendingOperation == PendingOperation.NONE;
         nameField = addRenderableWidget(field);
-        int half = Math.max(0, (width - TerminalLayout.GAP) / 2);
+        int half = Math.min(80, Math.max(0, (width - TerminalLayout.GAP) / 2));
         addTopologyButton(x, y + 30, half, "omniresonance.terminal.cancel", this::navigateTopologyBack, false, true);
         addTopologyButton(
                 x + half + TerminalLayout.GAP,
@@ -966,36 +1313,72 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void buildTopologyDiscardConfirmation() {
+        if (pendingFilterSave != null) {
+            int width = Math.min(360, layout.content().width() - 16);
+            modalBounds = centered(layout.content(), width, 100);
+            int half = Math.max(0, (width - 16 - TerminalLayout.GAP) / 2),
+                    y = modalBounds.bottom() - CONTROL_HEIGHT - 8;
+            addTopologyButton(
+                    modalBounds.x() + 8,
+                    y,
+                    half,
+                    "omniresonance.terminal.cancel",
+                    () -> {
+                        pendingFilterSave = null;
+                        topologyDiscardConfirmation = false;
+                        rebuildIfActive();
+                    },
+                    false,
+                    true);
+            addTopologyButton(
+                    modalBounds.x() + 8 + half + TerminalLayout.GAP,
+                    y,
+                    half,
+                    "omniresonance.terminal.filters.save",
+                    () -> {
+                        var save = Objects.requireNonNull(pendingFilterSave);
+                        pendingFilterSave = null;
+                        topologyDiscardConfirmation = false;
+                        submitResourceRule(save);
+                    },
+                    true,
+                    true);
+            return;
+        }
         int width = Math.min(360, layout.content().width() - 16);
         modalBounds = centered(layout.content(), width, 100);
         int half = Math.max(0, (width - 16 - TerminalLayout.GAP) / 2);
         int y = modalBounds.bottom() - CONTROL_HEIGHT - 8;
         addTopologyButton(
-                modalBounds.x() + 8,
-                y,
-                half,
-                "omniresonance.terminal.confirm.continue",
-                () -> {
-                    topologyDiscardConfirmation = false;
-                    rebuildIfActive();
-                },
-                false,
-                true);
+                        modalBounds.x() + 8,
+                        y,
+                        half,
+                        "omniresonance.terminal.confirm.continue",
+                        () -> {
+                            topologyDiscardConfirmation = false;
+                            closeAfterDiscard = false;
+                            rebuildIfActive();
+                        },
+                        false,
+                        true)
+                .active = true;
         addTopologyButton(
-                modalBounds.x() + 8 + half + TerminalLayout.GAP,
-                y,
-                half,
-                "omniresonance.terminal.confirm.discard",
-                () -> {
-                    topologyDiscardConfirmation = false;
-                    topologyDraftDirty = false;
-                    sendTopologyBack();
-                },
-                true,
-                true);
+                        modalBounds.x() + 8 + half + TerminalLayout.GAP,
+                        y,
+                        half,
+                        "omniresonance.terminal.confirm.discard",
+                        () -> {
+                            topologyDiscardConfirmation = false;
+                            topologyDraftDirty = false;
+                            if (closeAfterDiscard) closeRoot();
+                            else sendTopologyBack();
+                        },
+                        true,
+                        true)
+                .active = true;
     }
 
-    private void addTopologyButton(
+    private TerminalButton addTopologyButton(
             int x, int y, int width, String key, Runnable action, boolean primary, boolean active) {
         TerminalButton button = new TerminalButton(
                 x,
@@ -1007,6 +1390,7 @@ final class NetworkSetupScreen extends Screen {
                 primary);
         button.active = active && pendingOperation == PendingOperation.NONE;
         addRenderableWidget(button);
+        return button;
     }
 
     private void pageTunnels(TunnelPage page, boolean backwards) {
@@ -1093,6 +1477,7 @@ final class NetworkSetupScreen extends Screen {
         nextSequence++;
         pendingSequence = sequence;
         pendingOperation = PendingOperation.CREATE;
+        pendingDraftSubmitted = true;
         draftState = draftState.submitted();
         error = null;
         errorAllowsRetry = false;
@@ -1135,13 +1520,18 @@ final class NetworkSetupScreen extends Screen {
         }
     }
 
+    static boolean completeTopologySend(TerminalFilterView filters, boolean sent) {
+        if (!sent) filters.requestFailed(null);
+        return sent;
+    }
+
     private boolean sendTopology(LongFunction<NetworkTerminalRequest> factory) {
         if (pendingOperation != PendingOperation.NONE || sessionId == null) {
             return false;
         }
         long sequence = nextSequence;
         NetworkTerminalRequest request = Objects.requireNonNull(factory.apply(sequence), "request");
-        if (!client.send(request)) {
+        if (!completeTopologySend(filterView, client.send(request))) {
             error = Component.translatable(NetworkTerminalResponse.Reason.DATA_UNAVAILABLE.translationKey());
             errorAllowsRetry = true;
             rebuildIfActive();
@@ -1150,6 +1540,7 @@ final class NetworkSetupScreen extends Screen {
         nextSequence++;
         pendingSequence = sequence;
         pendingOperation = PendingOperation.TOPOLOGY;
+        pendingDraftSubmitted = TerminalInteractionPolicy.submitsDraft(request);
         error = null;
         errorAllowsRetry = false;
         rebuildIfActive();
@@ -1170,24 +1561,58 @@ final class NetworkSetupScreen extends Screen {
         sendTopology(sequence -> new NetworkTerminalRequest.Back(viewId, requireSessionId(), sequence));
     }
 
-    private void initializeTopologyDraft(@Nullable NetworkTerminalState previous, NetworkTerminalState current) {
+    record TopologyDraft(String value, boolean dirty) {}
+
+    static TopologyDraft resolveTopologyDraft(
+            TerminalFilterView filters,
+            @Nullable NetworkTerminalState previous,
+            NetworkTerminalState current,
+            String value,
+            boolean dirty) {
+        if (current instanceof NetworkTerminalState.PresetEdit edit) {
+            return new TopologyDraft(filters.initialValue(edit), false);
+        }
         if (current instanceof NetworkTerminalState.NetworkRename rename) {
-            topologyDraft = rename.settings().network().name();
-            topologyDraftDirty = false;
-            lastTopologyHeartbeatTick = clientTicks;
-        } else if (current instanceof NetworkTerminalState.TunnelEdit edit) {
-            topologyDraft = edit.existing() == null
-                    ? edit.suggestedName()
-                    : edit.existing().name();
-            topologyDraftDirty = false;
-            lastTopologyHeartbeatTick = clientTicks;
-        } else if (current instanceof NetworkTerminalState.DeleteConfirmation
+            return new TopologyDraft(rename.settings().network().name(), false);
+        }
+        if (current instanceof NetworkTerminalState.TunnelEdit edit) {
+            return new TopologyDraft(
+                    edit.existing() == null
+                            ? edit.suggestedName()
+                            : edit.existing().name(),
+                    false);
+        }
+        if (!(current instanceof NetworkTerminalState.DeleteConfirmation)
+                && !(current instanceof NetworkTerminalState.NetworkDelete)
+                && (previous instanceof NetworkTerminalState.TunnelEdit
+                        || previous instanceof NetworkTerminalState.NetworkRename
+                        || previous instanceof NetworkTerminalState.PresetEdit)) {
+            return new TopologyDraft("", false);
+        }
+        return new TopologyDraft(value, dirty);
+    }
+
+    static TopologyDraft resolveFailedTopologyDraft(
+            TerminalFilterView filters,
+            @Nullable NetworkTerminalState previous,
+            NetworkTerminalState current,
+            String value,
+            boolean dirty) {
+        return TerminalInteractionPolicy.sameEditor(previous, current)
+                ? new TopologyDraft(value, dirty)
+                : resolveTopologyDraft(filters, previous, current, value, dirty);
+    }
+
+    private void initializeTopologyDraft(@Nullable NetworkTerminalState previous, NetworkTerminalState current) {
+        TopologyDraft draft = resolveTopologyDraft(filterView, previous, current, topologyDraft, topologyDraftDirty);
+        topologyDraft = draft.value();
+        topologyDraftDirty = draft.dirty();
+        if (current instanceof NetworkTerminalState.PresetEdit
+                || current instanceof NetworkTerminalState.NetworkRename
+                || current instanceof NetworkTerminalState.TunnelEdit
+                || current instanceof NetworkTerminalState.DeleteConfirmation
                 || current instanceof NetworkTerminalState.NetworkDelete) {
             lastTopologyHeartbeatTick = clientTicks;
-        } else if (previous instanceof NetworkTerminalState.TunnelEdit
-                || previous instanceof NetworkTerminalState.NetworkRename) {
-            topologyDraft = "";
-            topologyDraftDirty = false;
         }
     }
 
@@ -1215,22 +1640,42 @@ final class NetworkSetupScreen extends Screen {
         pendingPageRequest = backwards ? PagedListScroll.PageRequest.PREVIOUS : PagedListScroll.PageRequest.NEXT;
         error = null;
         errorAllowsRetry = false;
-        dropdownOpen = false;
+        networkContext.open = false;
         rebuildIfActive();
     }
 
-    private void runContextualCreate(TerminalInteractionPolicy.CreateTarget target) {
-        switch (target) {
-            case NETWORK -> openCreateOverlay(false);
-            case TUNNEL -> beginAutomaticTunnelCreate();
-            case ADMINISTRATOR -> sendMemberAction(new TerminalMemberView.Action.OpenCandidates());
-            case NONE -> {}
-        }
+    static TerminalIconButton buildCreateButton(
+            TerminalLayout.Rect bounds,
+            TerminalInteractionPolicy.CreateTarget target,
+            Runnable network,
+            Runnable tunnel,
+            Runnable administrator,
+            java.util.function.Consumer<TerminalFilterView.Action> filters) {
+        String key =
+                switch (target) {
+                    case NETWORK, NONE -> "omniresonance.terminal.create";
+                    case TUNNEL -> "omniresonance.terminal.tunnel.create";
+                    case ADMINISTRATOR -> "omniresonance.terminal.members.add";
+                    case PRESET -> "omniresonance.terminal.filters.create";
+                };
+        return new TerminalIconButton(
+                bounds.x(), bounds.y(), bounds.width(), bounds.height(), Component.translatable(key), ignored -> {
+                    switch (target) {
+                        case NETWORK -> network.run();
+                        case TUNNEL -> tunnel.run();
+                        case ADMINISTRATOR -> administrator.run();
+                        case PRESET ->
+                            filters.accept(new TerminalFilterView.Action.Begin(
+                                    io.github.loongin.omniresonance.filter.PresetEditOperation.CREATE, null));
+                        case NONE -> {}
+                    }
+                });
     }
 
     private void select(NetworkSummary summary) {
+        if (topologyState != null && !networkContext.selectable()) return;
         selected = summary;
-        dropdownOpen = false;
+        networkContext.open = false;
         detailScroll = 0;
         openSelectedHome();
     }
@@ -1241,10 +1686,13 @@ final class NetworkSetupScreen extends Screen {
             return;
         }
         TerminalInteractionPolicy.BackAction action = TerminalInteractionPolicy.backAction(
-                dropdownOpen, confirmation, createOverlay, draftState, layout.compact() && compactDetails);
+                networkContext.open, confirmation, createOverlay, draftState, layout.compact() && compactDetails);
         switch (action) {
-            case CLOSE_DROPDOWN -> dropdownOpen = false;
-            case CLOSE_CONFIRMATION -> confirmation = false;
+            case CLOSE_DROPDOWN -> networkContext.open = false;
+            case CLOSE_CONFIRMATION -> {
+                confirmation = false;
+                closeAfterDiscard = false;
+            }
             case HIDE_CREATE_OVERLAY -> {
                 createOverlay = false;
                 firstPrompt = false;
@@ -1253,7 +1701,10 @@ final class NetworkSetupScreen extends Screen {
                     return;
                 }
             }
-            case CONFIRM_DRAFT -> confirmation = true;
+            case CONFIRM_DRAFT -> {
+                closeAfterDiscard = false;
+                confirmation = true;
+            }
             case SHOW_COMPACT_LIST -> compactDetails = false;
             case CLOSE_SCREEN -> {
                 closeRoot();
@@ -1263,8 +1714,27 @@ final class NetworkSetupScreen extends Screen {
         rebuildIfActive();
     }
 
+    static boolean closeLocalTopologyLayer(
+            TerminalNetworkContext context, TerminalFilterView filters, Runnable rebuild) {
+        if (context.intercepts()) {
+            context.clearDropdown();
+            rebuild.run();
+            return true;
+        }
+        return filters.closeManagement();
+    }
+
     private void navigateTopologyBack() {
-        if (!dropdownOpen && memberView.closeLocalLayer()) return;
+        if (topologyDiscardConfirmation) {
+            pendingFilterSave = null;
+            topologyDiscardConfirmation = false;
+            closeAfterDiscard = false;
+            rebuildIfActive();
+            return;
+        }
+        if (filterView.closeSearch()) return;
+        if (closeLocalTopologyLayer(networkContext, filterView, this::rebuildIfActive)) return;
+        if (!networkContext.open && memberView.closeLocalLayer()) return;
         if (topologyState instanceof NetworkTerminalState.AdministratorCandidates
                 && pendingOperation != PendingOperation.NONE) {
             memberBackPending = true;
@@ -1275,21 +1745,35 @@ final class NetworkSetupScreen extends Screen {
             return;
         }
         boolean editing = topologyState instanceof NetworkTerminalState.TunnelEdit
-                || topologyState instanceof NetworkTerminalState.NetworkRename;
+                || topologyState instanceof NetworkTerminalState.NetworkRename
+                || topologyState instanceof NetworkTerminalState.PresetEdit;
         TerminalInteractionPolicy.TopologyBackAction action = TerminalInteractionPolicy.topologyBackAction(
-                pendingOperation != PendingOperation.NONE, topologyDiscardConfirmation, editing && topologyDraftDirty);
+                pendingOperation != PendingOperation.NONE,
+                topologyDiscardConfirmation,
+                editing && (topologyDraftDirty || filterView.resourceDirty()));
         switch (action) {
             case BLOCK -> {
                 return;
             }
-            case CLOSE_CONFIRMATION -> topologyDiscardConfirmation = false;
-            case CONFIRM_DRAFT -> topologyDiscardConfirmation = true;
+            case CLOSE_CONFIRMATION -> {
+                topologyDiscardConfirmation = false;
+                closeAfterDiscard = false;
+            }
+            case CONFIRM_DRAFT -> {
+                networkContext.open = false;
+                topologyDiscardConfirmation = true;
+                closeAfterDiscard = false;
+            }
             case SEND_BACK -> sendTopologyBack();
         }
         rebuildIfActive();
     }
 
     private void discardDraft() {
+        if (closeAfterDiscard) {
+            closeRoot();
+            return;
+        }
         confirmation = false;
         createOverlay = false;
         firstPrompt = false;
@@ -1305,15 +1789,16 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void requestShortcutClose() {
-        if (topologyState != null) {
-            navigateTopologyBack();
-            return;
-        }
-        if (confirmation) {
-            return;
-        }
-        if (createOverlay && draftState.requiresConfirmation()) {
-            confirmation = true;
+        pendingFilterSave = null;
+        boolean dirty = topologyState != null
+                ? topologyDraftDirty || filterView.resourceDirty()
+                : createOverlay && draftState.requiresConfirmation();
+        if (TerminalInteractionPolicy.shortcutAction(pendingDraftSubmitted, dirty)
+                == TerminalInteractionPolicy.BackAction.CONFIRM_DRAFT) {
+            closeAfterDiscard = true;
+            networkContext.open = false;
+            if (topologyState != null) topologyDiscardConfirmation = true;
+            else confirmation = true;
             rebuildIfActive();
             return;
         }
@@ -1332,6 +1817,8 @@ final class NetworkSetupScreen extends Screen {
             return;
         }
         closeSent = true;
+        clearFilterTransfer();
+        filterDownload.close();
         if (!disconnected && sessionId != null) {
             client.send(new NetworkTerminalRequest.Close(viewId, sessionId));
         }
@@ -1353,46 +1840,72 @@ final class NetworkSetupScreen extends Screen {
             navigateBack();
             return true;
         }
-        if (!dropdownOpen && !topologyDiscardConfirmation && memberView.keyPressed(keyCode, modifiers)) {
-            if (minecraft != null)
-                minecraft
-                        .getSoundManager()
-                        .play(TerminalClickButton.clickFeedback().createSound());
-            return true;
-        }
-        if (getFocused() instanceof TerminalEditBox field && field.ownsKey(keyCode)) {
+        if (routeKey(
+                getFocused(),
+                keyCode,
+                scanCode,
+                modifiers,
+                () -> (minecraft != null
+                                && TerminalInteractionPolicy.inventoryShortcut(
+                                        minecraft.options.keyInventory, getFocused(), keyCode, scanCode))
+                        || client.isTerminalKey(keyCode, scanCode),
+                this::requestShortcutClose,
+                () -> {
+                    if (networkContext.open
+                            || topologyDiscardConfirmation
+                            || !(memberView.keyPressed(keyCode, modifiers)
+                                    || filterView.keyPressed(keyCode, modifiers))) return false;
+                    if (minecraft != null)
+                        minecraft
+                                .getSoundManager()
+                                .play(TerminalClickButton.clickFeedback().createSound());
+                    return true;
+                })) return true;
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    static boolean routeKey(
+            @Nullable GuiEventListener focused,
+            int keyCode,
+            int scanCode,
+            int modifiers,
+            BooleanSupplier shortcutPressed,
+            Runnable close,
+            BooleanSupplier memberSearch) {
+        if (focused instanceof TerminalEditBox field && field.ownsKey(keyCode)) {
             return field.keyPressed(keyCode, scanCode, modifiers);
         }
-        if (keyCode == GLFW.GLFW_KEY_TAB) {
-            return super.keyPressed(keyCode, scanCode, modifiers);
-        }
-        if (client.isTerminalKey(keyCode, scanCode)) {
-            requestShortcutClose();
+        if (shortcutPressed.getAsBoolean()) {
+            close.run();
             return true;
         }
-        return super.keyPressed(keyCode, scanCode, modifiers);
+        return memberSearch.getAsBoolean();
     }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (!dropdownOpen) {
+        networkContext.apply(topologyState);
+        if (topologyDiscardConfirmation || confirmation) return super.mouseClicked(mouseX, mouseY, button);
+        if (!networkContext.open) {
             boolean expanded = memberView.expanded();
+            boolean filterExpanded = filterView.searchExpanded();
             boolean handled = super.mouseClicked(mouseX, mouseY, button);
             if (TerminalMemberView.supports(topologyState)) memberView.finishClick(expanded);
+            filterView.finishSearchClick(filterExpanded, this);
             return handled;
         }
         if (contains(selectorBounds, mouseX, mouseY)) {
             boolean handled = super.mouseClicked(mouseX, mouseY, button);
-            if (handled && !dropdownOpen) {
+            if (handled && !networkContext.open) {
                 setFocused(null);
                 setDragging(false);
             }
             return handled;
         }
-        if (contains(dropdownBounds, mouseX, mouseY)) {
-            for (TerminalButton dropdownButton : dropdownButtons) {
+        if (contains(networkContext.bounds, mouseX, mouseY)) {
+            for (TerminalButton dropdownButton : networkContext.buttons) {
                 if (dropdownButton.mouseClicked(mouseX, mouseY, button)) {
-                    if (dropdownOpen) {
+                    if (networkContext.open) {
                         setFocused(dropdownButton);
                         if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
                             setDragging(true);
@@ -1403,14 +1916,19 @@ final class NetworkSetupScreen extends Screen {
             }
             return true;
         }
-        dropdownOpen = false;
+        networkContext.open = false;
         rebuildIfActive();
         return true;
     }
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        if (TerminalMemberView.supports(topologyState) && !dropdownOpen) {
+        networkContext.apply(topologyState);
+        if (topologyDiscardConfirmation || confirmation || pendingOperation != PendingOperation.NONE) return true;
+        if (pendingOperation == PendingOperation.NONE
+                && !topologyDiscardConfirmation
+                && filterView.scroll(mouseX, mouseY, scrollY)) return true;
+        if (TerminalMemberView.supports(topologyState) && !networkContext.open) {
             return memberView.mouseScrolled(mouseX, mouseY, scrollY);
         }
         if (topologyState instanceof NetworkTerminalState.TunnelList list
@@ -1439,7 +1957,7 @@ final class NetworkSetupScreen extends Screen {
             applyTopologyPageScroll(scroll.pageRequest(), list.page());
             return true;
         }
-        if (dropdownOpen && contains(dropdownBounds, mouseX, mouseY) && page != null) {
+        if (networkContext.intercepts() && contains(networkContext.bounds, mouseX, mouseY) && page != null) {
             int visibleRows = Math.min(MAX_VISIBLE_DROPDOWN_ROWS, page.entries().size());
             dropdownScroll = scrollBy(dropdownScroll, scrollY, page.entries().size(), visibleRows);
             rebuildIfActive();
@@ -1472,12 +1990,15 @@ final class NetworkSetupScreen extends Screen {
     public void tick() {
         super.tick();
         clientTicks++;
+        tickFilterTransfer();
         memberView.tick(clientTicks);
+        filterView.tick(clientTicks, pendingOperation != PendingOperation.NONE);
         boolean editing = topologyState instanceof NetworkTerminalState.TunnelEdit
                 || topologyState instanceof NetworkTerminalState.DeleteConfirmation
                 || topologyState instanceof NetworkTerminalState.NetworkRename
                 || topologyState instanceof NetworkTerminalState.NetworkDelete
-                || topologyState instanceof NetworkTerminalState.RemoveAdministrator;
+                || topologyState instanceof NetworkTerminalState.RemoveAdministrator
+                || topologyState instanceof NetworkTerminalState.PresetEdit;
         if (editing
                 && pendingOperation == PendingOperation.NONE
                 && clientTicks - lastTopologyHeartbeatTick >= 40
@@ -1495,26 +2016,59 @@ final class NetworkSetupScreen extends Screen {
         TerminalTheme.renderWindow(graphics, layout);
         renderTopBar(graphics);
         renderBody(graphics);
-        if (dropdownOpen && page != null && !createOverlay) {
-            TerminalTheme.renderPanel(graphics, dropdownBounds);
+        if (networkContext.intercepts()
+                && page != null
+                && !createOverlay
+                && !confirmation
+                && !topologyDiscardConfirmation) {
+            TerminalTheme.renderPanel(graphics, networkContext.bounds);
             TerminalTheme.renderScrollbar(
                     graphics,
-                    dropdownBounds.right() - TerminalLayout.SCROLLBAR_WIDTH,
-                    dropdownBounds.y() + 2,
-                    Math.max(0, dropdownBounds.height() - 4),
+                    networkContext.bounds.right() - TerminalLayout.SCROLLBAR_WIDTH,
+                    networkContext.bounds.y() + 2,
+                    Math.max(0, networkContext.bounds.height() - 4),
                     page.entries().size(),
                     Math.min(MAX_VISIBLE_DROPDOWN_ROWS, page.entries().size()),
                     dropdownScroll);
         }
-        if (createOverlay && !confirmation) {
-            renderCreateOverlay(graphics);
+        if (createOverlay) {
+            renderCreateOverlay(graphics, createBounds);
         }
         if (confirmation) {
-            renderConfirmation(graphics);
+            modalBackdrop.render(widget -> widget.render(graphics, -1, -1, partialTick));
+        }
+        if (topologyState != null && topologyDiscardConfirmation) {
+            modalBackdrop.render(widget -> widget.render(graphics, -1, -1, partialTick));
         }
     }
 
+    @Override
+    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        super.render(graphics, mouseX, mouseY, partialTick);
+        if (!confirmation
+                && !topologyDiscardConfirmation
+                && !networkContext.selectable()
+                && networkContext.network() != null
+                && contains(selectorBounds, mouseX, mouseY)) {
+            graphics.renderTooltip(font, TerminalText.body(networkContext.label()), mouseX, mouseY);
+        }
+        if (confirmation || topologyDiscardConfirmation)
+            modalBackdrop.renderForeground(graphics, mouseX, mouseY, partialTick, () -> {
+                if (confirmation) renderConfirmation(graphics);
+                else renderTopologyDiscardConfirmation(graphics);
+            });
+    }
+
     private void renderTopBar(GuiGraphics graphics) {
+        networkContext.apply(topologyState);
+        if (!networkContext.selectable() && networkContext.network() != null && selectorBounds.width() > 0) {
+            TerminalText.drawNetworkLabel(
+                    networkContext.label().getString(),
+                    selectorBounds,
+                    candidate -> font.width(TerminalText.body(Component.literal(candidate))),
+                    TerminalTheme.TEXT,
+                    (text, x, y, color, shadow) -> graphics.drawString(font, text, x, y, color, shadow));
+        }
         graphics.drawString(
                 font,
                 TerminalText.title(font, topBarTitle(), Math.max(0, crumbRight - crumbLeft)),
@@ -1591,6 +2145,18 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void renderTopologyBody(GuiGraphics graphics, NetworkTerminalState state) {
+        if (TerminalFilterView.supports(state)) {
+            filterView.render(graphics, font, layout, state, topologyDraft);
+            if (error != null)
+                graphics.drawString(
+                        font,
+                        ellipsize(error.getString(), layout.content().width() - 16),
+                        layout.content().x() + 8,
+                        layout.content().bottom() - 12,
+                        TerminalTheme.ERROR,
+                        false);
+            return;
+        }
         if (TerminalMemberView.supports(state)) {
             memberView.render(graphics, font, layout);
             if (error != null)
@@ -1692,25 +2258,6 @@ final class NetworkSetupScreen extends Screen {
                     TerminalTheme.MUTED,
                     3);
         }
-        if (topologyDiscardConfirmation) {
-            graphics.fill(content.x(), content.y(), content.right(), content.bottom(), 0xB000070C);
-            TerminalTheme.renderPanel(graphics, modalBounds);
-            TerminalText.drawCentered(
-                    graphics,
-                    font,
-                    Component.translatable("omniresonance.terminal.topology.discard.title"),
-                    modalBounds.x() + modalBounds.width() / 2,
-                    modalBounds.y() + 12,
-                    TerminalTheme.TEXT);
-            drawWrapped(
-                    graphics,
-                    Component.translatable("omniresonance.terminal.topology.discard.message"),
-                    modalBounds.x() + 10,
-                    modalBounds.y() + 32,
-                    modalBounds.width() - 20,
-                    TerminalTheme.MUTED,
-                    2);
-        }
         if (pendingOperation == PendingOperation.TOPOLOGY) {
             graphics.drawString(
                     font,
@@ -1732,6 +2279,9 @@ final class NetworkSetupScreen extends Screen {
 
     private static String topologyCrumb(NetworkTerminalState state) {
         return switch (state) {
+            case NetworkTerminalState.Filters filters -> filters.network().name();
+            case NetworkTerminalState.Preset preset -> preset.preset().name();
+            case NetworkTerminalState.PresetEdit edit -> edit.network().name();
             case NetworkTerminalState.NetworkSettings settings ->
                 settings.settings().network().name();
             case NetworkTerminalState.NetworkRename rename ->
@@ -1822,7 +2372,7 @@ final class NetworkSetupScreen extends Screen {
         graphics.disableScissor();
     }
 
-    private void renderCreateOverlay(GuiGraphics graphics) {
+    private void renderCreateOverlay(GuiGraphics graphics, TerminalLayout.Rect modalBounds) {
         TerminalLayout.Rect content = layout.content();
         graphics.fill(content.x(), content.y(), content.right(), content.bottom(), 0xB000070C);
         TerminalTheme.renderPanel(graphics, modalBounds);
@@ -1847,6 +2397,36 @@ final class NetworkSetupScreen extends Screen {
                     TerminalTheme.ERROR,
                     false);
         }
+    }
+
+    private void renderTopologyDiscardConfirmation(GuiGraphics graphics) {
+        TerminalLayout.Rect content = layout.content();
+        graphics.fill(content.x(), content.y(), content.right(), content.bottom(), 0xB000070C);
+        TerminalTheme.renderPanel(graphics, modalBounds);
+        TerminalText.drawCentered(
+                graphics,
+                font,
+                Component.translatable(
+                        pendingFilterSave == null
+                                ? "omniresonance.terminal.topology.discard.title"
+                                : "omniresonance.terminal.filters.save"),
+                modalBounds.x() + modalBounds.width() / 2,
+                modalBounds.y() + 12,
+                TerminalTheme.TEXT);
+        drawWrapped(
+                graphics,
+                pendingFilterSave != null && topologyState instanceof NetworkTerminalState.PresetEdit edit
+                        ? Component.translatable(
+                                "omniresonance.terminal.filters.impact",
+                                edit.impact().networkCount(),
+                                edit.impact().nodeCount(),
+                                edit.impact().bindingCount())
+                        : Component.translatable("omniresonance.terminal.topology.discard.message"),
+                modalBounds.x() + 10,
+                modalBounds.y() + 32,
+                modalBounds.width() - 20,
+                TerminalTheme.MUTED,
+                2);
     }
 
     private void renderConfirmation(GuiGraphics graphics) {

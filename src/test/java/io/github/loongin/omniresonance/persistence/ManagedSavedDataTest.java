@@ -110,11 +110,11 @@ class ManagedSavedDataTest {
     }
 
     @Test
-    void newNetworkIsDirtyAndSavesExactV5Fields() {
+    void newNetworkIsDirtyAndSavesExactV6Fields() {
         NetworkSavedData data = NetworkSavedData.create(metadata());
 
         assertTrue(data.isDirty());
-        assertEquals(networkTag(), data.save(new CompoundTag(), RegistryAccess.EMPTY));
+        assertEquals(currentNetworkTag(), data.save(new CompoundTag(), RegistryAccess.EMPTY));
         assertTrue(data.isDirty());
     }
 
@@ -140,7 +140,7 @@ class ManagedSavedDataTest {
         assertTrue(migrated.domainConfiguration(NODE_A).isEmpty());
         assertEquals(NodeMode.DIRECT, migrated.findNode(NODE_A).orElseThrow().mode());
         CompoundTag saved = migrated.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(5, saved.getInt("schema_version"));
+        assertEquals(8, saved.getInt("schema_version"));
         assertEquals(0, saved.getLong("management_revision"));
         assertEquals(0, saved.getLong("last_tunnel_number"));
         assertEquals(0, saved.getLong("topology_revision"));
@@ -173,13 +173,35 @@ class ManagedSavedDataTest {
                         new NetworkChannelRecord(CHANNEL_B, TUNNEL_A, 2, new ManagedName("Output"), 6)),
                 loaded.channels(TUNNEL_A));
         assertEquals(
-                List.of(new DirectNodeBinding(NODE_A, CHANNEL_A, TransferDirection.INPUT)),
+                List.of(new DirectNodeBinding(
+                        NODE_A,
+                        CHANNEL_A,
+                        io.github.loongin.omniresonance.transfer.ItemTransferPolicy.defaults(TransferDirection.INPUT))),
                 loaded.directBindings(NODE_A));
         assertEquals(
                 Optional.of(new DomainNodeConfiguration(NODE_B, TransferDirection.OUTPUT)),
                 loaded.domainConfiguration(NODE_B));
         CompoundTag currentExpected = before.copy();
-        currentExpected.putInt("schema_version", 5);
+        currentExpected.putInt("schema_version", 8);
+        currentExpected.put("recovery", new ListTag());
+        currentExpected
+                .getList("direct_bindings", Tag.TAG_COMPOUND)
+                .getCompound(0)
+                .putInt("working_face_mask", 0);
+        currentExpected
+                .getList("direct_bindings", Tag.TAG_COMPOUND)
+                .getCompound(0)
+                .putBoolean("working_face_attached", true);
+        currentExpected
+                .getList("direct_bindings", Tag.TAG_COMPOUND)
+                .getCompound(0)
+                .put(
+                        "resource_policy",
+                        ResourcePolicyNbt.encode(new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                                io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(
+                                        io.github.loongin.omniresonance.transfer.ItemTransferPolicy.defaults(
+                                                TransferDirection.INPUT)),
+                                java.util.Map.of())));
         currentExpected.putLong("management_revision", 0);
         assertEquals(currentExpected, loaded.save(new CompoundTag(), RegistryAccess.EMPTY));
         assertThrows(UnsupportedOperationException.class, () -> loaded.tunnels().clear());
@@ -280,13 +302,13 @@ class ManagedSavedDataTest {
         NetworkSavedData data = NetworkSavedData.create(metadata());
         CompoundTag first = data.save(new CompoundTag(), RegistryAccess.EMPTY);
         CompoundTag second = data.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(networkTag(), first);
+        assertEquals(currentNetworkTag(), first);
         first.getList("administrators", Tag.TAG_INT_ARRAY).getIntArray(0)[0] = 99;
         first.getIntArray("owner_id")[0] = 99;
 
-        assertEquals(networkTag(), second);
+        assertEquals(currentNetworkTag(), second);
         assertEquals(metadata(), data.metadata());
-        assertEquals(networkTag(), data.save(new CompoundTag(), RegistryAccess.EMPTY));
+        assertEquals(currentNetworkTag(), data.save(new CompoundTag(), RegistryAccess.EMPTY));
     }
 
     @Test
@@ -757,11 +779,11 @@ class ManagedSavedDataTest {
     }
 
     @Test
-    void newOwnerIsDirtyAndSavesExactV1Fields() {
+    void newOwnerIsDirtyAndSavesExactV3Fields() {
         OwnerSavedData data = OwnerSavedData.create(OWNER, NETWORK);
 
         assertTrue(data.isDirty());
-        assertEquals(ownerTag(true), data.save(new CompoundTag(), RegistryAccess.EMPTY));
+        assertEquals(currentOwnerTag(true), data.save(new CompoundTag(), RegistryAccess.EMPTY));
         assertTrue(data.isDirty());
     }
 
@@ -789,7 +811,7 @@ class ManagedSavedDataTest {
         assertEquals(Optional.empty(), loaded.defaultNetworkId());
         assertFalse(loaded.isDirty());
         assertTrue(created.isDirty());
-        assertEquals(ownerTag(false), created.save(new CompoundTag(), RegistryAccess.EMPTY));
+        assertEquals(currentOwnerTag(false), created.save(new CompoundTag(), RegistryAccess.EMPTY));
     }
 
     @Test
@@ -815,7 +837,7 @@ class ManagedSavedDataTest {
     @Test
     void clearingDefaultRemovesStaleOptionalFieldFromReusedOutputTag() {
         OwnerSavedData data = OwnerSavedData.create(OWNER, null);
-        assertEquals(ownerTag(false), data.save(ownerTag(true), RegistryAccess.EMPTY));
+        assertEquals(currentOwnerTag(false), data.save(ownerTag(true), RegistryAccess.EMPTY));
     }
 
     @Test
@@ -823,11 +845,11 @@ class ManagedSavedDataTest {
         OwnerSavedData data = OwnerSavedData.create(OWNER, NETWORK);
         CompoundTag first = data.save(new CompoundTag(), RegistryAccess.EMPTY);
         CompoundTag second = data.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(ownerTag(true), first);
+        assertEquals(currentOwnerTag(true), first);
         first.getIntArray("owner_id")[0] = 99;
         first.getIntArray("default_network_id")[0] = 99;
 
-        assertEquals(ownerTag(true), second);
+        assertEquals(currentOwnerTag(true), second);
         assertEquals(OWNER, data.ownerId());
         assertEquals(Optional.of(NETWORK), data.defaultNetworkId());
     }
@@ -956,6 +978,21 @@ class ManagedSavedDataTest {
 
     private static NetworkMetadata metadata() {
         return new NetworkMetadata(NETWORK, OWNER, NAME, 0, Set.of(ADMIN));
+    }
+
+    private static CompoundTag currentNetworkTag() {
+        CompoundTag tag = networkTag();
+        tag.putInt("schema_version", 8);
+        tag.put("recovery", new ListTag());
+        return tag;
+    }
+
+    private static CompoundTag currentOwnerTag(boolean withDefault) {
+        CompoundTag tag = ownerTag(withDefault);
+        tag.putInt("schema_version", 3);
+        tag.putLong("preset_library_revision", 0);
+        tag.put("filter_presets", new ListTag());
+        return tag;
     }
 
     private static CompoundTag networkTag() {

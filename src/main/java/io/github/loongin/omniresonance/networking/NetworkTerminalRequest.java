@@ -17,7 +17,7 @@ public sealed interface NetworkTerminalRequest extends CustomPacketPayload {
     StreamCodec<FriendlyByteBuf, NetworkTerminalRequest> STREAM_CODEC = new StreamCodec<>() {
         @Override
         public NetworkTerminalRequest decode(FriendlyByteBuf buffer) {
-            NetworkSummary.requirePayloadBound(buffer);
+            FullFilterCodec.requireBodyBound(buffer, TYPE.id());
             try {
                 int tag = buffer.readUnsignedByte();
                 if (tag == 0) {
@@ -29,72 +29,138 @@ public sealed interface NetworkTerminalRequest extends CustomPacketPayload {
                 UUID view = buffer.readUUID();
                 UUID session = buffer.readUUID();
                 long sequence = buffer.readLong();
-                return switch (tag) {
-                    case 1 ->
-                        new Page(
-                                view,
-                                session,
-                                sequence,
-                                buffer.readBoolean() ? buffer.readUUID() : null,
-                                buffer.readBoolean());
-                    case 2 -> new Create(view, session, sequence, NetworkSummary.readName(buffer));
-                    case 4 -> new OpenNetwork(view, session, sequence, buffer.readUUID());
-                    case 5 -> new OpenTunnels(view, session, sequence);
-                    case 6 ->
-                        new PageTunnels(
-                                view,
-                                session,
-                                sequence,
-                                buffer.readBoolean() ? buffer.readUUID() : null,
-                                buffer.readBoolean());
-                    case 7 -> new BeginCreateTunnel(view, session, sequence, NetworkSummary.readName(buffer));
-                    case 8 ->
-                        new CreateTunnel(
-                                view,
-                                session,
-                                sequence,
-                                NetworkSummary.readName(buffer),
-                                NetworkSummary.readName(buffer));
-                    case 9 -> new BeginRenameTunnel(view, session, sequence, buffer.readUUID());
-                    case 10 -> new SetTunnelEnabled(view, session, sequence, buffer.readUUID(), buffer.readBoolean());
-                    case 11 -> new OpenChannels(view, session, sequence, buffer.readUUID());
-                    case 12 ->
-                        new PageChannels(
-                                view,
-                                session,
-                                sequence,
-                                buffer.readBoolean() ? buffer.readUUID() : null,
-                                buffer.readBoolean());
-                    case 16 -> new RequestDeleteTunnel(view, session, sequence, buffer.readUUID());
-                    case 18 -> new ConfirmDelete(view, session, sequence);
-                    case 19 -> new Heartbeat(view, session, sequence);
-                    case 20 -> new CancelEdit(view, session, sequence);
-                    case 21 -> new Back(view, session, sequence);
-                    case 22 -> new RenameTunnel(view, session, sequence, NetworkSummary.readName(buffer));
-                    case 23 -> new OpenTunnelSettings(view, session, sequence);
-                    case 24 -> new OpenMembers(view, session, sequence);
-                    case 25 ->
-                        new PageMembers(
-                                view,
-                                session,
-                                sequence,
-                                buffer.readBoolean() ? buffer.readUUID() : null,
-                                buffer.readBoolean());
-                    case 26 -> new OpenAdministratorCandidates(view, session, sequence);
-                    case 27 ->
-                        new PageAdministratorCandidates(
-                                view, session, sequence, buffer.readUUID(), buffer.readVarInt());
-                    case 28 -> new AddAdministrator(view, session, sequence, buffer.readUUID());
-                    case 29 -> new RequestRemoveAdministrator(view, session, sequence, buffer.readUUID());
-                    case 30 -> new ConfirmRemoveAdministrator(view, session, sequence);
-                    case 31 -> new OpenNetworkSettings(view, session, sequence);
-                    case 32 -> new BeginRenameNetwork(view, session, sequence);
-                    case 33 -> new RenameNetwork(view, session, sequence, NetworkSummary.readName(buffer));
-                    case 34 -> new SetDefaultNetwork(view, session, sequence);
-                    case 35 -> new RequestDeleteNetwork(view, session, sequence);
-                    case 36 -> new ConfirmDeleteNetwork(view, session, sequence);
-                    default -> throw new DecoderException("Unknown terminal request tag");
-                };
+                NetworkTerminalRequest decoded =
+                        switch (tag) {
+                            case 1 ->
+                                new Page(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readBoolean() ? buffer.readUUID() : null,
+                                        buffer.readBoolean());
+                            case 2 -> new Create(view, session, sequence, NetworkSummary.readName(buffer));
+                            case 4 -> new OpenNetwork(view, session, sequence, buffer.readUUID());
+                            case 5 -> new OpenTunnels(view, session, sequence);
+                            case 6 ->
+                                new PageTunnels(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readBoolean() ? buffer.readUUID() : null,
+                                        buffer.readBoolean());
+                            case 7 -> new BeginCreateTunnel(view, session, sequence, NetworkSummary.readName(buffer));
+                            case 8 ->
+                                new CreateTunnel(
+                                        view,
+                                        session,
+                                        sequence,
+                                        NetworkSummary.readName(buffer),
+                                        NetworkSummary.readName(buffer));
+                            case 9 -> new BeginRenameTunnel(view, session, sequence, buffer.readUUID());
+                            case 10 ->
+                                new SetTunnelEnabled(view, session, sequence, buffer.readUUID(), buffer.readBoolean());
+                            case 11 -> new OpenChannels(view, session, sequence, buffer.readUUID());
+                            case 12 ->
+                                new PageChannels(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readBoolean() ? buffer.readUUID() : null,
+                                        buffer.readBoolean());
+                            case 16 -> new RequestDeleteTunnel(view, session, sequence, buffer.readUUID());
+                            case 18 -> new ConfirmDelete(view, session, sequence);
+                            case 19 -> new Heartbeat(view, session, sequence);
+                            case 20 -> new CancelEdit(view, session, sequence);
+                            case 21 -> new Back(view, session, sequence);
+                            case 22 -> new RenameTunnel(view, session, sequence, NetworkSummary.readName(buffer));
+                            case 23 -> new OpenTunnelSettings(view, session, sequence);
+                            case 24 -> new OpenMembers(view, session, sequence);
+                            case 25 ->
+                                new PageMembers(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readBoolean() ? buffer.readUUID() : null,
+                                        buffer.readBoolean());
+                            case 26 -> new OpenAdministratorCandidates(view, session, sequence);
+                            case 27 ->
+                                new PageAdministratorCandidates(
+                                        view, session, sequence, buffer.readUUID(), buffer.readVarInt());
+                            case 28 -> new AddAdministrator(view, session, sequence, buffer.readUUID());
+                            case 29 -> new RequestRemoveAdministrator(view, session, sequence, buffer.readUUID());
+                            case 30 -> new ConfirmRemoveAdministrator(view, session, sequence);
+                            case 31 -> new OpenNetworkSettings(view, session, sequence);
+                            case 32 -> new BeginRenameNetwork(view, session, sequence);
+                            case 33 -> new RenameNetwork(view, session, sequence, NetworkSummary.readName(buffer));
+                            case 34 -> new SetDefaultNetwork(view, session, sequence);
+                            case 35 -> new RequestDeleteNetwork(view, session, sequence);
+                            case 36 -> new ConfirmDeleteNetwork(view, session, sequence);
+                            case 37 -> new OpenFilters(view, session, sequence);
+                            case 38 -> new PagePresets(view, session, sequence, buffer.readInt());
+                            case 39 ->
+                                new OpenPreset(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readUUID(),
+                                        buffer.readLong(),
+                                        buffer.readInt());
+                            case 40 ->
+                                new BeginPresetEdit(
+                                        view,
+                                        session,
+                                        sequence,
+                                        FilterMenuCodec.readOperation(buffer),
+                                        buffer.readBoolean() ? buffer.readUUID() : null,
+                                        FilterMenuCodec.readText(buffer));
+                            case 41 -> new SavePresetEdit(view, session, sequence, FilterMenuCodec.readText(buffer));
+                            case 42 ->
+                                new ReadResourceRule(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readUUID(),
+                                        buffer.readLong(),
+                                        buffer.readUUID());
+                            case 43 ->
+                                new BeginResourceRule(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readUUID(),
+                                        buffer.readBoolean() ? buffer.readUUID() : null,
+                                        buffer.readBoolean());
+                            case 44 ->
+                                new SaveResourceRule(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readBoolean()
+                                                ? FullFilterCodec.readIntent(buffer.readByteArray(262144))
+                                                : null);
+                            case 45 ->
+                                new SampleResourceRule(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readResourceLocation(),
+                                        buffer.readInt(),
+                                        buffer.readInt());
+                            case 47 ->
+                                new QueryFilterLibrary(
+                                        view,
+                                        session,
+                                        sequence,
+                                        buffer.readUtf(256),
+                                        buffer.readInt(),
+                                        buffer.readLong());
+                            case 46 ->
+                                new PrepareResourceRuleUpload(
+                                        view, session, sequence, buffer.readUUID(), buffer.readInt());
+                            default -> throw new DecoderException("Unknown terminal request tag");
+                        };
+                if (tag >= 37 && buffer.isReadable()) throw new DecoderException("Trailing filter request fields");
+                return decoded;
             } catch (IllegalArgumentException | IndexOutOfBoundsException failure) {
                 throw new DecoderException("Invalid terminal request fields", failure);
             }
@@ -104,6 +170,41 @@ public sealed interface NetworkTerminalRequest extends CustomPacketPayload {
         public void encode(FriendlyByteBuf buffer, NetworkTerminalRequest request) {
             int start = buffer.writerIndex();
             switch (request) {
+                case QueryFilterLibrary query -> {
+                    writeEnvelope(buffer, 47, query);
+                    buffer.writeUtf(query.query(), 256);
+                    buffer.writeInt(query.offset());
+                    buffer.writeLong(query.revision());
+                }
+                case ReadResourceRule read -> {
+                    writeEnvelope(buffer, 42, read);
+                    buffer.writeUUID(read.presetId());
+                    buffer.writeLong(read.revision());
+                    buffer.writeUUID(read.ruleId());
+                }
+                case BeginResourceRule begin -> {
+                    writeEnvelope(buffer, 43, begin);
+                    buffer.writeUUID(begin.presetId());
+                    buffer.writeBoolean(begin.ruleId() != null);
+                    if (begin.ruleId() != null) buffer.writeUUID(begin.ruleId());
+                    buffer.writeBoolean(begin.remove());
+                }
+                case SaveResourceRule save -> {
+                    writeEnvelope(buffer, 44, save);
+                    buffer.writeBoolean(save.intent() != null);
+                    if (save.intent() != null) buffer.writeByteArray(FullFilterCodec.intent(save.intent()));
+                }
+                case SampleResourceRule sample -> {
+                    writeEnvelope(buffer, 45, sample);
+                    buffer.writeResourceLocation(sample.typeId());
+                    buffer.writeInt(sample.slot());
+                    buffer.writeInt(sample.tank());
+                }
+                case PrepareResourceRuleUpload upload -> {
+                    writeEnvelope(buffer, 46, upload);
+                    buffer.writeUUID(upload.transferId());
+                    buffer.writeInt(upload.length());
+                }
                 case Open open -> {
                     buffer.writeByte(0);
                     buffer.writeUUID(open.viewId());
@@ -149,6 +250,28 @@ public sealed interface NetworkTerminalRequest extends CustomPacketPayload {
                 case SetDefaultNetwork set -> writeEnvelope(buffer, 34, set);
                 case RequestDeleteNetwork delete -> writeEnvelope(buffer, 35, delete);
                 case ConfirmDeleteNetwork delete -> writeEnvelope(buffer, 36, delete);
+                case OpenFilters open -> writeEnvelope(buffer, 37, open);
+                case PagePresets page -> {
+                    writeEnvelope(buffer, 38, page);
+                    buffer.writeInt(page.offset());
+                }
+                case OpenPreset open -> {
+                    writeEnvelope(buffer, 39, open);
+                    buffer.writeUUID(open.presetId());
+                    buffer.writeLong(open.revision());
+                    buffer.writeInt(open.offset());
+                }
+                case BeginPresetEdit begin -> {
+                    writeEnvelope(buffer, 40, begin);
+                    FilterMenuCodec.writeOperation(buffer, begin.operation());
+                    buffer.writeBoolean(begin.presetId() != null);
+                    if (begin.presetId() != null) buffer.writeUUID(begin.presetId());
+                    FilterMenuCodec.writeText(buffer, begin.originalRule());
+                }
+                case SavePresetEdit save -> {
+                    writeEnvelope(buffer, 41, save);
+                    FilterMenuCodec.writeText(buffer, save.value());
+                }
                 case PageTunnels page -> writePage(buffer, 6, page, page.anchor(), page.backwards());
                 case BeginCreateTunnel begin -> {
                     writeEnvelope(buffer, 7, begin);
@@ -187,7 +310,7 @@ public sealed interface NetworkTerminalRequest extends CustomPacketPayload {
                 }
                 case OpenTunnelSettings open -> writeEnvelope(buffer, 23, open);
             }
-            NetworkSummary.requireEncodedBound(buffer, start);
+            FullFilterCodec.requireEncodedBodyBound(buffer, start, TYPE.id());
         }
     };
 
@@ -466,6 +589,133 @@ public sealed interface NetworkTerminalRequest extends CustomPacketPayload {
             buffer.writeUUID(anchor);
         }
         buffer.writeBoolean(backwards);
+    }
+
+    record OpenFilters(UUID viewId, UUID sessionId, long sequence) implements NetworkTerminalRequest {
+        public OpenFilters {
+            requireEnvelope(viewId, sessionId, sequence);
+        }
+    }
+
+    record PagePresets(UUID viewId, UUID sessionId, long sequence, int offset) implements NetworkTerminalRequest {
+        public PagePresets {
+            requireEnvelope(viewId, sessionId, sequence);
+            if (offset < 0 || offset > 262144) throw new IllegalArgumentException("Invalid preset offset");
+        }
+    }
+
+    record OpenPreset(UUID viewId, UUID sessionId, long sequence, UUID presetId, long revision, int offset)
+            implements NetworkTerminalRequest {
+        public OpenPreset {
+            requireEnvelope(viewId, sessionId, sequence);
+            Objects.requireNonNull(presetId, "presetId");
+            if (revision < 0 || offset < 0 || offset > 262144) throw new IllegalArgumentException("Invalid rule page");
+        }
+    }
+
+    record BeginPresetEdit(
+            UUID viewId,
+            UUID sessionId,
+            long sequence,
+            io.github.loongin.omniresonance.filter.PresetEditOperation operation,
+            @Nullable UUID presetId,
+            String originalRule)
+            implements NetworkTerminalRequest {
+        public BeginPresetEdit(
+                UUID viewId,
+                UUID sessionId,
+                long sequence,
+                io.github.loongin.omniresonance.filter.PresetEditOperation operation,
+                @Nullable UUID presetId) {
+            this(viewId, sessionId, sequence, operation, presetId, "");
+        }
+
+        public BeginPresetEdit {
+            requireEnvelope(viewId, sessionId, sequence);
+            Objects.requireNonNull(operation, "operation");
+            Objects.requireNonNull(originalRule, "originalRule");
+            FilterMenuCodec.validateText(originalRule);
+            if (operation != io.github.loongin.omniresonance.filter.PresetEditOperation.EDIT_RULE
+                    && !originalRule.isEmpty()) throw new IllegalArgumentException("Unexpected original rule");
+            if ((operation == io.github.loongin.omniresonance.filter.PresetEditOperation.CREATE) != (presetId == null))
+                throw new IllegalArgumentException("Invalid preset edit identity");
+        }
+    }
+
+    record SavePresetEdit(UUID viewId, UUID sessionId, long sequence, String value) implements NetworkTerminalRequest {
+        public SavePresetEdit {
+            requireEnvelope(viewId, sessionId, sequence);
+            Objects.requireNonNull(value, "value");
+            if (value.length() > FilterMenuCodec.MAXIMUM_TEXT_BYTES)
+                throw new IllegalArgumentException("Invalid filter intent");
+            FilterMenuCodec.validateText(value);
+        }
+    }
+
+    record QueryFilterLibrary(UUID viewId, UUID sessionId, long sequence, String query, int offset, long revision)
+            implements NetworkTerminalRequest {
+        public QueryFilterLibrary {
+            requireEnvelope(viewId, sessionId, sequence);
+            Objects.requireNonNull(query);
+            if (query.length() > 256 || offset < 0 || offset > 262144 || revision < -1)
+                throw new IllegalArgumentException("Invalid filter query");
+        }
+    }
+
+    record ReadResourceRule(UUID viewId, UUID sessionId, long sequence, UUID presetId, long revision, UUID ruleId)
+            implements NetworkTerminalRequest {
+        public ReadResourceRule {
+            requireEnvelope(viewId, sessionId, sequence);
+            Objects.requireNonNull(presetId);
+            Objects.requireNonNull(ruleId);
+            if (revision < 0) throw new IllegalArgumentException("Invalid revision");
+        }
+    }
+
+    record BeginResourceRule(
+            UUID viewId,
+            UUID sessionId,
+            long sequence,
+            UUID presetId,
+            @Nullable UUID ruleId,
+            boolean remove) implements NetworkTerminalRequest {
+        public BeginResourceRule {
+            requireEnvelope(viewId, sessionId, sequence);
+            Objects.requireNonNull(presetId);
+            if (remove && ruleId == null) throw new IllegalArgumentException("Missing rule");
+        }
+    }
+
+    record SaveResourceRule(
+            UUID viewId,
+            UUID sessionId,
+            long sequence,
+            @Nullable io.github.loongin.omniresonance.filter.ResourceRuleIntent intent)
+            implements NetworkTerminalRequest {
+        public SaveResourceRule {
+            requireEnvelope(viewId, sessionId, sequence);
+        }
+    }
+
+    record SampleResourceRule(UUID viewId, UUID sessionId, long sequence, ResourceLocation typeId, int slot, int tank)
+            implements NetworkTerminalRequest {
+        public SampleResourceRule {
+            requireEnvelope(viewId, sessionId, sequence);
+            Objects.requireNonNull(typeId);
+            if (slot < 0 || tank < 0) throw new IllegalArgumentException("Invalid inventory sample");
+        }
+    }
+
+    record PrepareResourceRuleUpload(UUID viewId, UUID sessionId, long sequence, UUID transferId, int length)
+            implements NetworkTerminalRequest {
+        public PrepareResourceRuleUpload {
+            requireEnvelope(viewId, sessionId, sequence);
+            Objects.requireNonNull(transferId);
+            if (length <= 0
+                    || length > ManagementTransferPool.MAXIMUM_OBJECT_BYTES
+                    || FullFilterCodec.intentFitsPacket(length))
+                throw new IllegalArgumentException("Invalid intent length");
+        }
     }
 
     private static void requireEnvelope(UUID viewId, UUID sessionId, long sequence) {

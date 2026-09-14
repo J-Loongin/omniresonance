@@ -4,6 +4,7 @@ package io.github.loongin.omniresonance.node;
 import io.github.loongin.omniresonance.bootstrap.OmniResonanceMod;
 import io.github.loongin.omniresonance.network.ManagedName;
 import io.github.loongin.omniresonance.network.NetworkMetadata;
+import io.github.loongin.omniresonance.persistence.ManagedSavedDataNames;
 import io.github.loongin.omniresonance.persistence.NetworkSavedData;
 import io.github.loongin.omniresonance.persistence.SavedNetworkRepository;
 import io.github.loongin.omniresonance.registry.ModBlocks;
@@ -16,6 +17,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
@@ -265,6 +267,115 @@ public final class NodeAuthorityGameTests {
                             && conflicted.network(NETWORK_B).findNode(NODE_C).isPresent(),
                     "Conflict deleted an authority record");
             helper.succeed();
+        }
+    }
+
+    /** Unreadable shards preserve unknown linked identities while healthy exact authority still relinks. */
+    @GameTest(template = "bootstrap")
+    public static void unreadableNetworkPreservesLinkedIdentityAcrossRepeatedEnumeration(GameTestHelper helper)
+            throws IOException {
+        Path path = Files.createTempDirectory("omniresonance-node-unreadable-test-");
+        try {
+            DimensionDataStorage storage = new DimensionDataStorage(
+                    path.toFile(), DataFixers.getDataFixer(), helper.getLevel().registryAccess());
+            SavedNetworkRepository writer = new SavedNetworkRepository(storage, path);
+            writer.createNetwork(new NetworkMetadata(NETWORK_A, OWNER, new ManagedName("Healthy"), 0, Set.of()));
+            BlockPos healthyPos = helper.absolutePos(new BlockPos(2, 3, 2));
+            writer.findLoadedNetwork(NETWORK_A)
+                    .orElseThrow()
+                    .createNode(
+                            NODE_A,
+                            new ManagedName("Healthy node"),
+                            GlobalPos.of(Level.OVERWORLD, healthyPos),
+                            NodeForm.BLOCK,
+                            Direction.DOWN);
+            storage.save();
+            IOUtilities.waitUntilIOWorkerComplete();
+            Path malformed = path.resolve(ManagedSavedDataNames.network(NETWORK_B) + ".dat");
+            byte[] originalBytes = new byte[] {1, 2, 3};
+            Files.write(malformed, originalBytes);
+            SavedNetworkRepository repository = new SavedNetworkRepository(
+                    new DimensionDataStorage(
+                            path.toFile(),
+                            DataFixers.getDataFixer(),
+                            helper.getLevel().registryAccess()),
+                    path);
+            List<SavedNetworkRepository.LoadedNetwork> loaded = repository.loadNetworkData();
+            helper.assertTrue(loaded.size() == 1, "Unreadable shard was not excluded from startup");
+            List<NetworkNodeDirectory.Entry> entries = new ArrayList<>();
+            for (SavedNetworkRepository.LoadedNetwork network : loaded) {
+                for (NetworkNodeRecord node : network.nodes()) {
+                    entries.add(
+                            new NetworkNodeDirectory.Entry(network.metadata().id(), node));
+                }
+            }
+            AtomicInteger replacements = new AtomicInteger();
+            try (NodeAuthorityService authority = new NodeAuthorityService(
+                    helper.getLevel().getServer(), repository, new NetworkNodeDirectory(entries), () -> {
+                        replacements.incrementAndGet();
+                        return REPLACEMENT_A;
+                    })) {
+                ResonanceNodeBlockEntity healthy =
+                        place(helper, healthyPos, ModBlocks.RESONANCE_TRANSFER_NODE.get(), Direction.DOWN);
+                loadState(helper, healthy, NODE_A, NodeLinkState.BLANK);
+                authority.reconcileLoaded(healthy);
+                helper.assertTrue(
+                        healthy.state()
+                                .orElseThrow()
+                                .equals(new NodePersistentState.Valid(NODE_A, NodeLinkState.LINKED)),
+                        "Unreadable shard prevented healthy exact relinking");
+                ResonanceNodeBlockEntity unknown = place(
+                        helper,
+                        helper.absolutePos(new BlockPos(5, 3, 2)),
+                        ModBlocks.RESONANCE_TRANSFER_NODE.get(),
+                        Direction.DOWN);
+                loadState(helper, unknown, NODE_B, NodeLinkState.LINKED);
+                NodePersistentState.Valid before = unknown.state().orElseThrow();
+                CompoundTag beforeNbt = unknown.saveCustomOnly(helper.getLevel().registryAccess());
+                authority.reconcileLoaded(unknown);
+                helper.assertTrue(
+                        unknown.state().orElseThrow().equals(before),
+                        "Unreadable network caused linked node identity replacement");
+                helper.assertTrue(
+                        beforeNbt.equals(
+                                unknown.saveCustomOnly(helper.getLevel().registryAccess())),
+                        "Unreadable network changed linked node NBT");
+                helper.assertTrue(replacements.get() == 0, "Uncertain identity requested a replacement UUID");
+                helper.assertTrue(
+                        java.util.Arrays.equals(originalBytes, Files.readAllBytes(malformed)),
+                        "Unreadable network file was changed");
+                repository.loadNetworkData();
+                Files.delete(malformed);
+                repository.loadNetworkData();
+                authority.reconcileLoaded(unknown);
+                helper.assertTrue(
+                        beforeNbt.equals(
+                                        unknown.saveCustomOnly(helper.getLevel().registryAccess()))
+                                && replacements.get() == 0,
+                        "Repeated enumeration cleared unreadable-shard uncertainty");
+                ResonanceNodeBlockEntity duplicate = place(
+                        helper,
+                        helper.absolutePos(new BlockPos(7, 3, 2)),
+                        ModBlocks.RESONANCE_TRANSFER_NODE.get(),
+                        Direction.DOWN);
+                loadState(helper, duplicate, NODE_A, NodeLinkState.LINKED);
+                authority.reconcileLoaded(duplicate);
+                helper.assertTrue(
+                        duplicate
+                                        .state()
+                                        .orElseThrow()
+                                        .equals(new NodePersistentState.Valid(REPLACEMENT_A, NodeLinkState.BLANK))
+                                && replacements.get() == 1,
+                        "Unreadable shard prevented known duplicate UUID replacement");
+            }
+            helper.succeed();
+        } finally {
+            IOUtilities.waitUntilIOWorkerComplete();
+            try (var files = Files.walk(path)) {
+                for (Path file : files.sorted(Comparator.reverseOrder()).toList()) {
+                    Files.delete(file);
+                }
+            }
         }
     }
 

@@ -10,6 +10,10 @@ import io.github.loongin.omniresonance.persistence.NetworkSavedData;
 import io.github.loongin.omniresonance.persistence.SavedNetworkRepository;
 import io.github.loongin.omniresonance.security.EditLockTable;
 import io.github.loongin.omniresonance.security.NetworkPermissions;
+import io.github.loongin.omniresonance.transfer.ItemTransferPolicy;
+import io.github.loongin.omniresonance.transfer.ResourcePolicyEdit;
+import io.github.loongin.omniresonance.transfer.ResourceTransferPolicy;
+import io.github.loongin.omniresonance.transfer.StoredResourcePolicy;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -189,6 +193,12 @@ public final class NetworkTopologyService implements AutoCloseable {
         settings = initialConfig.loaded()
                 ? Objects.requireNonNull(initialConfig.settings(), "settings")
                 : ServerSettings.defaults();
+    }
+
+    /** Returns the current immutable quota snapshot on the server thread without mutation or simulation. */
+    public ServerSettings settingsSnapshot() {
+        requireServerThread();
+        return settings;
     }
 
     public NetworkMetadata inspectNetwork(ServerPlayer actor, UUID networkId) {
@@ -564,7 +574,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         NetworkSavedData network = requireEdit(actor, edit, Kind.TUNNEL);
         Objects.requireNonNull(name, "name");
         NetworkTunnelRecord current = currentTunnel(network, edit);
-        if (!current.name().equals(name) && network.containsTunnelName(name)) {
+        if (!current.name().uniquenessKey().equals(name.uniquenessKey()) && network.containsTunnelName(name)) {
             throw rejected(Reason.NAME_CONFLICT);
         }
         return commitTunnel(actor, edit, network.renameTunnel(current.tunnelId(), current.revision(), name));
@@ -580,7 +590,8 @@ public final class NetworkTopologyService implements AutoCloseable {
         NetworkSavedData network = requireEdit(actor, edit, Kind.CHANNEL);
         Objects.requireNonNull(name, "name");
         NetworkChannelRecord current = currentChannel(network, edit);
-        if (!current.name().equals(name) && network.containsChannelName(current.tunnelId(), name)) {
+        if (!current.name().uniquenessKey().equals(name.uniquenessKey())
+                && network.containsChannelName(current.tunnelId(), name)) {
             throw rejected(Reason.NAME_CONFLICT);
         }
         NetworkChannelRecord updated = network.renameChannel(current.channelId(), current.revision(), name)
@@ -622,6 +633,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         NetworkChannelRecord current = currentChannel(network, edit);
         requireDeletionCurrent(actor, network, deletion);
         requireAffectedNodesUnlocked(deletion);
+        requireAffectedNodesAvailable(network, deletion);
         List<NetworkNodeRecord> changed = network.deleteChannel(
                 current.channelId(), current.revision(), deletion.impact().topologyRevision());
         publishNodes(edit.networkId(), changed);
@@ -636,6 +648,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         NetworkTunnelRecord current = currentTunnel(network, edit);
         requireDeletionCurrent(actor, network, deletion);
         requireAffectedNodesUnlocked(deletion);
+        requireAffectedNodesAvailable(network, deletion);
         List<NetworkNodeRecord> changed = network.deleteTunnel(
                 current.tunnelId(), current.revision(), deletion.impact().topologyRevision());
         publishNodes(edit.networkId(), changed);
@@ -696,8 +709,113 @@ public final class NetworkTopologyService implements AutoCloseable {
 
     public NetworkNodeRecord setDirectBinding(
             ServerPlayer actor, Edit edit, UUID channelId, TransferDirection direction, boolean confirmedReset) {
+        StoredResourcePolicy current = inspectResourcePolicy(
+                actor, edit.networkId(), Objects.requireNonNull(edit.nodeId(), "nodeId"), channelId);
+        return saveDirectBinding(
+                actor,
+                edit,
+                channelId,
+                ResourcePolicyEdit.fromStored(current.switchDirection(direction)),
+                inspectDirectBinding(actor, edit.networkId(), edit.nodeId(), channelId)
+                        .workingFaces(),
+                confirmedReset);
+    }
+
+    /** Returns a server-owned immutable saved policy or a new input default, without leasing or mutation. */
+    public StoredResourcePolicy inspectResourcePolicy(ServerPlayer actor, UUID networkId, UUID nodeId, UUID channelId) {
+        NetworkSavedData network = requireNetwork(actor, networkId);
+        requireNode(networkId, nodeId, network);
+        for (DirectNodeBinding binding : network.directBindings(nodeId)) {
+            if (binding.channelId().equals(channelId)) return binding.storedPolicy();
+        }
+        return new StoredResourcePolicy(ResourceTransferPolicy.defaults(TransferDirection.INPUT), java.util.Map.of());
+    }
+
+    /** Reads immutable authority without leases, capability discovery or mutation; missing block bindings default empty. */
+    public DirectNodeBinding inspectDirectBinding(ServerPlayer actor, UUID networkId, UUID nodeId, UUID channelId) {
+        NetworkSavedData network = requireNetwork(actor, networkId);
+        NetworkNodeRecord node = requireNode(networkId, nodeId, network);
+        if (node.mode() != NodeMode.DIRECT) throw rejected(Reason.UNAVAILABLE);
+        NetworkChannelRecord channel = network.findChannel(Objects.requireNonNull(channelId, "channelId"))
+                .orElseThrow(() -> rejected(Reason.UNAVAILABLE));
+        if (network.findTunnel(channel.tunnelId()).isEmpty()) throw rejected(Reason.UNAVAILABLE);
+        Optional<UUID> tunnel = network.directTunnelId(nodeId);
+        if (tunnel.isPresent() && !tunnel.orElseThrow().equals(channel.tunnelId()))
+            throw rejected(Reason.TUNNEL_SWITCH_REQUIRED);
+        return network.findDirectBinding(nodeId, channelId)
+                .orElseGet(() -> new DirectNodeBinding(
+                        nodeId,
+                        channelId,
+                        ResourceTransferPolicy.defaults(TransferDirection.INPUT),
+                        node.form() == io.github.loongin.omniresonance.node.NodeForm.PANEL
+                                ? WorkingFaces.attachedFace()
+                                : WorkingFaces.explicit(0)));
+    }
+
+    /** Compatibility save keeps existing faces and gives missing bindings their legacy fixed attached target. */
+    public NetworkNodeRecord setDirectBinding(
+            ServerPlayer actor, Edit edit, UUID channelId, ItemTransferPolicy policy, boolean confirmedReset) {
+        NetworkSavedData network = requireEdit(actor, edit, Kind.NODE);
+        WorkingFaces faces = network.findDirectBinding(Objects.requireNonNull(edit.nodeId(), "nodeId"), channelId)
+                .map(DirectNodeBinding::workingFaces)
+                .orElse(WorkingFaces.attachedFace());
+        return saveDirectBinding(
+                actor,
+                edit,
+                channelId,
+                ResourcePolicyEdit.fromStored(
+                        new StoredResourcePolicy(ResourceTransferPolicy.legacy(policy), java.util.Map.of())),
+                faces,
+                confirmedReset);
+    }
+
+    /** Revalidates the current lease, revision, node and enabled channel without renewing the lease or mutation. */
+    public DirectNodeBinding validateBindingEdit(ServerPlayer actor, Edit edit, UUID channelId) {
         NetworkSavedData network = requireEdit(actor, edit, Kind.NODE);
         NetworkNodeRecord node = currentNode(network, edit);
+        requireEnabled(node);
+        DirectNodeBinding binding = inspectDirectBinding(actor, edit.networkId(), node.nodeId(), channelId);
+        NetworkChannelRecord channel = network.findChannel(channelId).orElseThrow(() -> rejected(Reason.UNAVAILABLE));
+        if (!network.findTunnel(channel.tunnelId())
+                .orElseThrow(() -> rejected(Reason.UNAVAILABLE))
+                .enabled()) throw rejected(Reason.TUNNEL_DISABLED);
+        return binding;
+    }
+
+    /** Validates a decoded detached intent against current authority without saving or renewing the edit lease. */
+    public void validatePolicyIntent(ServerPlayer actor, Edit edit, UUID channelId, ResourcePolicyEdit intent) {
+        DirectNodeBinding binding = validateBindingEdit(actor, edit, channelId);
+        intent.reconcile(binding.storedPolicy(), repository().registeredResourceTypes());
+    }
+
+    /** Server-thread atomic player save; revalidates lease, revision, scope and form before changing owned authority. */
+    public NetworkNodeRecord saveDirectBinding(
+            ServerPlayer actor,
+            Edit edit,
+            UUID channelId,
+            ResourcePolicyEdit intent,
+            WorkingFaces faces,
+            boolean confirmedReset) {
+        NetworkSavedData network = requireEdit(actor, edit, Kind.NODE);
+        NetworkNodeRecord node = currentNode(network, edit);
+        Objects.requireNonNull(intent, "intent");
+        if (intent.discardPreviousDirectionFields() && !confirmedReset) throw rejected(Reason.RESET_REQUIRED);
+        StoredResourcePolicy current = network.findDirectBinding(node.nodeId(), channelId)
+                .map(DirectNodeBinding::storedPolicy)
+                .orElseGet(() -> new StoredResourcePolicy(
+                        ResourceTransferPolicy.defaults(TransferDirection.INPUT), java.util.Map.of()));
+        StoredResourcePolicy stored;
+        try {
+            stored = intent.reconcile(current, repository().registeredResourceTypes());
+        } catch (IllegalArgumentException invalidIntent) {
+            throw rejected(Reason.UNAVAILABLE);
+        }
+        ResourceTransferPolicy policy = stored.effectivePolicy();
+        try {
+            Objects.requireNonNull(faces, "faces").validate(node.form());
+        } catch (IllegalArgumentException invalidFaces) {
+            throw rejected(Reason.UNAVAILABLE);
+        }
         requireEnabled(node);
         if (node.mode() != NodeMode.DIRECT) {
             releaseQuietly(actor, edit);
@@ -717,15 +835,27 @@ public final class NetworkTopologyService implements AutoCloseable {
         Optional<DirectNodeBinding> existing = network.directBindings(node.nodeId()).stream()
                 .filter(binding -> binding.channelId().equals(channelId))
                 .findFirst();
-        if (existing.isPresent() && existing.orElseThrow().direction() != direction && !confirmedReset) {
+        if (existing.isPresent() && existing.orElseThrow().direction() != policy.direction() && !confirmedReset) {
             throw rejected(Reason.RESET_REQUIRED);
+        }
+        UUID selected = policy.filterPresetId();
+        UUID previous =
+                existing.map(binding -> binding.policy().filterPresetId()).orElse(null);
+        if (selected != null
+                && !selected.equals(previous)
+                && repository()
+                        .findOwner(network.metadata().ownerId())
+                        .flatMap(owner -> owner.findPreset(selected))
+                        .isEmpty()) {
+            throw rejected(Reason.UNAVAILABLE);
         }
         try {
             NetworkNodeRecord updated = network.setDirectBinding(
                     node.nodeId(),
                     node.revision(),
                     channelId,
-                    Objects.requireNonNull(direction, "direction"),
+                    stored,
+                    faces,
                     confirmedReset,
                     settings.channelBindingsPerDirectNode());
             return commitNode(actor, edit, node, updated);
@@ -950,6 +1080,12 @@ public final class NetworkTopologyService implements AutoCloseable {
         }
     }
 
+    private void requireAffectedNodesAvailable(NetworkSavedData network, DeletionEdit deletion) {
+        for (UUID nodeId : deletion.impact().affectedNodeIds()) {
+            requireNode(deletion.edit().networkId(), nodeId, network);
+        }
+    }
+
     private void requireAffectedNodesUnlocked(DeletionEdit deletion) {
         if (locks().hasConflictingLocks(
                         deletion.impact().affectedNodeIds(), deletion.edit().token(), currentTick)) {
@@ -1023,6 +1159,10 @@ public final class NetworkTopologyService implements AutoCloseable {
     private NetworkDirectory networks() {
         requireServerThread();
         return Objects.requireNonNull(networks, "Topology management is closed");
+    }
+
+    public io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory resourceAdapters() {
+        return repository().resourceAdapters();
     }
 
     private SavedNetworkRepository repository() {

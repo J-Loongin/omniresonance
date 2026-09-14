@@ -13,6 +13,10 @@ final class ResonanceNodeClient {
     ResonanceNodeClient(IEventBus modBus) {
         modBus.addListener(this::registerScreens);
         NodeMenuPayloads.installClientReceiver(this::receive);
+        NodeMenuPayloads.installTransferReceiver(message -> {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft.screen instanceof ResonanceNodeScreen screen) screen.applyTransfer(message);
+        });
     }
 
     private void registerScreens(RegisterMenuScreensEvent event) {

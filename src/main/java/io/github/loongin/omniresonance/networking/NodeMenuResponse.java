@@ -18,16 +18,26 @@ public sealed interface NodeMenuResponse extends CustomPacketPayload {
     StreamCodec<FriendlyByteBuf, NodeMenuResponse> STREAM_CODEC = new StreamCodec<>() {
         @Override
         public NodeMenuResponse decode(FriendlyByteBuf buffer) {
-            NodeMenuCodecSupport.requirePayloadBound(buffer);
+            NodeMenuCodecSupport.requirePayloadBound(buffer, TYPE.id());
             try {
                 int tag = buffer.readUnsignedByte();
-                if (tag > 1) {
+                if (tag > 4) {
                     throw new DecoderException("Unknown node-menu response");
                 }
                 int containerId = buffer.readVarInt();
                 UUID sessionId = buffer.readUUID();
                 long sequence = buffer.readLong();
                 return switch (tag) {
+                    case 3 -> new UploadReady(containerId, sessionId, sequence, buffer.readUUID());
+                    case 4 ->
+                        new Download(
+                                containerId,
+                                sessionId,
+                                sequence,
+                                readPolicyMetadata(buffer),
+                                buffer.readUUID(),
+                                buffer.readInt());
+                    case 2 -> new Catalog(containerId, sessionId, sequence, ResourceTypeCatalogPage.read(buffer));
                     case 0 -> new State(containerId, sessionId, sequence, NodeMenuState.read(buffer));
                     case 1 ->
                         new Failure(
@@ -48,7 +58,18 @@ public sealed interface NodeMenuResponse extends CustomPacketPayload {
         @Override
         public void encode(FriendlyByteBuf buffer, NodeMenuResponse response) {
             int start = buffer.writerIndex();
-            if (response instanceof State state) {
+            if (response instanceof UploadReady ready) {
+                writeEnvelope(buffer, 3, ready);
+                buffer.writeUUID(ready.transfer());
+            } else if (response instanceof Download download) {
+                writeEnvelope(buffer, 4, download);
+                NodeMenuState.write(buffer, download.metadata());
+                buffer.writeUUID(download.transfer());
+                buffer.writeInt(download.length());
+            } else if (response instanceof Catalog catalog) {
+                writeEnvelope(buffer, 2, catalog);
+                ResourceTypeCatalogPage.write(buffer, catalog.page());
+            } else if (response instanceof State state) {
                 writeEnvelope(buffer, 0, state);
                 NodeMenuState.write(buffer, state.state());
             } else {
@@ -60,7 +81,7 @@ public sealed interface NodeMenuResponse extends CustomPacketPayload {
                     NodeMenuState.write(buffer, failure.state());
                 }
             }
-            NodeMenuCodecSupport.requireEncodedBound(buffer, start);
+            NodeMenuCodecSupport.requireEncodedBound(buffer, start, TYPE.id());
         }
     };
 
@@ -73,6 +94,38 @@ public sealed interface NodeMenuResponse extends CustomPacketPayload {
     @Override
     default Type<NodeMenuResponse> type() {
         return TYPE;
+    }
+
+    record UploadReady(int containerId, UUID sessionId, long sequence, UUID transfer) implements NodeMenuResponse {
+        public UploadReady {
+            requireEnvelope(containerId, sessionId, sequence);
+            Objects.requireNonNull(transfer);
+        }
+    }
+
+    record Download(
+            int containerId,
+            UUID sessionId,
+            long sequence,
+            NodeMenuState.DirectBindingEdit metadata,
+            UUID transfer,
+            int length)
+            implements NodeMenuResponse {
+        public Download {
+            requireEnvelope(containerId, sessionId, sequence);
+            Objects.requireNonNull(metadata);
+            Objects.requireNonNull(transfer);
+            if (metadata.policy() != null || length <= 0 || length > ManagementTransferPool.MAXIMUM_OBJECT_BYTES)
+                throw new IllegalArgumentException("Invalid download metadata");
+        }
+    }
+
+    record Catalog(int containerId, UUID sessionId, long sequence, ResourceTypeCatalogPage page)
+            implements NodeMenuResponse {
+        public Catalog {
+            requireEnvelope(containerId, sessionId, sequence);
+            Objects.requireNonNull(page);
+        }
     }
 
     record State(int containerId, UUID sessionId, long sequence, NodeMenuState state) implements NodeMenuResponse {
@@ -146,6 +199,13 @@ public sealed interface NodeMenuResponse extends CustomPacketPayload {
                 default -> throw new DecoderException("Unknown node-menu failure reason");
             };
         }
+    }
+
+    private static NodeMenuState.DirectBindingEdit readPolicyMetadata(FriendlyByteBuf buffer) {
+        NodeMenuState state = NodeMenuState.read(buffer);
+        if (!(state instanceof NodeMenuState.DirectBindingEdit edit))
+            throw new DecoderException("Expected node policy metadata");
+        return edit;
     }
 
     private static void writeEnvelope(FriendlyByteBuf buffer, int tag, NodeMenuResponse response) {

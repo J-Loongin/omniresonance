@@ -10,6 +10,7 @@ import io.github.loongin.omniresonance.network.NetworkTopologyIndex;
 import io.github.loongin.omniresonance.network.NetworkTunnelRecord;
 import io.github.loongin.omniresonance.network.TopologyDeletionImpact;
 import io.github.loongin.omniresonance.network.TransferDirection;
+import io.github.loongin.omniresonance.network.WorkingFaces;
 import io.github.loongin.omniresonance.node.NetworkNodeRecord;
 import io.github.loongin.omniresonance.node.NodeForm;
 import io.github.loongin.omniresonance.node.NodeMode;
@@ -39,7 +40,7 @@ import org.jetbrains.annotations.Nullable;
  * <p>Create/load and every accessor or mutation run on the constructing server thread. Tags and caller collections
  * are never retained. Mutations validate their full intent before changing indexes and mark dirty only on a real
  * change. No method simulates, performs disk I/O, accesses a world, authorizes a player or exposes mutable state.
- * Known v3/v4 schemas migrate in memory; malformed or unsupported input is rejected, never repaired or replaced.
+ * Known v3/v4/v5/v6/v7 schemas migrate in memory; malformed or unsupported input is rejected, never repaired or replaced.
  */
 public final class NetworkSavedData extends SavedData {
     /** Owner-bound, nonmutating rename preflight; immutable snapshots may be inspected on the server thread. */
@@ -182,6 +183,8 @@ public final class NetworkSavedData extends SavedData {
     private long lastTunnelNumber;
     private long topologyRevision;
     private long managementRevision;
+    private final io.github.loongin.omniresonance.recovery.RecoveryBuffer recovery =
+            new io.github.loongin.omniresonance.recovery.RecoveryBuffer(this::recoveryChanged);
 
     private NetworkSavedData(
             NetworkMetadata metadata,
@@ -205,7 +208,7 @@ public final class NetworkSavedData extends SavedData {
                 topology.domainConfigurations().values());
     }
 
-    /** Creates an empty dirty v5 shard without simulation, I/O, world access or caller mutation. */
+    /** Creates an empty dirty v8 shard without simulation, I/O, world access or caller mutation. */
     public static NetworkSavedData create(NetworkMetadata metadata) {
         NetworkSavedData data = new NetworkSavedData(metadata, 0, Map.of(), NetworkTopologyNbt.empty());
         data.setDirty();
@@ -213,17 +216,27 @@ public final class NetworkSavedData extends SavedData {
     }
 
     /**
-     * Strictly decodes a clean v3/v4/v5 shard; v3 gains empty topology and v3/v4 gain management revision zero.
+     * Strictly decodes a clean v3/v4/v5/v6/v7/v8 shard; v3 gains empty topology, v3/v4 gain management revision zero, and legacy direct bindings gain default policies and empty recovery.
      * Migration is in memory and does not retain, dirty or modify the caller's tag or files.
      * Missing inputs throw {@link NullPointerException}; malformed/unsupported data throws {@link IllegalArgumentException}.
      */
     public static NetworkSavedData load(UUID expectedId, CompoundTag tag) {
+        return load(
+                expectedId,
+                tag,
+                Set.copyOf(io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory.nativeDefaults()
+                        .types()));
+    }
+
+    public static NetworkSavedData load(
+            UUID expectedId, CompoundTag tag, Set<net.minecraft.resources.ResourceLocation> registeredTypes) {
         int schemaVersion = ManagedDataNbt.readSchemaVersion(tag);
         Set<String> fields =
                 switch (schemaVersion) {
                     case 3 -> ManagedDataNbt.NETWORK_V3_FIELDS;
                     case 4 -> ManagedDataNbt.NETWORK_V4_FIELDS;
-                    case ManagedDataNbt.NETWORK_SCHEMA_VERSION -> ManagedDataNbt.NETWORK_FIELDS;
+                    case 5 -> ManagedDataNbt.NETWORK_V5_FIELDS;
+                    case 6, 7, ManagedDataNbt.NETWORK_SCHEMA_VERSION -> ManagedDataNbt.NETWORK_FIELDS;
                     default -> throw new IllegalArgumentException("Unsupported network schema");
                 };
         ManagedDataNbt.validateSchemaAndFields(tag, schemaVersion, fields);
@@ -235,12 +248,20 @@ public final class NetworkSavedData extends SavedData {
                 ManagedDataNbt.readCreationOrder(tag),
                 ManagedDataNbt.readAdministrators(tag));
         NetworkNodeNbt.Decoded decoded = NetworkNodeNbt.decode(tag);
-        NetworkTopologyNbt.Decoded topology =
-                schemaVersion == 3 ? NetworkTopologyNbt.empty() : NetworkTopologyNbt.decode(tag, decoded.nodes());
+        NetworkTopologyNbt.Decoded topology = schemaVersion == 3
+                ? NetworkTopologyNbt.empty()
+                : NetworkTopologyNbt.decode(tag, decoded.nodes(), registeredTypes);
         long managementRevision = schemaVersion < 5 ? 0 : ManagedDataNbt.readManagementRevision(tag);
         NetworkSavedData data = new NetworkSavedData(metadata, decoded.lastNodeNumber(), decoded.nodes(), topology);
         data.managementRevision = managementRevision;
+        if (schemaVersion >= 6) data.recovery.restore(RecoveryNbt.decode(tag));
         return data;
+    }
+
+    /** Returns this shard's owned server-thread buffer; positive committed remainder marks this shard dirty. */
+    public io.github.loongin.omniresonance.recovery.RecoveryBuffer recovery() {
+        requireOwningThread();
+        return recovery;
     }
 
     /** Returns immutable metadata without mutation or simulation; wrong-thread access is rejected. */
@@ -487,6 +508,12 @@ public final class NetworkSavedData extends SavedData {
         return topology.bindings(Objects.requireNonNull(nodeId, "nodeId"));
     }
 
+    /** O(1) exact binding lookup on the owning thread, without snapshots, simulation or mutation. */
+    public Optional<DirectNodeBinding> findDirectBinding(UUID nodeId, UUID channelId) {
+        requireOwningThread();
+        return topology.findBinding(nodeId, channelId);
+    }
+
     /**
      * Returns the tunnel derived from one node's direct bindings, or empty when the node has none.
      * This owning-server-thread query neither simulates nor mutates SavedData, indexes or dirty state; null and
@@ -704,7 +731,7 @@ public final class NetworkSavedData extends SavedData {
         return commitDeletion(impact, () -> topology.removeTunnel(tunnel.tunnelId()));
     }
 
-    /** Creates or changes one direct direction after exact node revision, mode, reset and quota validation. */
+    /** Direction-only compatibility save preserves existing common fields and applies confirmed exclusive-field reset. */
     public NetworkNodeRecord setDirectBinding(
             UUID nodeId,
             long expectedNodeRevision,
@@ -713,20 +740,103 @@ public final class NetworkSavedData extends SavedData {
             boolean confirmedReset,
             int gameplayLimit) {
         requireOwningThread();
+        Objects.requireNonNull(direction, "direction");
+        io.github.loongin.omniresonance.transfer.StoredResourcePolicy policy = topology.findBinding(
+                        Objects.requireNonNull(nodeId, "nodeId"), Objects.requireNonNull(channelId, "channelId"))
+                .map(DirectNodeBinding::storedPolicy)
+                .map(current -> current.switchDirection(direction))
+                .orElseGet(() -> new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                        io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.defaults(direction), Map.of()));
+        return setDirectBinding(nodeId, expectedNodeRevision, channelId, policy, confirmedReset, gameplayLimit);
+    }
+
+    /** Creates or changes one direct direction after exact node revision, mode, reset and quota validation. */
+    public NetworkNodeRecord setDirectBinding(
+            UUID nodeId,
+            long expectedNodeRevision,
+            UUID channelId,
+            io.github.loongin.omniresonance.transfer.ItemTransferPolicy policy,
+            boolean confirmedReset,
+            int gameplayLimit) {
+        return setDirectBinding(
+                nodeId,
+                expectedNodeRevision,
+                channelId,
+                new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                        io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(policy), Map.of()),
+                confirmedReset,
+                gameplayLimit);
+    }
+
+    /** Creates or changes one direct direction after exact node revision, mode, reset and quota validation. */
+    public NetworkNodeRecord setDirectBinding(
+            UUID nodeId,
+            long expectedNodeRevision,
+            UUID channelId,
+            io.github.loongin.omniresonance.transfer.StoredResourcePolicy policy,
+            boolean confirmedReset,
+            int gameplayLimit) {
+        requireOwningThread();
+        WorkingFaces faces = topology.findBinding(nodeId, channelId)
+                .map(DirectNodeBinding::workingFaces)
+                .orElseGet(() -> nodes.get(nodeId).form() == io.github.loongin.omniresonance.node.NodeForm.PANEL
+                        ? WorkingFaces.attachedFace()
+                        : WorkingFaces.explicit(0));
+        return setDirectBinding(nodeId, expectedNodeRevision, channelId, policy, faces, confirmedReset, gameplayLimit);
+    }
+
+    /** Explicit legacy item migration; the resulting resource policy is the only stored authority. */
+    public NetworkNodeRecord setDirectBinding(
+            UUID nodeId,
+            long revision,
+            UUID channelId,
+            io.github.loongin.omniresonance.transfer.ItemTransferPolicy policy,
+            WorkingFaces faces,
+            boolean confirmed,
+            int limit) {
+        return setDirectBinding(
+                nodeId,
+                revision,
+                channelId,
+                new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                        io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(policy), Map.of()),
+                faces,
+                confirmed,
+                limit);
+    }
+
+    /** Atomically saves owned immutable policy/faces on the server thread; validation failures leave all authority unchanged. */
+    public NetworkNodeRecord setDirectBinding(
+            UUID nodeId,
+            long expectedNodeRevision,
+            UUID channelId,
+            io.github.loongin.omniresonance.transfer.StoredResourcePolicy policy,
+            WorkingFaces faces,
+            boolean confirmedReset,
+            int gameplayLimit) {
+        requireOwningThread();
         Objects.requireNonNull(nodeId, "nodeId");
         Objects.requireNonNull(channelId, "channelId");
-        Objects.requireNonNull(direction, "direction");
+        Objects.requireNonNull(policy, "policy");
+        Objects.requireNonNull(faces, "faces");
+        ResourcePolicyNbt.encode(policy);
         validateQuota(gameplayLimit, 1, 1024, "direct binding");
         NetworkNodeRecord node = currentAtRevision(nodeId, expectedNodeRevision)
                 .orElseThrow(() -> new IllegalStateException("Missing or stale node"));
         if (node.mode() != NodeMode.DIRECT || topology.findChannel(channelId).isEmpty()) {
             throw new IllegalStateException("Direct binding requires a direct node and existing channel");
         }
+        faces.validate(node.form());
         Optional<DirectNodeBinding> existing = topology.findBinding(nodeId, channelId);
-        if (existing.isPresent() && existing.orElseThrow().direction() == direction) {
+        if (existing.isPresent()
+                && existing.orElseThrow().storedPolicy().equals(policy)
+                && existing.orElseThrow().workingFaces().equals(faces)) {
             return node;
         }
-        if (existing.isPresent() && !confirmedReset) {
+        if (existing.isPresent()
+                && existing.orElseThrow().direction()
+                        != policy.effectivePolicy().direction()
+                && !confirmedReset) {
             throw new IllegalStateException("Changing direction requires reset confirmation");
         }
         if (existing.isEmpty()
@@ -736,7 +846,7 @@ public final class NetworkSavedData extends SavedData {
         }
         NetworkNodeRecord updated = node.withConfigurationChanged();
         long nextTopologyRevision = nextTopologyRevision();
-        topology.putBinding(new DirectNodeBinding(nodeId, channelId, direction));
+        topology.putBinding(new DirectNodeBinding(nodeId, channelId, policy, faces));
         nodes.put(nodeId, updated);
         topologyRevision = nextTopologyRevision;
         setDirty();
@@ -971,6 +1081,10 @@ public final class NetworkSavedData extends SavedData {
         if (current == null || !current.position().equals(position)) {
             return Optional.empty();
         }
+        if (current.form() != form) {
+            for (DirectNodeBinding binding : topology.bindings(nodeId))
+                binding.workingFaces().validate(form);
+        }
         NetworkNodeRecord updated = current.withPhysicalSnapshot(form, facing);
         if (updated != current) {
             nodes.put(nodeId, updated);
@@ -1179,6 +1293,7 @@ public final class NetworkSavedData extends SavedData {
         tag.putLong("creation_order", metadata.creationOrder());
         tag.put("administrators", ManagedDataNbt.writeAdministrators(metadata.administrators()));
         tag.putLong("management_revision", managementRevision);
+        tag.put("recovery", RecoveryNbt.encode(recovery.snapshot()));
         tag.putLong("last_node_number", lastNodeNumber);
         tag.put("nodes", NetworkNodeNbt.encode(nodes.values()));
         tag.putLong("last_tunnel_number", lastTunnelNumber);
@@ -1190,11 +1305,25 @@ public final class NetworkSavedData extends SavedData {
         return tag;
     }
 
+    /** Installs one owning-server lifecycle observer; callbacks only enqueue immutable keys. */
+    public void onRuntimeChanged(@Nullable Runnable listener) {
+        requireOwningThread();
+        runtimeListener = listener;
+    }
+
+    private @Nullable Runnable runtimeListener;
+
+    private void recoveryChanged() {
+        requireOwningThread();
+        super.setDirty(true);
+    }
+
     /** Sets owned dirty state without simulation; rejects wrong-thread access before mutation. */
     @Override
     public void setDirty(boolean dirty) {
         requireOwningThread();
         super.setDirty(dirty);
+        if (dirty && runtimeListener != null) runtimeListener.run();
     }
 
     /** Reads owned dirty state without mutation or simulation; rejects wrong-thread access. */

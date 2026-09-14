@@ -187,6 +187,113 @@ public final class NodeRuntimeLifecycleGameTests {
         helper.succeed();
     }
 
+    /** The registry Pre event executes actual persisted direct bindings and releases their caches on stop. */
+    @GameTest(template = "bootstrap")
+    public static void registryTicksSavedItemBindings(GameTestHelper helper) throws IOException, InterruptedException {
+        MinecraftServer server = helper.getLevel().getServer();
+        BlockPos sourcePos = helper.absolutePos(new BlockPos(2, 3, 2)),
+                targetPos = helper.absolutePos(new BlockPos(6, 3, 2));
+        helper.getLevel().setBlockAndUpdate(sourcePos.below(), Blocks.CHEST.defaultBlockState());
+        helper.getLevel().setBlockAndUpdate(targetPos.below(), Blocks.CHEST.defaultBlockState());
+        loadState(helper, place(helper, sourcePos), NODE, NodeLinkState.LINKED);
+        UUID targetId = new UUID(80, 5);
+        loadState(helper, place(helper, targetPos), targetId, NodeLinkState.LINKED);
+        try (Fixture f = new Fixture(helper, GlobalPos.of(helper.getLevel().dimension(), sourcePos))) {
+            UUID tunnel = new UUID(80, 6), channel = new UUID(80, 7);
+            f.network.createTunnel(tunnel, new ManagedName("Items"), channel, new ManagedName("Main"), -1);
+            NetworkNodeRecord source = f.network.findNode(NODE).orElseThrow();
+            source = f.network
+                    .setNodeMode(NODE, source.revision(), io.github.loongin.omniresonance.node.NodeMode.DIRECT, false)
+                    .orElseThrow();
+            source = f.network.setDirectBinding(
+                    NODE,
+                    source.revision(),
+                    channel,
+                    io.github.loongin.omniresonance.transfer.ItemTransferPolicy.defaults(
+                            io.github.loongin.omniresonance.network.TransferDirection.INPUT),
+                    io.github.loongin.omniresonance.network.WorkingFaces.attachedFace(),
+                    false,
+                    -1);
+            f.nodes.update(f.nodes.byId(NODE).entry().orElseThrow(), new NetworkNodeDirectory.Entry(NETWORK, source));
+            NetworkNodeRecord target = f.network.createNode(
+                    targetId,
+                    new ManagedName("Output"),
+                    GlobalPos.of(helper.getLevel().dimension(), targetPos),
+                    NodeForm.BLOCK,
+                    Direction.DOWN);
+            target = f.network
+                    .setNodeMode(
+                            targetId, target.revision(), io.github.loongin.omniresonance.node.NodeMode.DIRECT, false)
+                    .orElseThrow();
+            target = f.network.setDirectBinding(
+                    targetId,
+                    target.revision(),
+                    channel,
+                    io.github.loongin.omniresonance.transfer.ItemTransferPolicy.defaults(
+                            io.github.loongin.omniresonance.network.TransferDirection.OUTPUT),
+                    io.github.loongin.omniresonance.network.WorkingFaces.attachedFace(),
+                    false,
+                    -1);
+            f.nodes.add(new NetworkNodeDirectory.Entry(NETWORK, target));
+            var sourceChest = (net.minecraft.world.level.block.entity.ChestBlockEntity)
+                    helper.getLevel().getBlockEntity(sourcePos.below());
+            var targetChest = (net.minecraft.world.level.block.entity.ChestBlockEntity)
+                    helper.getLevel().getBlockEntity(targetPos.below());
+            sourceChest.setItem(
+                    0, new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT, 64));
+            AtomicReference<io.github.loongin.omniresonance.transfer.ResourceDirectRuntime> items =
+                    new AtomicReference<>();
+            NetworkRuntimeRegistry registry = NetworkRuntimeRegistry.forTesting(new ServerConfig(), (actual, state) -> {
+                NodeAuthorityService authority = f.authority(actual);
+                NodeManagementService management = f.management(actual, authority);
+                items.set(new io.github.loongin.omniresonance.transfer.ResourceDirectRuntime(
+                        actual, f.repository, f.nodes, state.settings(), () -> 0));
+                return new NetworkRuntimeRegistry.RuntimeComponents(
+                        f.terminal(actual, state), authority, management, null, null, items.get());
+            });
+            registry.onServerStarted(new ServerStartedEvent(server));
+            try {
+                var signal =
+                        new net.neoforged.neoforge.event.TagsUpdatedEvent(
+                                net.minecraft.core.RegistryAccess.EMPTY, false, true) {
+                            @Override
+                            public net.minecraft.core.RegistryAccess getRegistryAccess() {
+                                throw new AssertionError("Tag callback read registry state");
+                            }
+                        };
+                AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+                Thread callback = new Thread(
+                        () -> {
+                            try {
+                                registry.onTagsUpdated(signal);
+                            } catch (Throwable failure) {
+                                callbackFailure.set(failure);
+                            }
+                        },
+                        "fixture-integrated-tag-update");
+                callback.start();
+                callback.join();
+                helper.assertTrue(
+                        callbackFailure.get() == null && items.get().cachedEndpoints() == 0,
+                        "Off-thread native tag event accessed runtime or registry state");
+                registry.onServerTick(new ServerTickEvent.Pre(() -> true, server));
+                helper.assertTrue(
+                        sourceChest.getItem(0).isEmpty()
+                                && targetChest.getItem(0).getCount() == 64,
+                        "Registry Pre event did not execute saved item bindings");
+            } finally {
+                registry.onServerStopped(new ServerStoppedEvent(server));
+            }
+            helper.assertTrue(items.get().cachedEndpoints() == 0, "Registry stop retained item capabilities");
+        } finally {
+            helper.getLevel().setBlockAndUpdate(sourcePos, Blocks.AIR.defaultBlockState());
+            helper.getLevel().setBlockAndUpdate(targetPos, Blocks.AIR.defaultBlockState());
+            helper.getLevel().setBlockAndUpdate(sourcePos.below(), Blocks.AIR.defaultBlockState());
+            helper.getLevel().setBlockAndUpdate(targetPos.below(), Blocks.AIR.defaultBlockState());
+        }
+        helper.succeed();
+    }
+
     private static ResonanceNodeBlockEntity place(GameTestHelper helper, BlockPos pos) {
         helper.getLevel()
                 .setBlockAndUpdate(

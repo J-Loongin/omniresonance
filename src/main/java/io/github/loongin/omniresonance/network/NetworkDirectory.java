@@ -381,7 +381,7 @@ public final class NetworkDirectory {
             throw new IllegalArgumentException("Invalid network rename");
         }
         ScopedName name = new ScopedName(next.ownerId(), next.name().uniquenessKey());
-        if (byName.containsKey(name)) {
+        if (byName.containsKey(name) && !previous.id().equals(byName.get(name))) {
             throw new IllegalArgumentException("Duplicate owner-scoped network name");
         }
         return new PreparedRename(this, previous, next);
@@ -401,7 +401,8 @@ public final class NetworkDirectory {
                 prepared.previous.ownerId(), prepared.previous.name().uniquenessKey());
         ScopedName nextName =
                 new ScopedName(prepared.next.ownerId(), prepared.next.name().uniquenessKey());
-        if (!Objects.equals(byName.get(previousName), prepared.previous.id()) || byName.containsKey(nextName)) {
+        if (!Objects.equals(byName.get(previousName), prepared.previous.id())
+                || (!previousName.equals(nextName) && byName.containsKey(nextName))) {
             throw new IllegalArgumentException("Network name index changed after preflight");
         }
         NavigableSet<NetworkMetadata> owned = byOwner.get(prepared.previous.ownerId());

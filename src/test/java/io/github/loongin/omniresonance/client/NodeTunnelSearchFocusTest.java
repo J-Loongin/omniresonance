@@ -16,6 +16,23 @@ import org.lwjgl.glfw.GLFW;
 
 final class NodeTunnelSearchFocusTest {
     @Test
+    void focusedEditableFieldsOwnBothDefaultAndRemappedInventoryKeys() {
+        TerminalEditBox field = field();
+        field.setFocused(true);
+        for (int key : new int[] {GLFW.GLFW_KEY_E, GLFW.GLFW_KEY_I}) {
+            assertTrue(field.ownsKey(key));
+            assertTrue(field.keyPressed(key, 0, 0));
+        }
+        field.setEditable(false);
+        assertFalse(field.ownsKey(GLFW.GLFW_KEY_E));
+        field.setEditable(true);
+        field.setFocused(false);
+        assertFalse(field.ownsKey(GLFW.GLFW_KEY_I));
+        field.setFocused(true);
+        assertFalse(field.ownsKey(GLFW.GLFW_KEY_ESCAPE));
+    }
+
+    @Test
     void mouseToggleFocusesTheFieldAfterVanillaRestoresTheDetachedClickedButton() {
         NodeTunnelSearch search = new NodeTunnelSearch();
         Host host = new Host();

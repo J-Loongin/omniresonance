@@ -3,16 +3,65 @@ package io.github.loongin.omniresonance.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.ToIntFunction;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 final class TerminalTextTest {
     private static final ResourceLocation BODY_FONT = ResourceLocation.fromNamespaceAndPath("omniresonance", "ui");
     private static final ResourceLocation TITLE_FONT =
             ResourceLocation.fromNamespaceAndPath("omniresonance", "ui_title");
+
+    @ParameterizedTest
+    @CsvSource({
+        "24,5,主网",
+        "25,5,主网",
+        "72,7,主网",
+        "110,9,主网",
+        "24,5,A very long network 😀名称",
+        "25,5,A very long network 😀名称",
+        "72,7,A very long network 😀名称",
+        "110,9,A very long network 😀名称"
+    })
+    void readonlyNetworkDrawMatchesButtonClippingCenterAndBaseline(int width, int glyphWidth, String name) {
+        var bounds = new TerminalLayout.Rect(33, 17, width, 20);
+        ToIntFunction<String> measure = value -> value.codePointCount(0, value.length()) * glyphWidth;
+        String label = TerminalText.networkLabel(name, bounds, measure);
+        List<String> buttonDraw = new ArrayList<>();
+        List<String> readonlyDraw = new ArrayList<>();
+        TerminalText.drawControlText(
+                Component.literal(label),
+                measure.applyAsInt(label),
+                bounds,
+                TerminalTheme.TEXT,
+                (text, x, y, color, shadow) -> {
+                    StringBuilder actual = new StringBuilder();
+                    text.accept((index, style, point) -> {
+                        actual.appendCodePoint(point);
+                        return true;
+                    });
+                    buttonDraw.add(actual + ":" + x + ":" + y + ":" + color + ":" + shadow);
+                });
+        TerminalText.drawNetworkLabel(name, bounds, measure, TerminalTheme.TEXT, (text, x, y, color, shadow) -> {
+            StringBuilder actual = new StringBuilder();
+            text.accept((index, style, point) -> {
+                actual.appendCodePoint(point);
+                return true;
+            });
+            readonlyDraw.add(actual + ":" + x + ":" + y + ":" + color + ":" + shadow);
+        });
+        assertEquals(1, buttonDraw.size());
+        assertTrue(measure.applyAsInt(label) <= width - 8);
+        assertEquals(buttonDraw, readonlyDraw);
+    }
 
     @Test
     void centeredTextUsesOneUnshadowedDrawAtTheMeasuredOrigin() {

@@ -71,6 +71,11 @@ public final class OmniResonanceMod {
         NeoForge.EVENT_BUS.addListener(NodeLifecycleEvent.Removed.class, networkRuntime::onNodeLifecycle);
         NeoForge.EVENT_BUS.addListener(NodeMenuOpenEvent.class, networkRuntime::onNodeMenuOpen);
         NeoForge.EVENT_BUS.addListener(ChunkEvent.Load.class, networkRuntime::onChunkLoad);
+        NeoForge.EVENT_BUS.addListener(ChunkEvent.Unload.class, networkRuntime::onChunkUnload);
+        NeoForge.EVENT_BUS.addListener(
+                net.neoforged.neoforge.event.TagsUpdatedEvent.class, networkRuntime::onTagsUpdated);
+        NeoForge.EVENT_BUS.addListener(
+                io.github.loongin.omniresonance.node.NodeTransferWakeEvent.class, networkRuntime::onTransferWake);
         LOGGER.info("Initializing {} {}", MOD_ID, container.getModInfo().getVersion());
     }
 

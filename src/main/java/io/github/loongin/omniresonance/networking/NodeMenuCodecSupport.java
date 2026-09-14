@@ -25,6 +25,18 @@ final class NodeMenuCodecSupport {
         NetworkSummary.requireEncodedBound(buffer, start);
     }
 
+    static void requirePayloadBound(FriendlyByteBuf buffer, ResourceLocation id) {
+        int length = id.toString().getBytes(StandardCharsets.UTF_8).length;
+        if (buffer.readableBytes() + net.minecraft.network.VarInt.getByteSize(length) + length > 262144)
+            throw new DecoderException("Oversized registered node frame");
+    }
+
+    static void requireEncodedBound(FriendlyByteBuf buffer, int start, ResourceLocation id) {
+        int length = id.toString().getBytes(StandardCharsets.UTF_8).length;
+        if (buffer.writerIndex() - start + net.minecraft.network.VarInt.getByteSize(length) + length > 262144)
+            throw new io.netty.handler.codec.EncoderException("Oversized registered node frame");
+    }
+
     static ResourceLocation readDimension(FriendlyByteBuf buffer) {
         String encoded = NetworkSummary.readName(buffer);
         ResourceLocation dimension = ResourceLocation.tryParse(encoded);

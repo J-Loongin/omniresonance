@@ -26,6 +26,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.datafix.DataFixers;
 import net.minecraft.world.level.Level;
@@ -52,6 +53,100 @@ public final class NetworkTopologyManagementGameTests {
     private static final UUID TARGET_CHANNEL = new UUID(335, 1);
 
     private NetworkTopologyManagementGameTests() {}
+
+    @GameTest(template = "bootstrap")
+    public static void workingFaceDraftSaveRevalidatesAuthority(GameTestHelper helper) throws IOException {
+        try (Fixture f = new Fixture(helper, ServerSettings.defaults())) {
+            f.seedTunnelAndChannel();
+            ServerPlayer owner = player(helper, OWNER);
+            DirectNodeBinding draft = f.service.inspectDirectBinding(owner, NETWORK, NODE_A, CHANNEL);
+            helper.assertTrue(draft.workingFaces().equals(WorkingFaces.explicit(0)), "New block draft must be empty");
+            var edit = f.service.acquireNode(owner, NETWORK, NODE_A);
+            long revision = f.data.topologyRevision();
+            f.service.saveDirectBinding(
+                    owner,
+                    edit,
+                    CHANNEL,
+                    io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(draft.storedPolicy()),
+                    WorkingFaces.explicit(48),
+                    false);
+            helper.assertTrue(f.data.topologyRevision() == revision + 1, "Face save did not revise topology");
+            helper.assertTrue(
+                    f.service
+                            .inspectDirectBinding(owner, NETWORK, NODE_A, CHANNEL)
+                            .workingFaces()
+                            .equals(WorkingFaces.explicit(48)),
+                    "Saved faces were not returned");
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.LOCK_EXPIRED,
+                    () -> f.service.saveDirectBinding(
+                            owner,
+                            edit,
+                            CHANNEL,
+                            io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(
+                                    draft.storedPolicy()),
+                            WorkingFaces.explicit(0),
+                            false));
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.NO_ACCESS,
+                    () -> f.service.inspectDirectBinding(player(helper, STRANGER), NETWORK, NODE_A, CHANNEL));
+            helper.assertTrue(
+                    f.data.findDirectBinding(NODE_A, CHANNEL)
+                            .orElseThrow()
+                            .workingFaces()
+                            .equals(WorkingFaces.explicit(48)),
+                    "Rejected edit mutated faces");
+            var stale = f.service.acquireNode(owner, NETWORK, NODE_A);
+            var old = f.nodes.byId(NODE_A).entry().orElseThrow();
+            var updated = f.data.setDirectBinding(
+                    NODE_A,
+                    old.record().revision(),
+                    CHANNEL,
+                    draft.storedPolicy(),
+                    WorkingFaces.explicit(0),
+                    false,
+                    -1);
+            f.nodes.update(old, new NetworkNodeDirectory.Entry(NETWORK, updated));
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.STALE_REVISION,
+                    () -> f.service.saveDirectBinding(
+                            owner,
+                            stale,
+                            CHANNEL,
+                            io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(
+                                    draft.storedPolicy()),
+                            WorkingFaces.explicit(48),
+                            false));
+            old = f.nodes.byId(NODE_B).entry().orElseThrow();
+            updated = f.data.updateNodePhysicalSnapshot(NODE_B, old.record().position(), NodeForm.PANEL, Direction.WEST)
+                    .orElseThrow();
+            f.nodes.update(old, new NetworkNodeDirectory.Entry(NETWORK, updated));
+            helper.assertTrue(
+                    f.service
+                            .inspectDirectBinding(owner, NETWORK, NODE_B, CHANNEL)
+                            .workingFaces()
+                            .attached(),
+                    "Panel draft lost fixed attachment");
+            var panelEdit = f.service.acquireNode(owner, NETWORK, NODE_B);
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.UNAVAILABLE,
+                    () -> f.service.saveDirectBinding(
+                            owner,
+                            panelEdit,
+                            CHANNEL,
+                            io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(
+                                    draft.storedPolicy()),
+                            WorkingFaces.explicit(48),
+                            false));
+            helper.assertTrue(f.data.findDirectBinding(NODE_B, CHANNEL).isEmpty(), "Forged panel created binding");
+            f.service.cancel(owner, panelEdit);
+        }
+        helper.succeed();
+    }
 
     /** Parent collection locks serialize creation while roles and quotas are revalidated on commit. */
     @GameTest(template = "bootstrap")
@@ -194,6 +289,96 @@ public final class NetworkTopologyManagementGameTests {
         }
     }
 
+    /** Case-only tunnel renames release locks while another object's folded name remains reserved. */
+    @GameTest(template = "bootstrap")
+    public static void caseOnlyTunnelRenamePreservesIdentityAndRejectsConflicts(GameTestHelper helper)
+            throws IOException {
+        try (Fixture fixture = new Fixture(helper, ServerSettings.defaults())) {
+            fixture.data.createTunnel(TUNNEL, new ManagedName("Alpha"), CHANNEL, new ManagedName("Alpha"), -1);
+            fixture.data.createTunnel(
+                    TUNNEL_SECOND, new ManagedName("Beta"), TARGET_CHANNEL, new ManagedName("Other"), -1);
+            ServerPlayer owner = player(helper, OWNER);
+            ServerPlayer administrator = player(helper, ADMIN);
+            long revision = fixture.data.findTunnel(TUNNEL).orElseThrow().revision();
+            NetworkTunnelRecord renamed = fixture.service.renameTunnel(
+                    owner, fixture.service.acquireTunnel(owner, NETWORK, TUNNEL), new ManagedName("ALPHA"));
+            helper.assertTrue(
+                    renamed.name().value().equals("ALPHA") && renamed.revision() == revision + 1,
+                    "Case-only tunnel rename lost casing or consumed the wrong revision");
+            helper.assertTrue(
+                    fixture.data.findTunnel(TUNNEL).orElseThrow().equals(renamed),
+                    "Case-only tunnel rename lost UUID access");
+            NetworkTopologyService.Edit next = fixture.service.acquireTunnel(administrator, NETWORK, TUNNEL);
+            fixture.data.setDirty(false);
+            fixture.service.renameTunnel(administrator, next, new ManagedName("ALPHA"));
+            helper.assertTrue(
+                    !fixture.data.isDirty()
+                            && fixture.data.findTunnel(TUNNEL).orElseThrow().equals(renamed),
+                    "Exact same-name save changed the tunnel");
+            NetworkTopologyService.Edit conflict = fixture.service.acquireTunnel(owner, NETWORK, TUNNEL);
+            long topologyRevision = fixture.data.topologyRevision();
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.NAME_CONFLICT,
+                    () -> fixture.service.renameTunnel(owner, conflict, new ManagedName("BETA")));
+            helper.assertTrue(
+                    !fixture.data.isDirty()
+                            && fixture.data.topologyRevision() == topologyRevision
+                            && fixture.data.findTunnel(TUNNEL).orElseThrow().equals(renamed),
+                    "Rejected folded-name conflict changed authority");
+            fixture.service.cancel(owner, conflict);
+            helper.succeed();
+        }
+    }
+
+    /** Case-only channel renames release locks while another object's folded name remains reserved. */
+    @GameTest(template = "bootstrap")
+    public static void caseOnlyChannelRenamePreservesIdentityAndRejectsConflicts(GameTestHelper helper)
+            throws IOException {
+        try (Fixture fixture = new Fixture(helper, ServerSettings.defaults())) {
+            fixture.data.createTunnel(TUNNEL, new ManagedName("Alpha"), CHANNEL, new ManagedName("Alpha"), -1);
+            fixture.data.createTunnel(
+                    TUNNEL_SECOND, new ManagedName("Beta"), TARGET_CHANNEL, new ManagedName("Other"), -1);
+            fixture.data.createChannel(
+                    TUNNEL,
+                    fixture.data.findTunnel(TUNNEL).orElseThrow().revision(),
+                    new UUID(333, 2),
+                    new ManagedName("Beta"),
+                    -1);
+            ServerPlayer owner = player(helper, OWNER);
+            ServerPlayer administrator = player(helper, ADMIN);
+            long revision = fixture.data.findChannel(CHANNEL).orElseThrow().revision();
+            NetworkChannelRecord renamed = fixture.service.renameChannel(
+                    owner, fixture.service.acquireChannel(owner, NETWORK, CHANNEL), new ManagedName("ALPHA"));
+            helper.assertTrue(
+                    renamed.name().value().equals("ALPHA") && renamed.revision() == revision + 1,
+                    "Case-only channel rename lost casing or consumed the wrong revision");
+            helper.assertTrue(
+                    fixture.data.findChannel(CHANNEL).orElseThrow().equals(renamed),
+                    "Case-only channel rename lost UUID access");
+            NetworkTopologyService.Edit next = fixture.service.acquireChannel(administrator, NETWORK, CHANNEL);
+            fixture.data.setDirty(false);
+            fixture.service.renameChannel(administrator, next, new ManagedName("ALPHA"));
+            helper.assertTrue(
+                    !fixture.data.isDirty()
+                            && fixture.data.findChannel(CHANNEL).orElseThrow().equals(renamed),
+                    "Exact same-name save changed the channel");
+            NetworkTopologyService.Edit conflict = fixture.service.acquireChannel(owner, NETWORK, CHANNEL);
+            long topologyRevision = fixture.data.topologyRevision();
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.NAME_CONFLICT,
+                    () -> fixture.service.renameChannel(owner, conflict, new ManagedName("BETA")));
+            helper.assertTrue(
+                    !fixture.data.isDirty()
+                            && fixture.data.topologyRevision() == topologyRevision
+                            && fixture.data.findChannel(CHANNEL).orElseThrow().equals(renamed),
+                    "Rejected folded-name conflict changed authority");
+            fixture.service.cancel(owner, conflict);
+            helper.succeed();
+        }
+    }
+
     /** Channel cascade refuses a live affected-node edit and later updates SavedData plus the derived directory. */
     @GameTest(template = "bootstrap")
     public static void channelDeletionChecksAffectedNodeLocksAndCommitsAtomically(GameTestHelper helper)
@@ -225,6 +410,137 @@ public final class NetworkTopologyManagementGameTests {
                                 && lookup.entry().orElseThrow().record().equals(node),
                         "Derived node directory did not receive cascade revision");
             }
+            helper.succeed();
+        }
+    }
+
+    /** A healthy tunnel cascade still publishes every changed node after preflight and releases the edit. */
+    @GameTest(template = "bootstrap")
+    public static void healthyTunnelDeletionPublishesEveryAffectedNode(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper, ServerSettings.defaults())) {
+            fixture.seedTunnelAndChannel();
+            fixture.seedDirectBindings();
+            ServerPlayer owner = player(helper, OWNER);
+            NetworkTopologyService.DeletionEdit deletion = fixture.service.beginTunnelDeletion(owner, NETWORK, TUNNEL);
+            long topologyRevision = fixture.data.topologyRevision();
+            List<NetworkNodeRecord> changed = fixture.service.confirmTunnelDeletion(owner, deletion);
+            helper.assertTrue(
+                    changed.size() == 2
+                            && fixture.data.findTunnel(TUNNEL).isEmpty()
+                            && fixture.data.findChannel(CHANNEL).isEmpty()
+                            && fixture.data.topologyRevision() == topologyRevision + 1,
+                    "Healthy tunnel deletion did not commit the complete cascade");
+            for (NetworkNodeRecord node : changed) {
+                helper.assertTrue(
+                        fixture.data.directBindings(node.nodeId()).isEmpty()
+                                && fixture.nodes
+                                        .byId(node.nodeId())
+                                        .entry()
+                                        .orElseThrow()
+                                        .record()
+                                        .equals(node),
+                        "Healthy tunnel deletion left bindings or stale directory authority");
+            }
+            helper.assertTrue(
+                    !fixture.locks.isHeld(deletion.edit().token(), OWNER, 0),
+                    "Successful tunnel deletion retained its edit lock");
+            helper.succeed();
+        }
+    }
+
+    /** A startup-conflicted affected node rejects channel cascade before any authoritative mutation. */
+    @GameTest(template = "bootstrap")
+    public static void conflictedNodeRejectsChannelDeletionBeforeMutation(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper, ServerSettings.defaults(), true)) {
+            ServerPlayer owner = player(helper, OWNER);
+            NetworkTopologyService.DeletionEdit deletion =
+                    fixture.service.beginChannelDeletion(owner, NETWORK, CHANNEL);
+            CompoundTag before =
+                    fixture.data.save(new CompoundTag(), helper.getLevel().registryAccess());
+            long topologyRevision = fixture.data.topologyRevision();
+            NetworkNodeDirectory.Entry healthy =
+                    fixture.nodes.byId(NODE_A).entry().orElseThrow();
+            List<NetworkNodeRecord> nodes = fixture.data.nodes();
+            List<DirectNodeBinding> bindings = fixture.data.directBindings(NODE_A);
+            helper.assertTrue(
+                    fixture.nodes.byId(NODE_B).status() == NetworkNodeDirectory.Status.CONFLICTED,
+                    "Fixture did not retain a startup-conflicted affected node");
+            fixture.data.setDirty(false);
+            RuntimeException failure = null;
+            try {
+                fixture.service.confirmChannelDeletion(owner, deletion);
+            } catch (RuntimeException rejected) {
+                failure = rejected;
+            }
+            helper.assertTrue(
+                    before.equals(fixture.data.save(
+                            new CompoundTag(), helper.getLevel().registryAccess())),
+                    "Conflicted node cascade changed network NBT before rejection");
+            helper.assertTrue(
+                    failure instanceof NetworkTopologyService.Rejected
+                            && ((NetworkTopologyService.Rejected) failure).reason()
+                                    == NetworkTopologyService.Reason.UNAVAILABLE,
+                    "Uncertain cascade did not reject with UNAVAILABLE");
+            helper.assertTrue(
+                    !fixture.data.isDirty()
+                            && fixture.data.topologyRevision() == topologyRevision
+                            && fixture.data.nodes().equals(nodes)
+                            && fixture.data.directBindings(NODE_A).equals(bindings),
+                    "Rejected cascade changed revisions, nodes, bindings or dirty state");
+            helper.assertTrue(
+                    fixture.nodes.byId(NODE_A).entry().orElseThrow().equals(healthy),
+                    "Rejected cascade changed healthy directory authority");
+            fixture.service.cancel(owner, deletion.edit());
+            NetworkTopologyService.Edit healthyEdit = fixture.service.acquireNode(owner, NETWORK, NODE_A);
+            fixture.service.cancel(owner, healthyEdit);
+            helper.succeed();
+        }
+    }
+
+    /** A startup-conflicted affected node rejects tunnel cascade before any authoritative mutation. */
+    @GameTest(template = "bootstrap")
+    public static void conflictedNodeRejectsTunnelDeletionBeforeMutation(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper, ServerSettings.defaults(), true)) {
+            ServerPlayer owner = player(helper, OWNER);
+            NetworkTopologyService.DeletionEdit deletion = fixture.service.beginTunnelDeletion(owner, NETWORK, TUNNEL);
+            CompoundTag before =
+                    fixture.data.save(new CompoundTag(), helper.getLevel().registryAccess());
+            long topologyRevision = fixture.data.topologyRevision();
+            NetworkNodeDirectory.Entry healthy =
+                    fixture.nodes.byId(NODE_A).entry().orElseThrow();
+            List<NetworkNodeRecord> nodes = fixture.data.nodes();
+            List<DirectNodeBinding> bindings = fixture.data.directBindings(NODE_A);
+            helper.assertTrue(
+                    fixture.nodes.byId(NODE_B).status() == NetworkNodeDirectory.Status.CONFLICTED,
+                    "Fixture did not retain a startup-conflicted affected node");
+            fixture.data.setDirty(false);
+            RuntimeException failure = null;
+            try {
+                fixture.service.confirmTunnelDeletion(owner, deletion);
+            } catch (RuntimeException rejected) {
+                failure = rejected;
+            }
+            helper.assertTrue(
+                    before.equals(fixture.data.save(
+                            new CompoundTag(), helper.getLevel().registryAccess())),
+                    "Conflicted node cascade changed network NBT before rejection");
+            helper.assertTrue(
+                    failure instanceof NetworkTopologyService.Rejected
+                            && ((NetworkTopologyService.Rejected) failure).reason()
+                                    == NetworkTopologyService.Reason.UNAVAILABLE,
+                    "Uncertain cascade did not reject with UNAVAILABLE");
+            helper.assertTrue(
+                    !fixture.data.isDirty()
+                            && fixture.data.topologyRevision() == topologyRevision
+                            && fixture.data.nodes().equals(nodes)
+                            && fixture.data.directBindings(NODE_A).equals(bindings),
+                    "Rejected cascade changed revisions, nodes, bindings or dirty state");
+            helper.assertTrue(
+                    fixture.nodes.byId(NODE_A).entry().orElseThrow().equals(healthy),
+                    "Rejected cascade changed healthy directory authority");
+            fixture.service.cancel(owner, deletion.edit());
+            NetworkTopologyService.Edit healthyEdit = fixture.service.acquireNode(owner, NETWORK, NODE_A);
+            fixture.service.cancel(owner, healthyEdit);
             helper.succeed();
         }
     }
@@ -362,6 +678,10 @@ public final class NetworkTopologyManagementGameTests {
         private final NetworkTopologyService service;
 
         private Fixture(GameTestHelper helper, ServerSettings settings) throws IOException {
+            this(helper, settings, false);
+        }
+
+        private Fixture(GameTestHelper helper, ServerSettings settings, boolean startupConflict) throws IOException {
             path = Files.createTempDirectory("omniresonance-topology-management-test-");
             DimensionDataStorage storage = new DimensionDataStorage(
                     path.toFile(), DataFixers.getDataFixer(), helper.getLevel().registryAccess());
@@ -376,6 +696,29 @@ public final class NetworkTopologyManagementGameTests {
             List<NetworkNodeDirectory.Entry> entries = new ArrayList<>();
             for (NetworkNodeRecord node : data.nodes()) {
                 entries.add(new NetworkNodeDirectory.Entry(NETWORK, node));
+            }
+            if (startupConflict) {
+                seedTunnelAndChannel();
+                entries.clear();
+                for (UUID nodeId : List.of(NODE_A, NODE_B)) {
+                    NetworkNodeRecord original = data.findNode(nodeId).orElseThrow();
+                    NetworkNodeRecord bound = data.setDirectBinding(
+                            nodeId, original.revision(), CHANNEL, TransferDirection.INPUT, false, -1);
+                    entries.add(new NetworkNodeDirectory.Entry(NETWORK, bound));
+                }
+                UUID otherNetworkId = new UUID(336, 1);
+                repository.createNetwork(
+                        new NetworkMetadata(otherNetworkId, OWNER, new ManagedName("Other network"), 1, Set.of()));
+                NetworkNodeRecord duplicate = repository
+                        .findLoadedNetwork(otherNetworkId)
+                        .orElseThrow()
+                        .createNode(
+                                NODE_B,
+                                new ManagedName("Duplicate"),
+                                GlobalPos.of(Level.OVERWORLD, new BlockPos(3, 64, 0)),
+                                NodeForm.BLOCK,
+                                Direction.DOWN);
+                entries.add(new NetworkNodeDirectory.Entry(otherNetworkId, duplicate));
             }
             nodes = new NetworkNodeDirectory(entries);
             locks = new EditLockTable();

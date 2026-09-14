@@ -3,6 +3,9 @@ package io.github.loongin.omniresonance.client;
 
 import io.github.loongin.omniresonance.network.ManagedName;
 import io.github.loongin.omniresonance.network.TransferDirection;
+import io.github.loongin.omniresonance.networking.ManagementDownloadAssembler;
+import io.github.loongin.omniresonance.networking.ManagementTransferMessage;
+import io.github.loongin.omniresonance.networking.ManagementTransferPool;
 import io.github.loongin.omniresonance.networking.NodeChannelPage;
 import io.github.loongin.omniresonance.networking.NodeChannelSummary;
 import io.github.loongin.omniresonance.networking.NodeMenuNodeSummary;
@@ -11,10 +14,15 @@ import io.github.loongin.omniresonance.networking.NodeMenuResponse;
 import io.github.loongin.omniresonance.networking.NodeMenuState;
 import io.github.loongin.omniresonance.networking.NodeNetworkPage;
 import io.github.loongin.omniresonance.networking.NodeNetworkSummary;
+import io.github.loongin.omniresonance.networking.NodePolicyFrames;
+import io.github.loongin.omniresonance.networking.NodeTransferStatus;
 import io.github.loongin.omniresonance.networking.NodeTunnelSummary;
+import io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec;
 import io.github.loongin.omniresonance.node.NodeMode;
 import io.github.loongin.omniresonance.node.ResonanceNodeMenu;
+import io.github.loongin.omniresonance.transfer.ResourcePolicyEdit;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.LongFunction;
@@ -55,10 +63,31 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     private int listScroll;
     private long clientTicks;
     private Modal modal = Modal.NONE;
+    private boolean closeAfterDiscard;
+    private @Nullable NodeWorkingFacesDraft faceDraft;
+    private int faceScroll;
+    private final ModalBackdrop modalBackdrop = new ModalBackdrop();
     private @Nullable NodeMode pendingMode;
     private @Nullable NodeMode modeCommitAfterBegin;
     private boolean modeCommitConfirmedReset;
     private @Nullable NodeDirectionView.Draft directionDraft;
+    private @Nullable NodeResourcePolicyDraft itemDraft;
+    private final ManagementDownloadAssembler downloads = new ManagementDownloadAssembler();
+    private @Nullable NodeMenuResponse.Download policyDownload;
+    private @Nullable ResourcePolicyEdit uploadPolicy;
+    private @Nullable UUID uploadId;
+    private byte @Nullable [] uploadBytes;
+    private int uploadOffset;
+    private long transferDeadline;
+    private final NodeResourceTypeCatalog resourceCatalog = new NodeResourceTypeCatalog();
+    private @Nullable NodeResourceTypeCatalog.Request catalogRequest;
+    private @Nullable NodeResourceTypeSelection resourceSelection;
+    private final java.util.List<TerminalRowButton> resourceRows = new java.util.ArrayList<>();
+    private boolean choosingItemPreset;
+    private final NodePresetPicker presetPicker = new NodePresetPicker();
+    private final TerminalResultRows presetResultRows =
+            new TerminalResultRows(this, this::addRenderableWidget, this::removeWidget);
+    private int itemFormScroll;
     private PagedListScroll.PageRequest pendingPageRequest = PagedListScroll.PageRequest.NONE;
     private AutomaticNameCommit automaticNameCommit = AutomaticNameCommit.idle();
 
@@ -79,10 +108,87 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         if (!matches(response)) {
             return;
         }
+        if (response instanceof NodeMenuResponse.UploadReady ready) {
+            if (uploadPolicy != null
+                    && uploadId != null
+                    && uploadId.equals(ready.transfer())
+                    && interaction.pending() != null
+                    && interaction.pending().sequence() == ready.sequence()
+                    && uploadBytes == null) {
+                uploadBytes = ResourcePolicyEditCodec.encode(uploadPolicy);
+                uploadPolicy = null;
+            }
+            return;
+        }
+        if (response instanceof NodeMenuResponse.Download download) {
+            if (interaction.pending() == null
+                    || interaction.pending().sequence() != download.sequence()
+                    || policyDownload != null
+                    || uploadId != null) return;
+            policyDownload = download;
+            var pin = new ManagementDownloadAssembler.Expected(
+                    menu.sessionId(),
+                    download.transfer(),
+                    ManagementTransferMessage.Context.NODE,
+                    download.metadata().channel().channelId(),
+                    ManagementTransferMessage.Purpose.NODE_POLICY,
+                    download.length());
+            downloads.begin(
+                    new ManagementTransferMessage.Begin(
+                            pin.session(),
+                            pin.transfer(),
+                            ManagementTransferMessage.Direction.DOWNLOAD,
+                            pin.context(),
+                            pin.contextId(),
+                            pin.purpose(),
+                            pin.totalLength()),
+                    pin,
+                    clientTicks);
+            return;
+        }
+        if (response instanceof NodeMenuResponse.Catalog catalog) {
+            if (catalogRequest == null
+                    || interaction.pending() == null
+                    || interaction.pending().sequence() != response.sequence()) return;
+            resourceCatalog.complete(catalogRequest, catalog.page());
+            catalogRequest = null;
+            interaction = interaction
+                    .apply(new NodeMenuResponse.State(
+                            menu.containerId, menu.sessionId(), response.sequence(), interaction.authoritative()))
+                    .model();
+            rebuildIfActive();
+            return;
+        }
+        if (uploadId != null
+                && interaction.pending() != null
+                && response.sequence() == interaction.pending().sequence()) {
+            uploadId = null;
+            uploadBytes = null;
+            uploadPolicy = null;
+            uploadOffset = 0;
+        }
         NodeMenuInteractionPolicy.EditKind previous = interaction.editKind();
         PagedListScroll.PageRequest completedPage = pendingPageRequest;
         NodeMenuInteractionPolicy.Transition transition = interaction.apply(response);
         if (!transition.accepted()) {
+            return;
+        }
+        if (presetPicker.pending()) {
+            presetPicker.complete(
+                    response instanceof NodeMenuResponse.State success
+                                    && success.state() instanceof NodeMenuState.DirectBindingEdit edit
+                            ? edit.presets()
+                            : null);
+            if (response instanceof NodeMenuResponse.State
+                    && transition.model().authoritative() instanceof NodeMenuState.DirectBindingEdit) {
+                interaction = transition.model().armHeartbeat(clientTicks);
+                if (choosingItemPreset && modal == Modal.NONE) updatePresetResultRows();
+                else rebuildIfActive();
+                return;
+            }
+        }
+        if (!transition.rebuild()) {
+            interaction = transition.model();
             return;
         }
         boolean continuation = tunnelCatalogPagePending;
@@ -123,6 +229,10 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         } else if (current == NodeMenuInteractionPolicy.EditKind.NONE) {
             draft = "";
             directionDraft = null;
+            itemDraft = null;
+            faceDraft = null;
+            choosingItemPreset = false;
+            presetPicker.close();
         }
         AutomaticNameCommit.Resolution automatic = automaticNameCommit.resolveNode(
                 response instanceof NodeMenuResponse.State, interaction.authoritative());
@@ -156,7 +266,8 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         if (response instanceof NodeMenuResponse.State) {
             listScroll = completedPage == PagedListScroll.PageRequest.NONE ? 0 : pageLanding(completedPage);
         }
-        modal = Modal.NONE;
+        modal = interaction.discardConfirmation() ? Modal.DISCARD : Modal.NONE;
+        closeAfterDiscard &= interaction.discardConfirmation();
         pendingMode = null;
         error = response instanceof NodeMenuResponse.Failure failure
                 ? Component.translatable(failure.reason().translationKey())
@@ -176,6 +287,9 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     @Override
     protected void init() {
         tunnelResultRows.clear();
+        presetResultRows.clear();
+        resourceRows.clear();
+        modalBackdrop.clear();
         layout = TerminalLayout.calculate(width, height);
         imageWidth = layout.window().width();
         imageHeight = layout.window().height();
@@ -215,7 +329,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             } else if (state instanceof NodeMenuState.DirectTunnelSwitch tunnelSwitch) {
                 buildTunnelSwitch(tunnelSwitch);
             } else if (state instanceof NodeMenuState.DirectBindingEdit edit) {
-                buildDirectionEditor(edit.channel().currentDirection(), true);
+                buildItemEditor(edit);
             } else if (state instanceof NodeMenuState.DirectChannelEdit edit) {
                 buildNameEditor(edit.tunnel().name(), NamePurpose.CHANNEL);
             } else if (state instanceof NodeMenuState.DirectChannelDelete delete) {
@@ -226,12 +340,17 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 buildDirectionEditor(edit.direction(), false);
             }
         }
+        if (modal != Modal.NONE) {
+            modalBackdrop.retain(children(), this::removeWidget);
+            setFocused(null);
+        }
         buildModal();
+        if (modal != Modal.NONE) modalBackdrop.captureForeground(renderables);
     }
 
     @Override
     protected void setInitialFocus() {
-        if (searchField != null) {
+        if (modal == Modal.NONE && searchField != null) {
             setInitialFocus(searchField);
         } else {
             super.setInitialFocus();
@@ -241,12 +360,51 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     @Override
     protected void containerTick() {
         clientTicks++;
+        if (downloads.expire(clientTicks) && policyDownload != null) failPolicyTransfer();
+        if (uploadId != null && clientTicks >= transferDeadline) failPolicyTransfer();
+        if (uploadBytes != null && uploadOffset < uploadBytes.length) {
+            int end = Math.min(uploadBytes.length, uploadOffset + ManagementTransferPool.MAXIMUM_FRAGMENT_BYTES);
+            PacketDistributor.sendToServer(new ManagementTransferMessage.Chunk(
+                    menu.sessionId(),
+                    uploadId,
+                    uploadOffset,
+                    java.util.Arrays.copyOfRange(uploadBytes, uploadOffset, end)));
+            uploadOffset = end;
+            if (end == uploadBytes.length) {
+                PacketDistributor.sendToServer(new ManagementTransferMessage.Finish(menu.sessionId(), uploadId));
+                uploadBytes = null;
+            }
+        }
         if (interaction.heartbeatDue(clientTicks)) {
             long sequence = nextSequence();
             interaction = interaction.heartbeatSent(sequence, clientTicks);
             PacketDistributor.sendToServer(new NodeMenuRequest.Heartbeat(menu.containerId, menu.sessionId(), sequence));
         }
+        if (interaction.authoritative() instanceof NodeMenuState.DirectBindingEdit
+                && !resourceCatalog.ready()
+                && !resourceCatalog.failed()
+                && !interaction.mutationPending()) {
+            catalogRequest = resourceCatalog.nextRequest();
+            if (catalogRequest != null)
+                send(
+                        sequence -> new NodeMenuRequest.ResourceCatalog(
+                                menu.containerId, menu.sessionId(), sequence, catalogRequest.offset()),
+                        NodeMenuInteractionPolicy.PendingKind.PAGE);
+        }
+        if (resourceSelection != null && modal == Modal.NONE && resourceSelection.tick(clientTicks))
+            updateResourceRows();
         applyLocalTunnelSearch();
+        requestPresetQuery();
+        if (clientTicks % 20 == 0
+                && interaction.authoritative() instanceof NodeMenuState.DirectChannelRoot root
+                && root.channel().currentDirection() != null
+                && interaction.expectedBackgroundSequence() == 0
+                && !interaction.mutationPending()
+                && modal == Modal.NONE) {
+            send(
+                    sequence -> new NodeMenuRequest.PollItemStatus(menu.containerId, menu.sessionId(), sequence),
+                    NodeMenuInteractionPolicy.PendingKind.STATUS);
+        }
     }
 
     private void buildTopBar() {
@@ -256,13 +414,14 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         NodeMenuNodeSummary node = NodeMenuInteractionPolicy.linkedNode(interaction.authoritative());
         int right = topBar.right();
         int left = topBar.x();
-        TerminalHeaderLayout.Action action = NodeMenuInteractionPolicy.topBarAction(interaction.authoritative());
-        if (action != TerminalHeaderLayout.Action.NONE) {
-            TerminalHeaderLayout.ActionLayout actionLayout = TerminalHeaderLayout.atRightEdge(
-                    new TerminalLayout.Rect(left, y, Math.max(0, right - left), CONTROL_HEIGHT), true);
-            buildTopBarAction(action, actionLayout.action());
-            right = actionLayout.remaining().right();
-        }
+        TerminalHeaderLayout.Action action =
+                topBarAction(interaction.authoritative(), choosingItemPreset || resourceSelection != null);
+        TerminalHeaderLayout.ActionLayout actionLayout =
+                TerminalHeaderLayout.atRightEdge(topBar, action != TerminalHeaderLayout.Action.NONE);
+        if (action != TerminalHeaderLayout.Action.NONE) buildTopBarAction(action, actionLayout.action());
+        right = actionLayout.remaining().right();
+        TerminalHeaderLayout.NodeNames names =
+                TerminalHeaderLayout.nodeNames(actionLayout.remaining(), layout.compact());
         if (node != null) {
             int chunkWidth = layout.compact() ? 64 : 92;
             TerminalButton chunk = new TerminalButton(
@@ -316,13 +475,9 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                         .getString()
                 : node.nodeName();
         if (node != null && node.enabled() && interaction.editKind() == NodeMenuInteractionPolicy.EditKind.NONE) {
-            int nameWidth = Math.max(0, available * 54 / 100);
+            int nameWidth = names.node().width();
             nodeTitleBounds = new TerminalLayout.Rect(left, y, 0, CONTROL_HEIGHT);
-            networkTitleBounds = new TerminalLayout.Rect(
-                    left + nameWidth + TerminalLayout.GAP,
-                    y,
-                    Math.max(0, right - left - nameWidth - TerminalLayout.GAP),
-                    CONTROL_HEIGHT);
+            networkTitleBounds = names.network();
             TerminalButton rename = new TerminalButton(
                     left,
                     y,
@@ -336,29 +491,23 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             rename.active = !interaction.mutationPending() && modal == Modal.NONE;
             rename.setTooltip(Tooltip.create(TerminalText.body(Component.literal(nodeName))));
             addRenderableWidget(rename);
-            TerminalButton network = new TerminalButton(
-                    networkTitleBounds.x(),
-                    y,
-                    networkTitleBounds.width(),
-                    CONTROL_HEIGHT,
-                    Component.literal(ellipsize(node.networkName(), Math.max(0, networkTitleBounds.width() - 8))),
-                    button -> send(
+            TerminalButton network = buildNetworkHeaderButton(
+                    networkTitleBounds,
+                    TerminalText.networkLabel(
+                            node.networkName(),
+                            networkTitleBounds,
+                            candidate -> font.width(TerminalText.body(Component.literal(candidate)))),
+                    () -> interaction,
+                    () -> modal == Modal.NONE,
+                    () -> send(
                             sequence -> new NodeMenuRequest.OpenNetworkSelection(
                                     menu.containerId, menu.sessionId(), sequence),
-                            NodeMenuInteractionPolicy.PendingKind.NAVIGATE),
-                    false);
-            network.active = !interaction.mutationPending() && modal == Modal.NONE;
-            network.setTooltip(Tooltip.create(
-                    TerminalText.body(Component.translatable("omniresonance.node_menu.network.switch"))));
-            addRenderableWidget(network);
+                            NodeMenuInteractionPolicy.PendingKind.NAVIGATE));
+            if (network != null) addRenderableWidget(network);
         } else if (node != null) {
-            int nameWidth = Math.max(0, available * 54 / 100);
+            int nameWidth = names.node().width();
             nodeTitleBounds = new TerminalLayout.Rect(left, y, nameWidth, CONTROL_HEIGHT);
-            networkTitleBounds = new TerminalLayout.Rect(
-                    left + nameWidth + TerminalLayout.GAP,
-                    y,
-                    Math.max(0, right - left - nameWidth - TerminalLayout.GAP),
-                    CONTROL_HEIGHT);
+            networkTitleBounds = names.network();
         } else if (interaction.authoritative() instanceof NodeMenuState.BlankEdit) {
             int nameWidth = Math.max(0, available * 50 / 100);
             nodeTitleBounds = new TerminalLayout.Rect(left, y, nameWidth, CONTROL_HEIGHT);
@@ -370,17 +519,39 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         }
     }
 
+    static TerminalHeaderLayout.Action topBarAction(@Nullable NodeMenuState state, boolean choosingPreset) {
+        return choosingPreset && state instanceof NodeMenuState.DirectBindingEdit
+                ? TerminalHeaderLayout.Action.SEARCH
+                : NodeMenuInteractionPolicy.topBarAction(state);
+    }
+
+    private ClientSearchState activeSearch() {
+        return resourceSelection != null
+                ? resourceSelection.search()
+                : choosingItemPreset ? presetPicker.search() : tunnelSearch;
+    }
+
+    private static boolean presetReadPending(NodeMenuInteractionPolicy.Model interaction, boolean queryPending) {
+        return queryPending
+                && interaction.pending() != null
+                && interaction.pending().kind() == NodeMenuInteractionPolicy.PendingKind.NAVIGATE;
+    }
+
+    private boolean searchEligible() {
+        if (resourceSelection != null) return modal == Modal.NONE && !interaction.mutationPending();
+        return modal == Modal.NONE
+                && (choosingItemPreset
+                        ? !interaction.mutationPending() || presetReadPending(interaction, presetPicker.pending())
+                        : !interaction.mutationPending()
+                                && tunnelCatalog.ready()
+                                && NodeMenuInteractionPolicy.topBarAction(interaction.authoritative())
+                                        == TerminalHeaderLayout.Action.SEARCH);
+    }
+
     private void buildTopBarAction(TerminalHeaderLayout.Action action, TerminalLayout.Rect bounds) {
         TerminalClickButton button;
         if (action == TerminalHeaderLayout.Action.SEARCH) {
-            button = new TerminalSearchButton(
-                    bounds,
-                    tunnelSearch.expanded(),
-                    Component.translatable(
-                            tunnelSearch.expanded()
-                                    ? "omniresonance.node_menu.tunnel.search.close"
-                                    : "omniresonance.node_menu.tunnel.search"),
-                    ignored -> toggleTunnelSearch());
+            button = buildSearchButton(bounds, activeSearch(), choosingItemPreset, this::toggleSearch);
         } else if (action == TerminalHeaderLayout.Action.CREATE) {
             button = new TerminalIconButton(
                     bounds.x(),
@@ -400,8 +571,11 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         }
         button.active = modal == Modal.NONE
                 && (!interaction.mutationPending()
-                        || (action == TerminalHeaderLayout.Action.SEARCH && tunnelSearch.expanded()))
-                && (action != TerminalHeaderLayout.Action.SEARCH || tunnelCatalog.ready());
+                        || (action == TerminalHeaderLayout.Action.SEARCH
+                                && (choosingItemPreset
+                                        ? presetReadPending(interaction, presetPicker.pending())
+                                        : tunnelSearch.expanded())))
+                && (action != TerminalHeaderLayout.Action.SEARCH || choosingItemPreset || tunnelCatalog.ready());
         addRenderableWidget(button);
     }
 
@@ -446,7 +620,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         nameField.active = !interaction.mutationPending() && modal == Modal.NONE;
         addRenderableWidget(nameField);
 
-        int actionWidth = Math.max(0, (formWidth - TerminalLayout.GAP) / 2);
+        int actionWidth = Math.min(80, Math.max(0, (formWidth - TerminalLayout.GAP) / 2));
         TerminalButton cancel = new TerminalButton(
                 left,
                 top + 30,
@@ -716,6 +890,358 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 true);
     }
 
+    void applyTransfer(ManagementTransferMessage message) {
+        if (!message.session().equals(menu.sessionId())) return;
+        if (message instanceof ManagementTransferMessage.Abort
+                && ((policyDownload != null && policyDownload.transfer().equals(message.transfer()))
+                        || message.transfer().equals(uploadId))) {
+            failPolicyTransfer();
+            return;
+        }
+        if (policyDownload == null || !policyDownload.transfer().equals(message.transfer())) return;
+        try {
+            if (message instanceof ManagementTransferMessage.Chunk chunk) downloads.append(chunk, clientTicks);
+            else if (message instanceof ManagementTransferMessage.Finish finish) {
+                NodeMenuResponse.Download metadata = policyDownload;
+                ResourcePolicyEdit[] decoded = new ResourcePolicyEdit[1];
+                downloads.finish(finish, clientTicks, view -> decoded[0] = ResourcePolicyEditCodec.decode(view));
+                policyDownload = null;
+                if (decoded[0] != null)
+                    applyResponse(new NodeMenuResponse.State(
+                            menu.containerId,
+                            menu.sessionId(),
+                            metadata.sequence(),
+                            metadata.metadata().withPolicy(decoded[0])));
+            } else throw new IllegalArgumentException("Unexpected download frame");
+        } catch (RuntimeException invalid) {
+            failPolicyTransfer();
+        }
+    }
+
+    private void cancelPolicyTransfer() {
+        UUID id = policyDownload != null ? policyDownload.transfer() : uploadId;
+        if (id != null) {
+            downloads.abort(menu.sessionId(), id);
+            PacketDistributor.sendToServer(new ManagementTransferMessage.Abort(menu.sessionId(), id));
+        }
+        policyDownload = null;
+        uploadId = null;
+        uploadPolicy = null;
+        uploadBytes = null;
+        uploadOffset = 0;
+    }
+
+    private void failPolicyTransfer() {
+        cancelPolicyTransfer();
+        if (interaction.pending() != null)
+            applyResponse(new NodeMenuResponse.Failure(
+                    menu.containerId,
+                    menu.sessionId(),
+                    interaction.pending().sequence(),
+                    NodeMenuResponse.Reason.UNAVAILABLE,
+                    interaction.authoritative()));
+    }
+
+    private void buildItemEditor(NodeMenuState.DirectBindingEdit edit) {
+        if (!resourceCatalog.ready() || itemDraft == null && edit.policy() == null) return;
+        if (itemDraft == null)
+            itemDraft =
+                    new NodeResourcePolicyDraft(edit.policy(), edit.selectedPresetName(), resourceCatalog.snapshot());
+        if (faceDraft == null)
+            faceDraft = new NodeWorkingFacesDraft(
+                    edit.workingFaces(), edit.node().form(), edit.node().facing());
+        if (resourceSelection != null) {
+            buildResourceSelection();
+            return;
+        }
+        if (faceDraft.openNow()) {
+            buildFaceSelector(edit);
+            return;
+        }
+        if (choosingItemPreset) {
+            buildItemPresetChoices(edit);
+            return;
+        }
+        buildResourceForm(
+                font,
+                bodyBounds,
+                itemFormScroll,
+                itemDraft,
+                interaction.mutationPending(),
+                this::addRenderableWidget,
+                faceDraft.panel()
+                        ? NodeFaceSelectorView.text("attached")
+                        : faceDraft.value().mask() == 0
+                                ? NodeFaceSelectorView.text("empty")
+                                : Component.translatable(
+                                        "omniresonance.working_faces.count",
+                                        Integer.bitCount(faceDraft.value().mask())),
+                new NodeResourcePolicyView.Actions(
+                        this::markItemDirty,
+                        this::rebuildIfActive,
+                        () -> {
+                            choosingItemPreset = true;
+                            presetPicker.open();
+                            listScroll = 0;
+                            rebuildIfActive();
+                        },
+                        () -> {
+                            modal = Modal.ITEM_DIRECTION;
+                            rebuildIfActive();
+                        },
+                        () -> {
+                            faceDraft.open();
+                            faceScroll = 0;
+                            rebuildIfActive();
+                        },
+                        () -> {
+                            resourceSelection = NodeResourceTypeSelection.scope(
+                                    itemDraft,
+                                    itemDraft.openScope(),
+                                    id -> NodeResourcePolicyView.typeName(id).getString());
+                            rebuildIfActive();
+                        },
+                        () -> {
+                            resourceSelection = NodeResourceTypeSelection.overrides(
+                                    itemDraft,
+                                    id -> NodeResourcePolicyView.typeName(id).getString());
+                            rebuildIfActive();
+                        },
+                        this::saveItemPolicy));
+    }
+
+    static NodeResourcePolicyView.Layout buildResourceForm(
+            net.minecraft.client.gui.Font font,
+            TerminalLayout.Rect body,
+            int scroll,
+            NodeResourcePolicyDraft draft,
+            boolean pending,
+            java.util.function.Consumer<net.minecraft.client.gui.components.AbstractWidget> add,
+            Component faces,
+            NodeResourcePolicyView.Actions actions) {
+        var form = NodeResourcePolicyView.layout(body, scroll, draft);
+        NodeResourcePolicyView.build(font, form, draft, !pending, add, faces, actions);
+        return form;
+    }
+
+    static int scrollResourceForm(TerminalLayout.Rect body, int scroll, NodeResourcePolicyDraft draft, double wheel) {
+        var form = NodeResourcePolicyView.layout(body, scroll, draft);
+        return PagedListScroll.navigate(form.firstRow(), form.totalRows(), form.visibleRows(), false, false, wheel)
+                .scroll();
+    }
+
+    private void buildResourceSelection() {
+        resourceRows.clear();
+        var selectionLayout = NodeResourceTypeSelectionView.layout(bodyBounds, resourceSelection);
+        searchField = NodeResourceTypeSelectionView.buildSearch(
+                font, selectionLayout, resourceSelection, () -> clientTicks, () -> {});
+        if (searchField != null) addRenderableWidget(searchField);
+        updateResourceRows();
+        NodeResourceTypeSelectionView.buildScopeActions(
+                selectionLayout,
+                resourceSelection,
+                !interaction.mutationPending(),
+                this::addRenderableWidget,
+                this::rebuildIfActive,
+                () -> applyResourceScope(false),
+                () -> {
+                    resourceSelection = null;
+                    rebuildIfActive();
+                });
+    }
+
+    private void updateResourceRows() {
+        if (resourceSelection == null) return;
+        for (var row : resourceRows) removeWidget(row);
+        resourceRows.clear();
+        NodeResourceTypeSelectionView.buildRows(
+                NodeResourceTypeSelectionView.layout(bodyBounds, resourceSelection),
+                resourceSelection,
+                !interaction.mutationPending(),
+                row -> {
+                    resourceRows.add(row);
+                    addRenderableWidget(row);
+                },
+                () -> {
+                    if (resourceSelection.scope() == null) {
+                        markItemDirty();
+                        resourceSelection = null;
+                    }
+                    rebuildIfActive();
+                });
+    }
+
+    private void applyResourceScope(boolean confirmed) {
+        if (resourceSelection == null || resourceSelection.scope() == null) return;
+        if (!confirmed && itemDraft.removedOverrideCount(resourceSelection.scope()) > 0) {
+            modal = Modal.RESOURCE_SCOPE;
+            rebuildIfActive();
+            return;
+        }
+        itemDraft.applyScope(resourceSelection.scope(), confirmed);
+        resourceSelection = null;
+        if (itemDraft.dirty()) markItemDirty();
+        rebuildIfActive();
+    }
+
+    private void buildFaceSelector(NodeMenuState.DirectBindingEdit edit) {
+        var faceLayout = NodeFaceSelectorView.layout(bodyBounds, faceScroll, faceDraft.panel());
+        faceScroll = faceLayout.firstRow();
+        NodeFaceSelectorView.build(
+                faceLayout,
+                faceDraft,
+                edit.node().facing(),
+                edit.previews(),
+                !interaction.mutationPending(),
+                this::addRenderableWidget,
+                () -> {
+                    markItemDirty();
+                    rebuildIfActive();
+                },
+                () -> {
+                    faceDraft.close();
+                    rebuildIfActive();
+                });
+        addChannelAction(
+                new TerminalLayout.Rect(
+                        faceLayout.actions().right() - 64, faceLayout.actions().y(), 64, 20),
+                "omniresonance.working_faces.refresh",
+                () -> pageItemPresets(edit.presets().offset()),
+                false,
+                true);
+    }
+
+    private void syncResourceDirty() {
+        if (itemDraft != null && interaction.authoritative() instanceof NodeMenuState.DirectBindingEdit edit) {
+            boolean changed = resourceDirty(itemDraft, resourceSelection, faceDraft, edit);
+            interaction = interaction.resourceDraftDirty(changed);
+        }
+    }
+
+    static boolean resourceDirty(
+            NodeResourcePolicyDraft draft,
+            @Nullable NodeResourceTypeSelection selection,
+            @Nullable NodeWorkingFacesDraft faces,
+            NodeMenuState.DirectBindingEdit edit) {
+        return draft.dirtyIncluding(selection == null ? null : selection.scope())
+                || faces != null
+                        && faces.value().effectiveMask(edit.node().facing())
+                                != edit.workingFaces().effectiveMask(edit.node().facing());
+    }
+
+    static NodeMenuRequest resourceSaveRequest(
+            int containerId,
+            UUID sessionId,
+            long sequence,
+            NodeResourcePolicyDraft draft,
+            NodeWorkingFacesDraft faces,
+            UUID transferId) {
+        ResourcePolicyEdit policy = draft.edit();
+        return NodePolicyFrames.saveSize(containerId, policy) <= NodePolicyFrames.MAXIMUM_BYTES
+                ? new NodeMenuRequest.SaveResourcePolicy(
+                        containerId,
+                        sessionId,
+                        sequence,
+                        policy,
+                        faces.value(),
+                        policy.discardPreviousDirectionFields())
+                : new NodeMenuRequest.BeginPolicyUpload(
+                        containerId,
+                        sessionId,
+                        sequence,
+                        transferId,
+                        ResourcePolicyEditCodec.encodedSize(policy),
+                        faces.value(),
+                        policy.discardPreviousDirectionFields());
+    }
+
+    private void markItemDirty() {
+        syncResourceDirty();
+        error = null;
+    }
+
+    private void saveItemPolicy() {
+        if (itemDraft == null) return;
+        ResourcePolicyEdit policy;
+        int frameSize;
+        try {
+            policy = itemDraft.edit();
+            frameSize = NodePolicyFrames.saveSize(menu.containerId, policy);
+        } catch (IllegalArgumentException invalid) {
+            error = NodeResourcePolicyView.text("invalid");
+            return;
+        }
+        if (frameSize > NodePolicyFrames.MAXIMUM_BYTES) {
+            UUID id = UUID.randomUUID();
+            uploadPolicy = policy;
+            uploadId = id;
+            uploadOffset = 0;
+            transferDeadline = clientTicks + 200;
+            if (!send(
+                    sequence ->
+                            resourceSaveRequest(menu.containerId, menu.sessionId(), sequence, itemDraft, faceDraft, id),
+                    NodeMenuInteractionPolicy.PendingKind.SAVE)) {
+                uploadId = null;
+                uploadPolicy = null;
+            }
+            return;
+        }
+        send(
+                sequence -> resourceSaveRequest(
+                        menu.containerId, menu.sessionId(), sequence, itemDraft, faceDraft, new UUID(0, 0)),
+                NodeMenuInteractionPolicy.PendingKind.SAVE);
+    }
+
+    private TerminalLayout.Rect itemPickerBody() {
+        return NodePresetPickerView.rows(bodyBounds, presetPicker.search().expanded());
+    }
+
+    private void buildItemPresetChoices(NodeMenuState.DirectBindingEdit edit) {
+        searchField = NodePresetPickerView.buildSearch(font, bodyBounds, presetPicker, this::updatePresetResultRows);
+        if (searchField != null) addRenderableWidget(searchField);
+        updatePresetResultRows();
+    }
+
+    private void updatePresetResultRows() {
+        presetResultRows.clear();
+        NodePresetPickerView.buildRows(
+                bodyBounds,
+                presetPicker,
+                !interaction.mutationPending() && modal == Modal.NONE,
+                presetResultRows::add,
+                preset -> {
+                    itemDraft.presetId = preset == null ? null : preset.id();
+                    itemDraft.presetName = preset == null ? null : preset.name();
+                    choosingItemPreset = false;
+                    presetPicker.close();
+                    markItemDirty();
+                    rebuildIfActive();
+                });
+    }
+
+    private void requestPresetQuery() {
+        if (!choosingItemPreset || interaction.mutationPending() || modal != Modal.NONE || minecraft == null) return;
+        NodePresetPicker.Request request = presetPicker.nextRequest();
+        if (request == null) return;
+        long sequence = nextSequence();
+        interaction = interaction.submit(NodeMenuInteractionPolicy.PendingKind.NAVIGATE, sequence);
+        error = null;
+        PacketDistributor.sendToServer(new NodeMenuRequest.PageItemPresets(
+                menu.containerId,
+                menu.sessionId(),
+                sequence,
+                request.offset(),
+                request.query(),
+                request.libraryRevision()));
+        updatePresetResultRows();
+    }
+
+    private void pageItemPresets(int offset) {
+        send(
+                sequence -> new NodeMenuRequest.PageItemPresets(menu.containerId, menu.sessionId(), sequence, offset),
+                NodeMenuInteractionPolicy.PendingKind.NAVIGATE);
+    }
+
     private void buildDirectionEditor(@Nullable TransferDirection original, boolean directBinding) {
         NodeDirectionView.Draft current =
                 directionDraft == null ? NodeDirectionView.Draft.start(original) : directionDraft;
@@ -735,7 +1261,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         direction.setSelected(true);
         addRenderableWidget(direction);
 
-        int actionWidth = Math.max(0, (width - TerminalLayout.GAP) / 2);
+        int actionWidth = Math.min(80, Math.max(0, (width - TerminalLayout.GAP) / 2));
         TerminalButton cancel = new TerminalButton(
                 left,
                 top + 30,
@@ -863,15 +1389,17 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 half,
                 CONTROL_HEIGHT,
                 Component.translatable(
-                        modal == Modal.DISCARD
-                                ? "omniresonance.node_menu.confirm.discard"
-                                : modal == Modal.DISABLE
-                                        ? "omniresonance.node_menu.disable"
-                                        : modal == Modal.REMOVE_BINDING
-                                                ? "omniresonance.node_menu.binding.exit"
-                                                : modal == Modal.REMOVE_DOMAIN
-                                                        ? "omniresonance.node_menu.domain.remove"
-                                                        : "omniresonance.node_menu.save"),
+                        modal == Modal.ITEM_DIRECTION
+                                ? "omniresonance.item_policy.switch.confirm"
+                                : modal == Modal.DISCARD
+                                        ? "omniresonance.node_menu.confirm.discard"
+                                        : modal == Modal.DISABLE
+                                                ? "omniresonance.node_menu.disable"
+                                                : modal == Modal.REMOVE_BINDING
+                                                        ? "omniresonance.node_menu.binding.exit"
+                                                        : modal == Modal.REMOVE_DOMAIN
+                                                                ? "omniresonance.node_menu.domain.remove"
+                                                                : "omniresonance.node_menu.save"),
                 button -> confirmModal(),
                 true);
         addRenderableWidget(primary);
@@ -1055,10 +1583,27 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         error = null;
     }
 
-    private void toggleTunnelSearch() {
-        if (tunnelSearch.expanded()) {
+    static TerminalSearchButton buildSearchButton(
+            TerminalLayout.Rect bounds, ClientSearchState search, boolean preset, Runnable toggle) {
+        String key = search.expanded()
+                ? "omniresonance.node_menu.tunnel.search.close"
+                : preset ? "omniresonance.item_policy.search" : "omniresonance.node_menu.tunnel.search";
+        return new TerminalSearchButton(
+                bounds, search.expanded(), Component.translatable(key), ignored -> toggle.run());
+    }
+
+    private void toggleSearch() {
+        if (resourceSelection != null) {
+            if (!resourceSelection.closeSearch(clientTicks) && searchEligible())
+                resourceSelection.search().open();
+            rebuildIfActive();
+        } else if (choosingItemPreset) {
+            if (!presetPicker.closeSearch() && searchEligible())
+                presetPicker.search().open();
+            rebuildIfActive();
+        } else if (tunnelSearch.expanded()) {
             closeTunnelSearch();
-        } else if (!interaction.mutationPending() && modal == Modal.NONE && tunnelCatalog.ready()) {
+        } else if (searchEligible()) {
             tunnelSearch.open();
             rebuildIfActive();
         }
@@ -1169,9 +1714,9 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         NodeMenuInteractionPolicy.Model submitted = interaction.submit(kind, sequence);
         NodeMenuRequest request = Objects.requireNonNull(factory.apply(sequence), "request");
         interaction = submitted;
-        error = null;
+        if (kind != NodeMenuInteractionPolicy.PendingKind.STATUS) error = null;
         PacketDistributor.sendToServer(request);
-        rebuildIfActive();
+        if (kind != NodeMenuInteractionPolicy.PendingKind.STATUS) rebuildIfActive();
         return true;
     }
 
@@ -1191,6 +1736,19 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     }
 
     private void initializeDraft(NodeMenuInteractionPolicy.EditKind kind, @Nullable NodeMenuState authoritative) {
+        itemDraft = null;
+        resourceSelection = null;
+        catalogRequest = null;
+        if (authoritative instanceof NodeMenuState.DirectBindingEdit) resourceCatalog.open(menu.sessionId());
+        else resourceCatalog.close();
+        faceDraft = authoritative instanceof NodeMenuState.DirectBindingEdit edit
+                ? new NodeWorkingFacesDraft(
+                        edit.workingFaces(), edit.node().form(), edit.node().facing())
+                : null;
+        faceScroll = 0;
+        itemFormScroll = 0;
+        choosingItemPreset = false;
+        presetPicker.close();
         draft = switch (kind) {
             case BLANK ->
                 authoritative instanceof NodeMenuState.BlankEdit edit
@@ -1226,10 +1784,83 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         };
     }
 
+    enum LocalBackAction {
+        CLOSE_MODAL,
+        BLOCK,
+        CLOSE_FACES,
+        CLOSE_PRESET_SEARCH,
+        CLOSE_PRESET,
+        CONTINUE
+    }
+
+    static LocalBackAction localBackAction(
+            NodeMenuInteractionPolicy.Model interaction,
+            boolean modalOpen,
+            boolean faceOpen,
+            boolean choosingPreset,
+            boolean presetQueryPending) {
+        return localBackAction(interaction, modalOpen, faceOpen, choosingPreset, presetQueryPending, false);
+    }
+
+    static LocalBackAction localBackAction(
+            NodeMenuInteractionPolicy.Model interaction,
+            boolean modalOpen,
+            boolean faceOpen,
+            boolean choosingPreset,
+            boolean presetQueryPending,
+            boolean searchExpanded) {
+        if (modalOpen) return LocalBackAction.CLOSE_MODAL;
+        boolean presetReadPending = presetReadPending(interaction, presetQueryPending);
+        if (choosingPreset && searchExpanded && (!interaction.mutationPending() || presetReadPending))
+            return LocalBackAction.CLOSE_PRESET_SEARCH;
+        if (choosingPreset && presetReadPending) return LocalBackAction.CLOSE_PRESET;
+        if (interaction.mutationPending()) return LocalBackAction.BLOCK;
+        if (faceOpen) return LocalBackAction.CLOSE_FACES;
+        if (choosingPreset) return LocalBackAction.CLOSE_PRESET;
+        return LocalBackAction.CONTINUE;
+    }
+
     private void navigateBack() {
-        if (modal != Modal.NONE) {
-            closeModal();
+        syncResourceDirty();
+        if (modal == Modal.NONE && resourceSelection != null && !interaction.mutationPending()) {
+            if (!resourceSelection.closeSearch(clientTicks)) {
+                resourceSelection = null;
+                syncResourceDirty();
+            }
+            rebuildIfActive();
             return;
+        }
+        switch (localBackAction(
+                interaction,
+                modal != Modal.NONE,
+                faceDraft != null && faceDraft.openNow(),
+                choosingItemPreset,
+                presetPicker.pending(),
+                presetPicker.search().expanded())) {
+            case CLOSE_MODAL -> {
+                closeModal();
+                return;
+            }
+            case BLOCK -> {
+                return;
+            }
+            case CLOSE_FACES -> {
+                faceDraft.close();
+                rebuildIfActive();
+                return;
+            }
+            case CLOSE_PRESET_SEARCH -> {
+                presetPicker.closeSearch();
+                rebuildIfActive();
+                return;
+            }
+            case CLOSE_PRESET -> {
+                choosingItemPreset = false;
+                presetPicker.close();
+                rebuildIfActive();
+                return;
+            }
+            case CONTINUE -> {}
         }
         if (closeTunnelSearch()) {
             return;
@@ -1249,6 +1880,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                         NodeMenuInteractionPolicy.PendingKind.NAVIGATE);
             case CANCEL_EDIT -> cancelEdit();
             case CONFIRM_DISCARD -> {
+                closeAfterDiscard = false;
                 interaction = interaction.confirmDiscard();
                 modal = Modal.DISCARD;
                 rebuildIfActive();
@@ -1259,6 +1891,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
 
     private void closeModal() {
         modal = Modal.NONE;
+        closeAfterDiscard = false;
         pendingMode = null;
         if (interaction.discardConfirmation()) {
             interaction = interaction.continueEditing();
@@ -1269,9 +1902,16 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     private void confirmModal() {
         Modal accepted = modal;
         modal = Modal.NONE;
-        if (accepted == Modal.DISCARD) {
+        if (accepted == Modal.RESOURCE_SCOPE) {
+            applyResourceScope(true);
+        } else if (accepted == Modal.ITEM_DIRECTION && itemDraft != null) {
+            itemDraft.confirmDirectionChange();
+            markItemDirty();
+            rebuildIfActive();
+        } else if (accepted == Modal.DISCARD) {
             interaction = interaction.continueEditing().discardDraft();
-            cancelEdit();
+            if (closeAfterDiscard) super.onClose();
+            else cancelEdit();
         } else if (accepted == Modal.DISABLE) {
             send(
                     sequence -> new NodeMenuRequest.SetEnabled(menu.containerId, menu.sessionId(), sequence, false),
@@ -1292,15 +1932,28 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     }
 
     @Override
+    public void removed() {
+        cancelPolicyTransfer();
+        resourceRows.clear();
+        downloads.close();
+        resourceCatalog.close();
+        resourceSelection = null;
+        presetPicker.close();
+        tunnelSearch.reset();
+        super.removed();
+    }
+
+    @Override
     public void onClose() {
         navigateBack();
     }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        boolean searchWasExpanded = tunnelSearch.expanded();
+        ClientSearchState search = activeSearch();
+        boolean searchWasExpanded = search.expanded();
         boolean handled = super.mouseClicked(mouseX, mouseY, button);
-        tunnelSearch.finishToggleClick(searchWasExpanded, this, searchField);
+        search.finishToggleClick(searchWasExpanded, this, searchField);
         return handled;
     }
 
@@ -1310,22 +1963,93 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             navigateBack();
             return true;
         }
-        if (tunnelSearch.openFromKey(keyCode, modifiers, interaction, modal != Modal.NONE, tunnelCatalog.ready())) {
-            rebuildIfActive();
-            if (minecraft != null) {
-                minecraft
-                        .getSoundManager()
-                        .play(TerminalClickButton.clickFeedback().createSound());
-            }
+        if (routeSearchKey(
+                keyCode,
+                scanCode,
+                modifiers,
+                getFocused(),
+                minecraft != null
+                        && TerminalInteractionPolicy.inventoryShortcut(
+                                minecraft.options.keyInventory, getFocused(), keyCode, scanCode),
+                this::closeFromInventory,
+                activeSearch(),
+                searchEligible(),
+                () -> {
+                    rebuildIfActive();
+                    if (minecraft != null)
+                        minecraft
+                                .getSoundManager()
+                                .play(TerminalClickButton.clickFeedback().createSound());
+                })) return true;
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    static boolean routeSearchKey(
+            int keyCode,
+            int scanCode,
+            int modifiers,
+            @Nullable net.minecraft.client.gui.components.events.GuiEventListener focused,
+            boolean inventoryShortcut,
+            Runnable close,
+            ClientSearchState search,
+            boolean eligible,
+            Runnable opened) {
+        if (focused instanceof TerminalEditBox field && field.ownsKey(keyCode))
+            return field.keyPressed(keyCode, scanCode, modifiers);
+        if (inventoryShortcut) {
+            close.run();
             return true;
         }
-        return super.keyPressed(keyCode, scanCode, modifiers);
+        if (search.openFromKey(keyCode, modifiers, eligible)) {
+            opened.run();
+            return true;
+        }
+        return false;
+    }
+
+    private void closeFromInventory() {
+        syncResourceDirty();
+        if (interaction.exitAction() == NodeMenuInteractionPolicy.BackAction.CONFIRM_DISCARD) {
+            closeAfterDiscard = true;
+            interaction = interaction.confirmDiscard();
+            modal = Modal.DISCARD;
+            rebuildIfActive();
+        } else {
+            super.onClose();
+        }
     }
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (modal != Modal.NONE || interaction.mutationPending()) return true;
         if (contains(bodyBounds, mouseX, mouseY)) {
             NodeMenuState state = interaction.authoritative();
+            if (state instanceof NodeMenuState.DirectBindingEdit edit) {
+                if (interaction.mutationPending()) return true;
+                if (resourceSelection != null) {
+                    resourceSelection.wheel(
+                            scrollY,
+                            NodeResourceTypeSelectionView.layout(bodyBounds, resourceSelection)
+                                    .list()
+                                    .visibleRows());
+                    updateResourceRows();
+                    return true;
+                }
+                if (itemDraft != null && !choosingItemPreset && !(faceDraft != null && faceDraft.openNow())) {
+                    itemFormScroll = scrollResourceForm(bodyBounds, itemFormScroll, itemDraft, scrollY);
+                    rebuildIfActive();
+                    return true;
+                }
+                if (choosingItemPreset && !(faceDraft != null && faceDraft.openNow())) {
+                    presetPicker.wheel(
+                            scrollY,
+                            NodePresetPickerView.visibleRows(
+                                    bodyBounds, presetPicker.search().expanded()));
+                    updatePresetResultRows();
+                    return true;
+                }
+                return true;
+            }
             if (state instanceof NodeMenuState.BlankList list) {
                 return applyPageScroll(
                         scrollY,
@@ -1409,16 +2133,43 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         renderTopBarText(graphics);
         TerminalTheme.renderPanel(graphics, bodyBounds);
         renderState(graphics);
-        if (modal != Modal.NONE) {
-            graphics.fill(
-                    layout.window().x(),
-                    layout.titleBar().bottom(),
-                    layout.window().right(),
-                    layout.window().bottom(),
-                    0x88000000);
-            TerminalTheme.renderPanel(graphics, modalBounds);
-            renderModal(graphics);
+        if (modal != Modal.NONE) modalBackdrop.render(widget -> widget.render(graphics, -1, -1, partialTick));
+    }
+
+    @Override
+    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        super.render(graphics, mouseX, mouseY, partialTick);
+        if (modal == Modal.NONE
+                && itemDraft != null
+                && resourceSelection == null
+                && !choosingItemPreset
+                && !(faceDraft != null && faceDraft.openNow())) {
+            Component tooltip = NodeResourcePolicyView.tooltip(
+                    NodeResourcePolicyView.layout(bodyBounds, itemFormScroll, itemDraft), itemDraft, mouseX, mouseY);
+            if (tooltip != null) graphics.renderTooltip(font, TerminalText.body(tooltip), mouseX, mouseY);
         }
+        NodeMenuNodeSummary headerNode = NodeMenuInteractionPolicy.linkedNode(interaction.authoritative());
+        if (modal == Modal.NONE
+                && headerNode != null
+                && !networkHeaderButtonVisible(interaction)
+                && mouseX >= networkTitleBounds.x()
+                && mouseX < networkTitleBounds.right()
+                && mouseY >= networkTitleBounds.y()
+                && mouseY < networkTitleBounds.bottom()) {
+            graphics.renderTooltip(
+                    font, TerminalText.body(Component.literal(headerNode.networkName())), mouseX, mouseY);
+        }
+        if (modal != Modal.NONE)
+            modalBackdrop.renderForeground(graphics, mouseX, mouseY, partialTick, () -> {
+                graphics.fill(
+                        layout.window().x(),
+                        layout.titleBar().bottom(),
+                        layout.window().right(),
+                        layout.window().bottom(),
+                        0x88000000);
+                TerminalTheme.renderPanel(graphics, modalBounds);
+                renderModal(graphics);
+            });
     }
 
     @Override
@@ -1426,6 +2177,45 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
 
     @Override
     protected void renderLabels(GuiGraphics graphics, int mouseX, int mouseY) {}
+
+    static boolean networkHeaderButtonVisible(NodeMenuInteractionPolicy.Model model) {
+        NodeMenuNodeSummary node = NodeMenuInteractionPolicy.linkedNode(model.authoritative());
+        return (model.authoritative() instanceof NodeMenuState.LinkedRoot
+                        || model.authoritative() instanceof NodeMenuState.ModeRoot)
+                && node != null
+                && node.enabled()
+                && model.editKind() == NodeMenuInteractionPolicy.EditKind.NONE;
+    }
+
+    static @Nullable TerminalButton buildNetworkHeaderButton(
+            TerminalLayout.Rect bounds,
+            String text,
+            java.util.function.Supplier<NodeMenuInteractionPolicy.Model> model,
+            java.util.function.BooleanSupplier modalClosed,
+            Runnable open) {
+        if (!networkHeaderButtonVisible(model.get())) return null;
+        NodeMenuState original = model.get().authoritative();
+        TerminalButton button = new TerminalButton(
+                bounds.x(),
+                bounds.y(),
+                bounds.width(),
+                bounds.height(),
+                Component.literal(text),
+                ignored -> {
+                    NodeMenuInteractionPolicy.Model current = model.get();
+                    if (networkHeaderButtonVisible(current)
+                            && java.util.Objects.equals(original, current.authoritative())
+                            && !current.mutationPending()
+                            && modalClosed.getAsBoolean()) open.run();
+                },
+                false);
+        button.active = !model.get().mutationPending() && modalClosed.getAsBoolean();
+        button.setTooltip(Tooltip.create(TerminalText.body(
+                Component.literal(NodeMenuInteractionPolicy.linkedNode(original).networkName())
+                        .append("\n")
+                        .append(Component.translatable("omniresonance.node_menu.network.switch")))));
+        return button;
+    }
 
     private void renderTopBarText(GuiGraphics graphics) {
         NodeMenuState state = interaction.authoritative();
@@ -1446,17 +2236,13 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                     TerminalTheme.TEXT,
                     false);
         }
-        if (networkTitleBounds.width() > 0
-                && !(node != null
-                        && node.enabled()
-                        && interaction.editKind() == NodeMenuInteractionPolicy.EditKind.NONE)) {
-            graphics.drawString(
-                    font,
-                    ellipsize(networkName, Math.max(0, networkTitleBounds.width() - 4)),
-                    networkTitleBounds.x() + 2,
-                    networkTitleBounds.y() + 6,
+        if (networkTitleBounds.width() > 0 && !networkHeaderButtonVisible(interaction)) {
+            TerminalText.drawNetworkLabel(
+                    networkName,
+                    networkTitleBounds,
+                    candidate -> font.width(TerminalText.body(Component.literal(candidate))),
                     TerminalTheme.MUTED,
-                    false);
+                    (text, x, y, color, shadow) -> graphics.drawString(font, text, x, y, color, shadow));
         }
     }
 
@@ -1581,8 +2367,65 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         } else if (state instanceof NodeMenuState.DirectTunnelSwitch tunnelSwitch) {
             renderTunnelSwitch(graphics, tunnelSwitch);
         } else if (state instanceof NodeMenuState.DirectBindingEdit edit) {
-            renderDirectionHeading(
-                    graphics, edit.channel().name(), edit.channel().currentDirection());
+            if (choosingItemPreset || faceDraft != null && faceDraft.openNow())
+                TerminalText.drawHeaderTitle(
+                        graphics,
+                        font,
+                        choosingItemPreset
+                                ? NodeItemPolicyView.text("choose").getString()
+                                : edit.channel().name(),
+                        choosingItemPreset
+                                ? TerminalHeaderLayout.contentTitle(bodyBounds)
+                                : new TerminalLayout.Rect(
+                                        bodyBounds.x() + 12,
+                                        bodyBounds.y() + 4,
+                                        Math.max(
+                                                0,
+                                                bodyBounds.width()
+                                                        - (faceDraft != null && faceDraft.openNow()
+                                                                ? 170
+                                                                : choosingItemPreset ? 24 : 100)),
+                                        20));
+            if (resourceSelection != null) {
+                var rows = NodeResourceTypeSelectionView.layout(bodyBounds, resourceSelection)
+                        .list();
+                TerminalTheme.renderScrollbar(
+                        graphics,
+                        rows.scrollbar().x(),
+                        rows.scrollbar().y(),
+                        rows.scrollbar().height(),
+                        resourceSelection.results().size(),
+                        rows.visibleRows(),
+                        resourceSelection.scroll());
+            } else if (faceDraft != null && faceDraft.openNow()) {
+                // The fixed 3-by-2 card grid never scrolls.
+            } else if (!choosingItemPreset && itemDraft != null) {
+                var form = NodeResourcePolicyView.layout(bodyBounds, itemFormScroll, itemDraft);
+                TerminalTheme.renderScrollbar(
+                        graphics,
+                        bodyBounds.right() - 4,
+                        form.form().y(),
+                        form.form().height(),
+                        form.totalRows(),
+                        form.visibleRows(),
+                        form.firstRow());
+                NodeResourcePolicyView.render(
+                        graphics,
+                        font,
+                        NodeResourcePolicyView.layout(bodyBounds, itemFormScroll, itemDraft),
+                        itemDraft);
+            } else if (choosingItemPreset) {
+                var bounds = itemPickerBody();
+                TerminalTheme.renderScrollbar(
+                        graphics,
+                        bounds.right() + 3,
+                        bounds.y(),
+                        bounds.height(),
+                        presetPicker.count(),
+                        NodePresetPickerView.visibleRows(
+                                bodyBounds, presetPicker.search().expanded()),
+                        presetPicker.scroll());
+            }
         } else if (state instanceof NodeMenuState.DirectChannelEdit edit) {
             renderEditorHeading(graphics, edit.tunnel().name());
         } else if (state instanceof NodeMenuState.DirectChannelDelete delete) {
@@ -1640,6 +2483,28 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                         ? Component.translatable("omniresonance.node_menu.direction.none")
                                 .getString()
                         : directionText(state.channel().currentDirection()).getString());
+        if (state.policy() != null) {
+            drawPair(
+                    graphics,
+                    bodyBounds.x() + 12,
+                    bodyBounds.y() + 74,
+                    "omniresonance.item_policy.status",
+                    (state.transferStatus() == NodeTransferStatus.NO_WORK_FACES
+                                    ? NodeFaceSelectorView.text("empty")
+                                    : NodeItemPolicyView.text("status."
+                                            + state.transferStatus().name().toLowerCase(Locale.ROOT)))
+                            .getString());
+            drawPair(
+                    graphics,
+                    bodyBounds.x() + 12,
+                    bodyBounds.y() + 94,
+                    "omniresonance.item_policy.parameters",
+                    Component.translatable(
+                                    "omniresonance.resource_policy.summary",
+                                    state.policy().overrideCount(),
+                                    state.policy().intervalTicks())
+                            .getString());
+        }
     }
 
     private void renderChannelSettings(GuiGraphics graphics, NodeMenuState.DirectChannelSettings state) {
@@ -1781,6 +2646,8 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     private void renderModal(GuiGraphics graphics) {
         String titleKey =
                 switch (modal) {
+                    case RESOURCE_SCOPE -> "omniresonance.resource_policy.scope";
+                    case ITEM_DIRECTION -> "omniresonance.item_policy.switch.confirm";
                     case DISCARD -> "omniresonance.node_menu.confirm.discard.title";
                     case DISABLE -> "omniresonance.node_menu.confirm.disable.title";
                     case MODE -> "omniresonance.node_menu.confirm.mode.title";
@@ -1790,6 +2657,8 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 };
         String messageKey =
                 switch (modal) {
+                    case RESOURCE_SCOPE -> "omniresonance.resource_policy.scope_narrowing";
+                    case ITEM_DIRECTION -> "omniresonance.item_policy.switch.message";
                     case DISCARD -> "omniresonance.node_menu.confirm.discard.message";
                     case DISABLE -> "omniresonance.node_menu.confirm.disable.message";
                     case MODE -> "omniresonance.node_menu.confirm.mode.message";
@@ -1804,8 +2673,11 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 modalBounds.x() + modalBounds.width() / 2,
                 modalBounds.y() + 12,
                 TerminalTheme.TEXT);
-        List<net.minecraft.util.FormattedCharSequence> lines =
-                font.split(Component.translatable(messageKey), Math.max(1, modalBounds.width() - 20));
+        List<net.minecraft.util.FormattedCharSequence> lines = font.split(
+                modal == Modal.RESOURCE_SCOPE
+                        ? Component.translatable(messageKey, itemDraft.removedOverrideCount(resourceSelection.scope()))
+                        : Component.translatable(messageKey),
+                Math.max(1, modalBounds.width() - 20));
         int y = modalBounds.y() + 31;
         for (net.minecraft.util.FormattedCharSequence line : lines) {
             TerminalText.drawCentered(
@@ -1923,6 +2795,8 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     }
 
     private enum Modal {
+        RESOURCE_SCOPE,
+        ITEM_DIRECTION,
         NONE,
         DISCARD,
         DISABLE,

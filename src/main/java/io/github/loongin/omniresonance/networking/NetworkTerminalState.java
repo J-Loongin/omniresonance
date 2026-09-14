@@ -126,6 +126,49 @@ public sealed interface NetworkTerminalState {
         }
     }
 
+    record Filters(NetworkSummary network, FilterPresetPage page) implements NetworkTerminalState {
+        public Filters {
+            Objects.requireNonNull(network, "network");
+            Objects.requireNonNull(page, "page");
+        }
+    }
+
+    record Preset(NetworkSummary network, FilterPresetSummary preset, FilterRulePage rules)
+            implements NetworkTerminalState {
+        public Preset {
+            Objects.requireNonNull(network, "network");
+            Objects.requireNonNull(preset, "preset");
+            Objects.requireNonNull(rules, "rules");
+            if (rules.totalCount() != preset.ruleCount()) throw new IllegalArgumentException("Rule count mismatch");
+        }
+    }
+
+    record PresetEdit(
+            NetworkSummary network,
+            @Nullable FilterPresetSummary preset,
+            io.github.loongin.omniresonance.filter.PresetEditOperation operation,
+            FilterImpactSummary impact,
+            String originalRule)
+            implements NetworkTerminalState {
+        public PresetEdit(
+                NetworkSummary network,
+                @Nullable FilterPresetSummary preset,
+                io.github.loongin.omniresonance.filter.PresetEditOperation operation,
+                FilterImpactSummary impact) {
+            this(network, preset, operation, impact, "");
+        }
+
+        public PresetEdit {
+            Objects.requireNonNull(network, "network");
+            Objects.requireNonNull(operation, "operation");
+            Objects.requireNonNull(impact, "impact");
+            Objects.requireNonNull(originalRule, "originalRule");
+            FilterMenuCodec.validateText(originalRule);
+            if ((operation == io.github.loongin.omniresonance.filter.PresetEditOperation.CREATE) != (preset == null))
+                throw new IllegalArgumentException("Invalid preset edit");
+        }
+    }
+
     static NetworkTerminalState read(FriendlyByteBuf buffer) {
         return switch (buffer.readUnsignedByte()) {
             case 0 -> new NetworkRoot(NetworkSummary.read(buffer));
@@ -150,12 +193,42 @@ public sealed interface NetworkTerminalState {
             case 10 -> new NetworkSettings(NetworkSettingsSummary.read(buffer));
             case 11 -> new NetworkRename(NetworkSettingsSummary.read(buffer));
             case 12 -> new NetworkDelete(NetworkSettingsSummary.read(buffer), NetworkDeletionSummary.read(buffer));
+            case 13 -> new Filters(NetworkSummary.read(buffer), FilterPresetPage.read(buffer));
+            case 14 ->
+                new Preset(NetworkSummary.read(buffer), FilterPresetSummary.read(buffer), FilterRulePage.read(buffer));
+            case 15 ->
+                new PresetEdit(
+                        NetworkSummary.read(buffer),
+                        buffer.readBoolean() ? FilterPresetSummary.read(buffer) : null,
+                        FilterMenuCodec.readOperation(buffer),
+                        FilterImpactSummary.read(buffer),
+                        FilterMenuCodec.readText(buffer));
             default -> throw new DecoderException("Unknown terminal state");
         };
     }
 
     static void write(FriendlyByteBuf buffer, NetworkTerminalState state) {
         switch (state) {
+            case Filters filters -> {
+                buffer.writeByte(13);
+                filters.network().write(buffer);
+                filters.page().write(buffer);
+            }
+            case Preset preset -> {
+                buffer.writeByte(14);
+                preset.network().write(buffer);
+                preset.preset().write(buffer);
+                preset.rules().write(buffer);
+            }
+            case PresetEdit edit -> {
+                buffer.writeByte(15);
+                edit.network().write(buffer);
+                buffer.writeBoolean(edit.preset() != null);
+                if (edit.preset() != null) edit.preset().write(buffer);
+                FilterMenuCodec.writeOperation(buffer, edit.operation());
+                edit.impact().write(buffer);
+                FilterMenuCodec.writeText(buffer, edit.originalRule());
+            }
             case NetworkSettings settings -> {
                 buffer.writeByte(10);
                 settings.settings().write(buffer);

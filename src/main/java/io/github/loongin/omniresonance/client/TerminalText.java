@@ -74,6 +74,26 @@ final class TerminalText {
                 false);
     }
 
+    static void drawControlText(
+            Component text, int measuredWidth, TerminalLayout.Rect bounds, int color, TextDraw draw) {
+        draw.draw(
+                text.getVisualOrderText(),
+                bounds.x() + (bounds.width() - measuredWidth) / 2,
+                bounds.y() + (bounds.height() - 8) / 2,
+                color,
+                false);
+    }
+
+    static String networkLabel(String value, TerminalLayout.Rect bounds, ToIntFunction<String> measure) {
+        return ellipsize(value, bounds.width() - 8, measure);
+    }
+
+    static void drawNetworkLabel(
+            String value, TerminalLayout.Rect bounds, ToIntFunction<String> measure, int color, TextDraw draw) {
+        String label = networkLabel(value, bounds, measure);
+        drawControlText(body(Component.literal(label)), measure.applyAsInt(label), bounds, color, draw);
+    }
+
     static void drawCentered(GuiGraphics graphics, Font font, Component text, int centerX, int y, int color) {
         drawCentered(graphics, font, text.getVisualOrderText(), centerX, y, color);
     }

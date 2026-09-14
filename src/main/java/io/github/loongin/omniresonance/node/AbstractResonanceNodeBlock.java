@@ -117,6 +117,23 @@ public abstract class AbstractResonanceNodeBlock extends BaseEntityBlock {
     }
 
     @Override
+    protected void neighborChanged(
+            BlockState state,
+            Level level,
+            BlockPos pos,
+            net.minecraft.world.level.block.Block neighbor,
+            BlockPos neighborPos,
+            boolean movedByPiston) {
+        super.neighborChanged(state, level, pos, neighbor, neighborPos, movedByPiston);
+        if (level instanceof ServerLevel serverLevel
+                && level.getBlockEntity(pos) instanceof ResonanceNodeBlockEntity node) {
+            node.state()
+                    .ifPresent(identity ->
+                            NeoForge.EVENT_BUS.post(new NodeTransferWakeEvent(serverLevel, identity.nodeId())));
+        }
+    }
+
+    @Override
     protected void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean movedByPiston) {
         UUID removedId = null;
         if (level instanceof ServerLevel && !state.is(newState.getBlock())) {

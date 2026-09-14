@@ -43,12 +43,11 @@ final class TerminalButton extends TerminalClickButton {
                 background);
         int color = active ? TerminalTheme.TEXT : TerminalTheme.MUTED;
         Font font = TerminalText.font(Minecraft.getInstance());
-        graphics.drawString(
-                font,
+        TerminalText.drawControlText(
                 getMessage(),
-                getX() + (getWidth() - font.width(getMessage())) / 2,
-                getY() + (getHeight() - 8) / 2,
+                font.width(getMessage()),
+                new TerminalLayout.Rect(getX(), getY(), getWidth(), getHeight()),
                 color,
-                false);
+                (text, x, y, tint, shadow) -> graphics.drawString(font, text, x, y, tint, shadow));
     }
 }

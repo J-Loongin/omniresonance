@@ -155,7 +155,8 @@ public final class NetworkSettingsService implements AutoCloseable {
             locks.release(edit.token(), actor.getUUID());
             return data.metadata();
         }
-        if (directory.containsName(data.metadata().ownerId(), managedName)) {
+        if (!data.metadata().name().uniquenessKey().equals(managedName.uniquenessKey())
+                && directory.containsName(data.metadata().ownerId(), managedName)) {
             throw rejected(Reason.NAME_CONFLICT);
         }
         NetworkSavedData.PreparedRename prepared;
@@ -347,7 +348,10 @@ public final class NetworkSettingsService implements AutoCloseable {
         if (data.nodeCount() != 0) {
             throw rejected(Reason.HAS_NODES);
         }
-        if (data.directBindingCount() != 0 || data.domainConfigurationCount() != 0) {
+        if (data.recovery().hasActiveReservations()
+                || !data.recovery().isEmpty()
+                || data.directBindingCount() != 0
+                || data.domainConfigurationCount() != 0) {
             throw rejected(Reason.STORAGE_UNVERIFIED);
         }
         try {

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.client;
 
+import io.github.loongin.omniresonance.networking.NetworkTerminalRequest;
 import io.github.loongin.omniresonance.networking.NetworkTerminalState;
 import java.util.Objects;
+import net.minecraft.client.KeyMapping;
+import net.minecraft.client.gui.components.events.GuiEventListener;
 import org.jetbrains.annotations.Nullable;
+import org.lwjgl.glfw.GLFW;
 
 /** Pure input and navigation policy used by the terminal screen. */
 final class TerminalInteractionPolicy {
@@ -25,6 +29,7 @@ final class TerminalInteractionPolicy {
             return CreateTarget.NETWORK;
         }
         if (topologyState instanceof NetworkTerminalState.Members) return CreateTarget.ADMINISTRATOR;
+        if (topologyState instanceof NetworkTerminalState.Filters) return CreateTarget.PRESET;
         return topologyState instanceof NetworkTerminalState.TunnelList ? CreateTarget.TUNNEL : CreateTarget.NONE;
     }
 
@@ -36,7 +41,9 @@ final class TerminalInteractionPolicy {
         if (createTarget(directoryReady, topologyState) != CreateTarget.NONE) {
             return TerminalHeaderLayout.Action.CREATE;
         }
-        return directoryReady && topologyState instanceof NetworkTerminalState.ChannelList
+        return directoryReady
+                        && (topologyState instanceof NetworkTerminalState.ChannelList
+                                || topologyState instanceof NetworkTerminalState.Preset)
                 ? TerminalHeaderLayout.Action.SETTINGS
                 : TerminalHeaderLayout.Action.NONE;
     }
@@ -75,6 +82,53 @@ final class TerminalInteractionPolicy {
         return BackAction.CLOSE_SCREEN;
     }
 
+    static boolean inventoryShortcut(
+            KeyMapping mapping, @Nullable GuiEventListener focused, int keyCode, int scanCode) {
+        return keyCode != GLFW.GLFW_KEY_ESCAPE
+                && !(focused instanceof TerminalEditBox field && field.ownsKey(keyCode))
+                && mapping.matches(keyCode, scanCode);
+    }
+
+    static boolean sameEditor(@Nullable NetworkTerminalState previous, @Nullable NetworkTerminalState next) {
+        if (previous instanceof NetworkTerminalState.PresetEdit before
+                && next instanceof NetworkTerminalState.PresetEdit after) {
+            return before.network().id().equals(after.network().id())
+                    && before.operation() == after.operation()
+                    && before.originalRule().equals(after.originalRule())
+                    && Objects.equals(
+                            before.preset() == null ? null : before.preset().id(),
+                            after.preset() == null ? null : after.preset().id());
+        }
+        if (previous instanceof NetworkTerminalState.NetworkRename before
+                && next instanceof NetworkTerminalState.NetworkRename after) {
+            return before.settings()
+                    .network()
+                    .id()
+                    .equals(after.settings().network().id());
+        }
+        if (previous instanceof NetworkTerminalState.TunnelEdit before
+                && next instanceof NetworkTerminalState.TunnelEdit after) {
+            return before.network().id().equals(after.network().id())
+                    && Objects.equals(
+                            before.existing() == null ? null : before.existing().tunnelId(),
+                            after.existing() == null ? null : after.existing().tunnelId());
+        }
+        return false;
+    }
+
+    static boolean submitsDraft(NetworkTerminalRequest request) {
+        return request instanceof NetworkTerminalRequest.Create
+                || request instanceof NetworkTerminalRequest.SavePresetEdit
+                || request instanceof NetworkTerminalRequest.SaveResourceRule
+                || request instanceof NetworkTerminalRequest.RenameNetwork
+                || request instanceof NetworkTerminalRequest.RenameTunnel
+                || request instanceof NetworkTerminalRequest.CreateTunnel;
+    }
+
+    static BackAction shortcutAction(boolean draftSubmitted, boolean dirty) {
+        return dirty && !draftSubmitted ? BackAction.CONFIRM_DRAFT : BackAction.CLOSE_SCREEN;
+    }
+
     static CreateResult createResult(DraftState draftState, boolean success) {
         return new CreateResult(draftState.completed(success), !success);
     }
@@ -101,7 +155,8 @@ final class TerminalInteractionPolicy {
         NONE,
         NETWORK,
         TUNNEL,
-        ADMINISTRATOR
+        ADMINISTRATOR,
+        PRESET
     }
 
     enum BackAction {

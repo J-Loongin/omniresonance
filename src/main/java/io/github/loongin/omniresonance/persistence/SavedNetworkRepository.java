@@ -56,8 +56,39 @@ public final class SavedNetworkRepository {
     private final Thread owningThread = Thread.currentThread();
     private final DimensionDataStorage storage;
     private final Path dataDirectory;
+    private final io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory adapters;
+    private final Set<net.minecraft.resources.ResourceLocation> registeredTypes;
     private final Set<String> reservedNames = new HashSet<>();
     private final Map<UUID, NetworkSavedData> loadedNetworks = new HashMap<>();
+    private boolean unreadableNetworkShards;
+    private @Nullable RuntimeListener runtimeListener;
+    /** One server-session observer. Callbacks enqueue keys only and never read partially published authority. */
+    public interface RuntimeListener {
+        void networkChanged(UUID id);
+
+        void ownerCreated(UUID id);
+    }
+    /** Installs or releases the single runtime observer without disk I/O or SavedData mutation. */
+    public void onRuntimeChanged(@Nullable RuntimeListener listener) {
+        requireOwningThread();
+        runtimeListener = listener;
+        for (NetworkSavedData data : loadedNetworks.values()) attachRuntimeListener(data);
+    }
+    /** Startup-only detached ID snapshot; normal runtime work uses explicit changes and O(1) lookups. */
+    public List<UUID> loadedNetworkIds() {
+        requireOwningThread();
+        return List.copyOf(loadedNetworks.keySet());
+    }
+
+    private void attachRuntimeListener(NetworkSavedData data) {
+        data.onRuntimeChanged(
+                runtimeListener == null
+                        ? null
+                        : () -> {
+                            if (runtimeListener != null)
+                                runtimeListener.networkChanged(data.metadata().id());
+                        });
+    }
 
     /** Immutable startup snapshot of one healthy network and its authoritative node records. */
     public record LoadedNetwork(NetworkMetadata metadata, List<NetworkNodeRecord> nodes) {
@@ -69,6 +100,18 @@ public final class SavedNetworkRepository {
 
     /** Retains the caller's matching storage/directory without I/O or mutation; missing inputs are rejected. */
     public SavedNetworkRepository(DimensionDataStorage storage, Path dataDirectory) {
+        this(
+                storage,
+                dataDirectory,
+                io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory.nativeDefaults());
+    }
+
+    public SavedNetworkRepository(
+            DimensionDataStorage storage,
+            Path dataDirectory,
+            io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory adapters) {
+        this.adapters = Objects.requireNonNull(adapters);
+        this.registeredTypes = Set.copyOf(adapters.types());
         this.storage = Objects.requireNonNull(storage, "storage");
         this.dataDirectory = Objects.requireNonNull(dataDirectory, "dataDirectory");
     }
@@ -82,6 +125,18 @@ public final class SavedNetworkRepository {
      */
     public List<NetworkMetadata> loadNetworks() {
         return loadNetworkData().stream().map(LoadedNetwork::metadata).toList();
+    }
+
+    /** Returns the shared frozen startup directory on the owner thread, without discovery, simulation or mutation. */
+    public io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory resourceAdapters() {
+        requireOwningThread();
+        return adapters;
+    }
+
+    /** Returns the immutable registered ID snapshot shared by decoding and edit validation; no authority is changed. */
+    public Set<net.minecraft.resources.ResourceLocation> registeredResourceTypes() {
+        requireOwningThread();
+        return registeredTypes;
     }
 
     /**
@@ -118,8 +173,10 @@ public final class SavedNetworkRepository {
                     if (previous != null && previous != network) {
                         throw new IllegalStateException("Network authority instance changed during one lifecycle");
                     }
+                    attachRuntimeListener(network);
                     result.add(new LoadedNetwork(network.metadata(), network.nodes()));
                 } catch (IllegalArgumentException | IllegalStateException exception) {
+                    unreadableNetworkShards = true;
                     LOGGER.error("Excluded unreadable network shard {}: {}", id, exception.getMessage());
                 }
             }
@@ -128,6 +185,16 @@ public final class SavedNetworkRepository {
         }
         result.sort(Comparator.comparing(entry -> entry.metadata().id()));
         return List.copyOf(result);
+    }
+
+    /**
+     * Returns whether any network shard failed validation during this repository lifecycle. This owning-thread,
+     * read-only signal never clears after repeated enumeration or file removal and performs no I/O or simulation.
+     */
+    @ApiStatus.Internal
+    public boolean hasUnreadableNetworkShards() {
+        requireOwningThread();
+        return unreadableNetworkShards;
     }
 
     /** Returns only an already loaded/created authoritative shard without I/O or creation. */
@@ -182,6 +249,8 @@ public final class SavedNetworkRepository {
         register(name, network);
         reservedNames.add(name);
         loadedNetworks.put(metadata.id(), network);
+        attachRuntimeListener(network);
+        if (runtimeListener != null) runtimeListener.networkChanged(metadata.id());
     }
 
     /**
@@ -198,6 +267,7 @@ public final class SavedNetworkRepository {
         OwnerSavedData owner = OwnerSavedData.create(id, defaultId);
         register(name, owner);
         reservedNames.add(name);
+        if (runtimeListener != null) runtimeListener.ownerCreated(id);
         return owner;
     }
 
@@ -219,6 +289,8 @@ public final class SavedNetworkRepository {
         if (!loadedNetworks.remove(id, removed)) {
             throw new IllegalStateException("Network authority changed during removal");
         }
+        removed.onRuntimeChanged(null);
+        if (runtimeListener != null) runtimeListener.networkChanged(id);
         IOUtilities.withIOWorker(() -> deleteNetworkFile(file, id));
     }
 
@@ -273,12 +345,12 @@ public final class SavedNetworkRepository {
         }
     }
 
-    private static SavedData.Factory<SavedData> networkFactory(UUID id) {
+    private SavedData.Factory<SavedData> networkFactory(UUID id) {
         return new SavedData.Factory<>(
                 () -> {
                     throw new IllegalStateException("Implicit network creation is forbidden");
                 },
-                (tag, registries) -> NetworkSavedData.load(id, tag));
+                (tag, registries) -> NetworkSavedData.load(id, tag, registeredTypes));
     }
 
     private static SavedData.Factory<SavedData> ownerFactory(UUID id) {

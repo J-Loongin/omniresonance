@@ -13,15 +13,20 @@ import org.jetbrains.annotations.Nullable;
 /** Common typed payload routing bound to the actual sender's currently open physical-node Menu. */
 public final class NodeMenuPayloads {
     private static volatile @Nullable Consumer<NodeMenuResponse> clientReceiver;
+    private static volatile @Nullable Consumer<ManagementTransferMessage> transferReceiver;
+    private static volatile @Nullable Consumer<ManagementTransferMessage> terminalTransferReceiver;
+    private static volatile @Nullable java.util.function.BiFunction<
+                    ServerPlayer, ManagementTransferMessage, NetworkTerminalResponse>
+            terminalTransferHandler;
 
     private NodeMenuPayloads() {}
 
     /**
-     * Registers version-2 main-thread request/response handlers without loading client classes.
+     * Registers version-6 main-thread request/response handlers without loading client classes.
      * Invalid active-menu envelopes receive one privacy-safe failure and never reach business state.
      */
     public static void register(RegisterPayloadHandlersEvent event) {
-        PayloadRegistrar registrar = event.registrar("2").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("6").executesOn(HandlerThread.MAIN);
         registrar.playToServer(NodeMenuRequest.TYPE, NodeMenuRequest.STREAM_CODEC, (request, context) -> {
             if (!(context.player() instanceof ServerPlayer sender)) {
                 throw new IllegalStateException("Node Menu request requires a server player");
@@ -43,6 +48,23 @@ public final class NodeMenuPayloads {
                 context.reply(response);
             }
         });
+        registrar.playBidirectional(
+                ManagementTransferMessage.TYPE, ManagementTransferMessage.STREAM_CODEC, (message, context) -> {
+                    if (context.player() instanceof ServerPlayer sender) {
+                        if (sender.containerMenu instanceof ResonanceNodeMenu menu
+                                && menu.sessionId().equals(message.session())) {
+                            NodeMenuResponse response = menu.handleTransfer(sender, message);
+                            if (response != null) context.reply(response);
+                        } else if (terminalTransferHandler != null) {
+                            NetworkTerminalResponse response = terminalTransferHandler.apply(sender, message);
+                            if (response != null) context.reply(response);
+                        }
+                    } else {
+                        Consumer<ManagementTransferMessage> receiver = transferReceiver;
+                        if (receiver != null) receiver.accept(message);
+                        if (terminalTransferReceiver != null) terminalTransferReceiver.accept(message);
+                    }
+                });
         registrar.playToClient(NodeMenuResponse.TYPE, NodeMenuResponse.STREAM_CODEC, (response, context) -> {
             Consumer<NodeMenuResponse> receiver = clientReceiver;
             if (receiver == null) {
@@ -50,6 +72,19 @@ public final class NodeMenuPayloads {
             }
             receiver.accept(response);
         });
+    }
+
+    public static void installTerminalTransferHandler(
+            java.util.function.BiFunction<ServerPlayer, ManagementTransferMessage, NetworkTerminalResponse> handler) {
+        terminalTransferHandler = Objects.requireNonNull(handler);
+    }
+
+    public static void installTerminalTransferReceiver(Consumer<ManagementTransferMessage> receiver) {
+        terminalTransferReceiver = Objects.requireNonNull(receiver);
+    }
+
+    public static void installTransferReceiver(Consumer<ManagementTransferMessage> receiver) {
+        transferReceiver = Objects.requireNonNull(receiver);
     }
 
     /** Installs the Dist.CLIENT response consumer; null is rejected and no authority is transferred. */

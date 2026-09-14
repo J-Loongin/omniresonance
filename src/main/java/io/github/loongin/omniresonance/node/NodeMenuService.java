@@ -1,30 +1,43 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.node;
 
+import io.github.loongin.omniresonance.filter.ItemFilterService;
+import io.github.loongin.omniresonance.network.DirectNodeBinding;
 import io.github.loongin.omniresonance.network.ManagedNamePrefix;
 import io.github.loongin.omniresonance.network.NetworkDirectory;
 import io.github.loongin.omniresonance.network.NetworkMetadata;
 import io.github.loongin.omniresonance.network.NetworkTopologyIndex;
 import io.github.loongin.omniresonance.network.NetworkTopologyService;
+import io.github.loongin.omniresonance.networking.FilterPresetPage;
+import io.github.loongin.omniresonance.networking.FilterPresetSummary;
 import io.github.loongin.omniresonance.networking.NodeChannelPage;
 import io.github.loongin.omniresonance.networking.NodeChannelSummary;
+import io.github.loongin.omniresonance.networking.NodeFacePreview;
 import io.github.loongin.omniresonance.networking.NodeMenuNodeSummary;
 import io.github.loongin.omniresonance.networking.NodeMenuState;
 import io.github.loongin.omniresonance.networking.NodeNetworkPage;
 import io.github.loongin.omniresonance.networking.NodeNetworkSummary;
+import io.github.loongin.omniresonance.networking.NodeTransferStatus;
 import io.github.loongin.omniresonance.networking.NodeTunnelPage;
 import io.github.loongin.omniresonance.networking.NodeTunnelSummary;
 import io.github.loongin.omniresonance.networking.NodeTunnelSwitchSummary;
 import io.github.loongin.omniresonance.networking.TopologyDeletionSummary;
+import io.github.loongin.omniresonance.transfer.ResourceDirectScheduler;
+import io.github.loongin.omniresonance.transfer.ResourcePolicyEdit;
+import io.github.loongin.omniresonance.transfer.ResourceTransferPolicy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
+import java.util.function.BiFunction;
 import java.util.function.Supplier;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -41,11 +54,15 @@ import org.jetbrains.annotations.Nullable;
  */
 public final class NodeMenuService implements AutoCloseable {
     private static final int PAGE_SIZE = 128;
+    private final io.github.loongin.omniresonance.networking.ManagementTransferPool transfers =
+            new io.github.loongin.omniresonance.networking.ManagementTransferPool();
     private @Nullable MinecraftServer server;
     private @Nullable NodeManagementService management;
     private @Nullable NetworkTopologyService topology;
     private @Nullable NetworkDirectory networks;
     private @Nullable Supplier<UUID> sessionIds;
+    private @Nullable ItemFilterService filters;
+    private @Nullable BiFunction<UUID, UUID, ResourceDirectScheduler.Status> directStatus;
 
     /** Retains one server lifecycle and already-composed collaborators without reading world state. */
     public NodeMenuService(
@@ -54,6 +71,27 @@ public final class NodeMenuService implements AutoCloseable {
             NetworkTopologyService topology,
             NetworkDirectory networks,
             Supplier<UUID> sessionIds) {
+        this(
+                server,
+                management,
+                topology,
+                networks,
+                sessionIds,
+                null,
+                (node, channel) -> ResourceDirectScheduler.Status.IDLE);
+    }
+
+    /** Retains server-owned filter and status readers for this Menu lifecycle; reads never invoke transfer work. */
+    public NodeMenuService(
+            MinecraftServer server,
+            NodeManagementService management,
+            NetworkTopologyService topology,
+            NetworkDirectory networks,
+            Supplier<UUID> sessionIds,
+            @Nullable ItemFilterService filters,
+            BiFunction<UUID, UUID, ResourceDirectScheduler.Status> directStatus) {
+        this.filters = filters;
+        this.directStatus = Objects.requireNonNull(directStatus);
         this.server = Objects.requireNonNull(server, "server");
         requireServerThread();
         this.management = Objects.requireNonNull(management, "management");
@@ -100,6 +138,32 @@ public final class NodeMenuService implements AutoCloseable {
                 containerId, player.getInventory(), this, position, sessionId, initial(player, position));
     }
 
+    public io.github.loongin.omniresonance.networking.ManagementTransferPool transfers() {
+        requireServerThread();
+        return transfers;
+    }
+
+    long currentTick() {
+        requireServerThread();
+        return server.overworld().getGameTime();
+    }
+
+    /** Releases a disconnected menu's transfer and all remaining per-player reservations. */
+    public void disconnect(ServerPlayer player) {
+        requirePlayer(player);
+        if (player.containerMenu instanceof ResonanceNodeMenu menu) menu.cancelTransfer();
+        transfers.disconnect(player.getUUID());
+    }
+
+    /** Sends at most one fragment per connected active menu and releases expired transport storage. */
+    public void tick() {
+        requireServerThread();
+        long now = currentTick();
+        transfers.expire(now);
+        for (ServerPlayer player : server.getPlayerList().getPlayers())
+            if (player.containerMenu instanceof ResonanceNodeMenu menu) menu.transferTick(player, now);
+    }
+
     boolean canKeepOpen(ServerPlayer player, ResonanceNodeMenu menu) {
         requirePlayer(player);
         return management()
@@ -115,6 +179,7 @@ public final class NodeMenuService implements AutoCloseable {
         if (server != null) {
             requireServerThread();
         }
+        transfers.cancelSession(menu.playerId(), menu.sessionId());
         menu.markClosed();
     }
 
@@ -147,11 +212,16 @@ public final class NodeMenuService implements AutoCloseable {
         if (!activeServer.isSameThread()) {
             throw new IllegalStateException("Node Menu service closed outside the server thread");
         }
+        for (ServerPlayer player : activeServer.getPlayerList().getPlayers())
+            if (player.containerMenu instanceof ResonanceNodeMenu menu) menu.cancelTransfer();
+        transfers.close();
         server = null;
         management = null;
         topology = null;
         networks = null;
         sessionIds = null;
+        filters = null;
+        directStatus = null;
     }
 
     Initial initial(ServerPlayer player, BlockPos position) {
@@ -281,8 +351,25 @@ public final class NodeMenuService implements AutoCloseable {
                 topology().inspectNodeTunnel(player, networkId, nodeId, tunnelId);
         NetworkTopologyService.NodeChannelView channel =
                 topology().inspectNodeChannel(player, networkId, nodeId, tunnelId, channelId);
+        var summary = channelSummary(channel);
+        var binding = summary.currentDirection() == null
+                ? null
+                : topology().inspectDirectBinding(player, networkId, nodeId, channelId);
+        NodeMenuNodeSummary node = linkedSummary(player, networkId, nodeId);
+        NodeTransferStatus status = binding != null && binding.workingFaces().effectiveMask(node.facing()) == 0
+                ? NodeTransferStatus.NO_WORK_FACES
+                : NodeTransferStatus.valueOf(Objects.requireNonNull(directStatus)
+                        .apply(nodeId, channelId)
+                        .name());
         return new NodeMenuState.DirectChannelRoot(
-                linkedSummary(player, networkId, nodeId), tunnelSummary(tunnel), channelSummary(channel));
+                node,
+                tunnelSummary(tunnel),
+                summary,
+                binding == null
+                        ? null
+                        : io.github.loongin.omniresonance.networking.NodeResourcePolicySummary.from(
+                                binding.storedPolicy()),
+                status);
     }
 
     NodeMenuState.DirectChannelSettings channelSettings(
@@ -308,15 +395,60 @@ public final class NodeMenuService implements AutoCloseable {
 
     NodeMenuState.DirectBindingEdit bindingEdit(
             ServerPlayer player, UUID networkId, UUID nodeId, UUID tunnelId, UUID channelId) {
+        return bindingEdit(player, networkId, nodeId, tunnelId, channelId, 0);
+    }
+
+    NodeMenuState.DirectBindingEdit bindingEdit(
+            ServerPlayer player, UUID networkId, UUID nodeId, UUID tunnelId, UUID channelId, int offset) {
+        return bindingEdit(player, networkId, nodeId, tunnelId, channelId, offset, "", -1);
+    }
+
+    NodeMenuState.DirectBindingEdit bindingEdit(
+            ServerPlayer player,
+            UUID networkId,
+            UUID nodeId,
+            UUID tunnelId,
+            UUID channelId,
+            int offset,
+            String query,
+            long libraryRevision) {
         NetworkTopologyService.NodeTunnelView tunnel =
                 topology().inspectNodeTunnel(player, networkId, nodeId, tunnelId);
-        if (!tunnel.tunnel().tunnel().enabled()) {
-            throw new IllegalArgumentException("Disabled tunnel cannot edit a node binding");
-        }
         NetworkTopologyService.NodeChannelView channel =
                 topology().inspectNodeChannel(player, networkId, nodeId, tunnelId, channelId);
+        DirectNodeBinding binding = topology().inspectDirectBinding(player, networkId, nodeId, channelId);
+        ResourceTransferPolicy policy = binding.policy();
+        FilterPresetPage page = filters == null
+                ? new FilterPresetPage(List.of(), 0, 0, 0)
+                : filters.page(player, networkId, offset, query, libraryRevision);
+        FilterPresetSummary selected = filters == null || policy.filterPresetId() == null
+                ? null
+                : filters.summary(player, networkId, policy.filterPresetId());
+        NodeMenuNodeSummary node = linkedSummary(player, networkId, nodeId);
         return new NodeMenuState.DirectBindingEdit(
-                linkedSummary(player, networkId, nodeId), tunnelSummary(tunnel), channelSummary(channel));
+                node,
+                tunnelSummary(tunnel),
+                channelSummary(channel),
+                ResourcePolicyEdit.fromStored(binding.storedPolicy()),
+                page,
+                selected == null ? null : selected.name(),
+                binding.workingFaces(),
+                facePreviews(node));
+    }
+
+    private List<NodeFacePreview> facePreviews(NodeMenuNodeSummary node) {
+        ServerLevel level =
+                Objects.requireNonNull(server).getLevel(ResourceKey.create(Registries.DIMENSION, node.dimension()));
+        return NodeFacePreviews.collect(
+                node.position(),
+                node.form(),
+                node.facing(),
+                target -> level != null
+                        && level.getChunkSource().getChunkNow(target.getX() >> 4, target.getZ() >> 4) != null,
+                target -> Objects.requireNonNull(Objects.requireNonNull(level)
+                                .getChunkSource()
+                                .getChunkNow(target.getX() >> 4, target.getZ() >> 4))
+                        .getBlockState(target));
     }
 
     NodeMenuState.DirectChannelEdit channelCreateEdit(

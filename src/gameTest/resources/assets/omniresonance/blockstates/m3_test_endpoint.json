@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "omniresonance:block/m3_test_endpoint"
+    }
+  }
+}

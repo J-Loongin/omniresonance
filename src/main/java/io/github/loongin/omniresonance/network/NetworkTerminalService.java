@@ -44,6 +44,7 @@ import org.slf4j.LoggerFactory;
 public final class NetworkTerminalService {
     private static final Logger LOGGER = LoggerFactory.getLogger(NetworkTerminalService.class);
     private final MinecraftServer server;
+    private @Nullable io.github.loongin.omniresonance.filter.ItemFilterService filters;
     private final NetworkDirectory directory;
     private final NetworkCreationService creation;
     private final @Nullable NetworkTopologyService topology;
@@ -51,6 +52,18 @@ public final class NetworkTerminalService {
     private final @Nullable NetworkSettingsService networkSettings;
     private final @Nullable NodeMenuService nodeMenus;
     private final BiConsumer<ServerPlayer, NetworkTerminalResponse> directReplies;
+    private BiConsumer<ServerPlayer, io.github.loongin.omniresonance.networking.ManagementTransferMessage>
+            transferReplies =
+                    (player, message) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, message);
+
+    /** Installs the synchronous shared-transport sender before any sessions open; server thread only. */
+    public void installTransferSender(
+            BiConsumer<ServerPlayer, io.github.loongin.omniresonance.networking.ManagementTransferMessage> sender) {
+        requireServerThread();
+        if (!sessions.isEmpty()) throw new IllegalStateException("Terminal transport already active");
+        transferReplies = Objects.requireNonNull(sender);
+    }
+
     private final Supplier<UUID> sessionIds;
     private final Map<UUID, Session> sessions = new HashMap<>();
     private final long configurationEpoch;
@@ -150,6 +163,20 @@ public final class NetworkTerminalService {
                 : ServerSettings.defaults();
     }
 
+    /** Installs the matching owner-library authority once before sessions exist; no player data is created. */
+    public void installFilters(io.github.loongin.omniresonance.filter.ItemFilterService filters) {
+        requireServerThread();
+        if (this.filters != null || !sessions.isEmpty())
+            throw new IllegalStateException("Filter authority already active");
+        this.filters = Objects.requireNonNull(filters, "filters");
+    }
+
+    /** Current immutable settings on the server thread, for the composed filter service's quota checks. */
+    public ServerSettings settingsSnapshot() {
+        requireServerThread();
+        return settings;
+    }
+
     /**
      * Handles untrusted intent using only the actual server sender as owner. Close returns no reply.
      * Validation failures return fixed reasons without modifying network records; admitted Page/Create
@@ -206,6 +233,19 @@ public final class NetworkTerminalService {
                         summary(created));
             }
             return handleTopology(sender, session, request);
+        } catch (io.github.loongin.omniresonance.filter.ItemFilterService.Rejected rejected) {
+            return failure(
+                    request,
+                    switch (rejected.reason()) {
+                        case NO_ACCESS -> NetworkTerminalResponse.Reason.NO_ACCESS;
+                        case UNAVAILABLE -> NetworkTerminalResponse.Reason.DATA_UNAVAILABLE;
+                        case LOCKED -> NetworkTerminalResponse.Reason.LOCKED;
+                        case LOCK_EXPIRED -> NetworkTerminalResponse.Reason.LOCK_EXPIRED;
+                        case STALE_REVISION -> NetworkTerminalResponse.Reason.STALE_REVISION;
+                        case INVALID_REQUEST -> NetworkTerminalResponse.Reason.INVALID_REQUEST;
+                        case NAME_CONFLICT -> NetworkTerminalResponse.Reason.NAME_CONFLICT;
+                        case QUOTA_REACHED -> NetworkTerminalResponse.Reason.QUOTA_REACHED;
+                    });
         } catch (NetworkAdministrationService.Rejected rejected) {
             return failure(request, membershipReason(rejected.reason()));
         } catch (NetworkSettingsService.Rejected rejected) {
@@ -263,7 +303,24 @@ public final class NetworkTerminalService {
     public void tick() {
         requireServerThread();
         if (!closed && administration != null) administration.tick();
+        if (!closed && filters != null) filters.tick();
         if (!closed && networkSettings != null) networkSettings.tick();
+        if (!closed)
+            for (Session session : sessions.values()) {
+                tickFilterTransfer(session);
+                if (session.sampleSequence > 0 && gameTick() - session.sampleStartedTick >= 200) {
+                    long sequence = session.sampleSequence;
+                    UUID token = session.sampleToken;
+                    session.sampleSequence = 0;
+                    session.sampleToken = null;
+                    if (token != null && session.presetEdit != null)
+                        filters().cancelSample(session.player, session.presetEdit, token);
+                    directReplies.accept(
+                            session.player,
+                            new NetworkTerminalResponse.Failure(
+                                    session.viewId, session.id, sequence, NetworkTerminalResponse.Reason.LOCK_EXPIRED));
+                }
+            }
     }
 
     /** Releases only a matching actual player instance on the server thread, without network or file changes. */
@@ -376,6 +433,25 @@ public final class NetworkTerminalService {
     private NetworkTerminalResponse navigateBack(
             NetworkTerminalRequest request, ServerPlayer player, Session session, UUID networkId) {
         return switch (session.layer) {
+            case FILTERS -> {
+                session.layer = Layer.NETWORK;
+                yield view(
+                        request,
+                        session,
+                        new NetworkTerminalState.NetworkRoot(summary(topology().inspectNetwork(player, networkId))));
+            }
+            case PRESET -> {
+                session.layer = Layer.FILTERS;
+                yield view(request, session, filterList(player, networkId, 0));
+            }
+            case PRESET_EDIT -> {
+                if (session.presetId == null) {
+                    session.layer = Layer.FILTERS;
+                    yield view(request, session, filterList(player, networkId, 0));
+                }
+                session.layer = Layer.PRESET;
+                yield view(request, session, presetState(player, networkId, session.presetId, 0));
+            }
             case MEMBERS -> {
                 session.layer = Layer.NETWORK;
                 yield view(
@@ -433,6 +509,11 @@ public final class NetworkTerminalService {
     }
 
     private void clearEdit(ServerPlayer player, Session session) {
+        cancelFilterTransfer(session);
+        session.sampleSequence = 0;
+        session.sampleToken = null;
+        if (session.presetEdit != null && filters != null) filters.cancel(player, session.presetEdit);
+        session.presetEdit = null;
         if (session.edit != null) {
             safeCancel(player, session.edit);
         }
@@ -541,6 +622,19 @@ public final class NetworkTerminalService {
             return view(request, session, new NetworkTerminalState.NetworkRoot(summary(network)));
         }
         UUID networkId = requireSelectedNetwork(session);
+        if (request instanceof NetworkTerminalRequest.OpenFilters
+                || request instanceof NetworkTerminalRequest.PagePresets
+                || request instanceof NetworkTerminalRequest.OpenPreset
+                || request instanceof NetworkTerminalRequest.BeginPresetEdit
+                || request instanceof NetworkTerminalRequest.SavePresetEdit
+                || request instanceof NetworkTerminalRequest.QueryFilterLibrary
+                || request instanceof NetworkTerminalRequest.ReadResourceRule
+                || request instanceof NetworkTerminalRequest.BeginResourceRule
+                || request instanceof NetworkTerminalRequest.SaveResourceRule
+                || request instanceof NetworkTerminalRequest.SampleResourceRule
+                || request instanceof NetworkTerminalRequest.PrepareResourceRuleUpload) {
+            return handleFilters(sender, session, request, networkId);
+        }
         if (request instanceof NetworkTerminalRequest.OpenNetworkSettings) {
             requireLayer(session, Layer.NETWORK);
             NetworkTerminalState.NetworkSettings state = networkSettingsState(sender, networkId);
@@ -812,6 +906,10 @@ public final class NetworkTerminalService {
             return view(request, session, tunnelList(sender, networkId, null, false));
         }
         if (request instanceof NetworkTerminalRequest.Heartbeat) {
+            if (session.presetEdit != null) {
+                filters().heartbeat(sender, session.presetEdit);
+                return null;
+            }
             if (session.networkRename != null) {
                 networkSettings().heartbeat(sender, session.networkRename);
                 return null;
@@ -835,7 +933,8 @@ public final class NetworkTerminalService {
         if (request instanceof NetworkTerminalRequest.CancelEdit) {
             Layer previous = session.layer;
             clearEdit(sender, session);
-            if (previous == Layer.ADMIN_REMOVE
+            if (previous == Layer.PRESET_EDIT
+                    || previous == Layer.ADMIN_REMOVE
                     || previous == Layer.NETWORK_RENAME
                     || previous == Layer.NETWORK_DELETE) {
                 return navigateBack(request, sender, session, networkId);
@@ -1003,6 +1102,403 @@ public final class NetworkTerminalService {
         }
     }
 
+    private io.github.loongin.omniresonance.filter.ItemFilterService filters() {
+        if (filters == null) throw new IllegalStateException("Filter authority is unavailable");
+        return filters;
+    }
+
+    private NetworkTerminalState.Filters filterList(ServerPlayer actor, UUID networkId, int offset) {
+        return new NetworkTerminalState.Filters(
+                summary(topology().inspectNetwork(actor, networkId)), filters().page(actor, networkId, offset));
+    }
+
+    private NetworkTerminalState.Preset presetState(ServerPlayer actor, UUID networkId, UUID presetId, int offset) {
+        var preset = filters().summary(actor, networkId, presetId);
+        if (preset == null) throw new IllegalStateException("Preset is unavailable");
+        return new NetworkTerminalState.Preset(
+                summary(topology().inspectNetwork(actor, networkId)),
+                preset,
+                filters().rules(actor, networkId, presetId, preset.revision(), offset));
+    }
+
+    private @Nullable NetworkTerminalResponse handleFilters(
+            ServerPlayer actor, Session session, NetworkTerminalRequest request, UUID networkId) {
+        if (request instanceof NetworkTerminalRequest.QueryFilterLibrary query) {
+            if (session.layer != Layer.FILTERS && session.layer != Layer.PRESET && session.layer != Layer.PRESET_EDIT)
+                throw new IllegalArgumentException("Invalid filter search layer");
+            return new NetworkTerminalResponse.FilterLibrary(
+                    session.viewId,
+                    session.id,
+                    query.sequence(),
+                    query.query(),
+                    filters().page(actor, networkId, query.offset(), query.query(), query.revision()));
+        }
+        if (request instanceof NetworkTerminalRequest.ReadResourceRule read) {
+            requireLayer(session, Layer.PRESET);
+            if (!Objects.equals(session.presetId, read.presetId())) throw new IllegalArgumentException("Wrong preset");
+            var rule = filters().rule(actor, networkId, read.presetId(), read.revision(), read.ruleId());
+            var summary = Objects.requireNonNull(filters().summary(actor, networkId, read.presetId()));
+            var snapshot = new io.github.loongin.omniresonance.filter.ResourceFilterPreset(
+                    read.presetId(), new ManagedName(summary.name()), summary.revision(), List.of(rule));
+            return fullRuleReply(session, request.sequence(), snapshot, null, 0, 0);
+        }
+        if (request instanceof NetworkTerminalRequest.BeginResourceRule begin) {
+            requireLayer(session, Layer.PRESET);
+            if (!Objects.equals(session.presetId, begin.presetId())) throw new IllegalArgumentException("Wrong preset");
+            var edit = filters().beginRule(actor, networkId, begin.presetId(), begin.ruleId(), begin.remove());
+            session.presetEdit = edit;
+            session.layer = Layer.PRESET_EDIT;
+            return view(
+                    request,
+                    session,
+                    new NetworkTerminalState.PresetEdit(
+                            summary(topology().inspectNetwork(actor, networkId)),
+                            filters().summary(actor, networkId, begin.presetId()),
+                            edit.operation(),
+                            edit.impact(),
+                            edit.originalRule()));
+        }
+        if (request instanceof NetworkTerminalRequest.SaveResourceRule save) {
+            requireLayer(session, Layer.PRESET_EDIT);
+            return saveResourceRule(actor, session, request.sequence(), save.intent());
+        }
+        if (request instanceof NetworkTerminalRequest.SampleResourceRule sample) {
+            requireLayer(session, Layer.PRESET_EDIT);
+            var edit = Objects.requireNonNull(session.presetEdit);
+            long startedTick = gameTick();
+            session.sampleSequence = request.sequence();
+            session.sampleStartedTick = startedTick;
+            session.sampleToken = filters()
+                    .requestSample(
+                            actor,
+                            edit,
+                            sample.typeId(),
+                            sample.slot(),
+                            sample.tank(),
+                            () -> sessions.get(actor.getUUID()) == session
+                                    && session.layer == Layer.PRESET_EDIT
+                                    && session.presetEdit == edit,
+                            () -> session.sampleSequence == request.sequence() && gameTick() - startedTick < 200,
+                            result -> {
+                                if (sessions.get(actor.getUUID()) != session
+                                        || session.layer != Layer.PRESET_EDIT
+                                        || session.presetEdit != edit
+                                        || session.sampleSequence != request.sequence()
+                                        || !Objects.equals(session.sampleToken, result.token())
+                                        || gameTick() - startedTick >= 200) return;
+                                NetworkTerminalResponse response;
+                                try {
+                                    if (!result.failure().isEmpty())
+                                        response = new NetworkTerminalResponse.FullRule(
+                                                session.viewId,
+                                                session.id,
+                                                request.sequence(),
+                                                result.token(),
+                                                Math.max(0, result.tankCount()),
+                                                result.tank(),
+                                                result.failure(),
+                                                new byte[0]);
+                                    else {
+                                        var preset = Objects.requireNonNull(filters()
+                                                .summary(actor, networkId, Objects.requireNonNull(session.presetId)));
+                                        UUID ruleId = edit.originalRule().isEmpty()
+                                                ? result.token()
+                                                : UUID.fromString(edit.originalRule());
+                                        var match = new io.github.loongin.omniresonance.filter.ResourceFilterRule.Match(
+                                                ruleId,
+                                                result.typeId(),
+                                                io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector
+                                                        .exact(Objects.requireNonNull(result.resourceId())),
+                                                Objects.requireNonNull(result.components()));
+                                        var snapshot = new io.github.loongin.omniresonance.filter.ResourceFilterPreset(
+                                                preset.id(),
+                                                new ManagedName(preset.name()),
+                                                preset.revision(),
+                                                List.of(match));
+                                        response = fullRuleReply(
+                                                session,
+                                                request.sequence(),
+                                                snapshot,
+                                                result.token(),
+                                                result.tankCount(),
+                                                result.tank());
+                                    }
+                                } catch (IllegalStateException | IllegalArgumentException unavailable) {
+                                    // Admission is request-local: preserve the edit and unrelated pool reservations.
+                                    filters().cancelSample(actor, edit, result.token());
+                                    logFailure(
+                                            actor, request, "sample response unavailable; request ended", unavailable);
+                                    response = new NetworkTerminalResponse.Failure(
+                                            session.viewId,
+                                            session.id,
+                                            request.sequence(),
+                                            NetworkTerminalResponse.Reason.DATA_UNAVAILABLE);
+                                }
+                                session.sampleSequence = 0;
+                                session.sampleToken = null;
+                                directReplies.accept(actor, response);
+                            });
+            return null;
+        }
+        if (request instanceof NetworkTerminalRequest.PrepareResourceRuleUpload upload) {
+            requireLayer(session, Layer.PRESET_EDIT);
+            var edit = Objects.requireNonNull(session.presetEdit);
+            filters().validateEdit(actor, edit);
+            if (session.filterTransfer != null) throw new IllegalStateException("Transfer already active");
+            pool().beginUpload(actor.getUUID(), session.id, upload.transferId(), upload.length(), gameTick());
+            session.filterTransfer = new FilterTransfer(
+                    upload.transferId(),
+                    request.sequence(),
+                    upload.length(),
+                    true,
+                    Objects.requireNonNull(session.presetId),
+                    edit.revision(),
+                    edit);
+            session.filterTransfer.expiresTick = gameTick() + 200;
+            return new NetworkTerminalResponse.RuleTransferReady(
+                    session.viewId,
+                    session.id,
+                    request.sequence(),
+                    upload.transferId(),
+                    upload.length(),
+                    true,
+                    null,
+                    0,
+                    0);
+        }
+        if (request instanceof NetworkTerminalRequest.OpenFilters) {
+            requireLayer(session, Layer.NETWORK);
+            var state = filterList(actor, networkId, 0);
+            clearEdit(actor, session);
+            session.presetId = null;
+            session.layer = Layer.FILTERS;
+            return view(request, session, state);
+        }
+        if (request instanceof NetworkTerminalRequest.PagePresets page) {
+            requireLayer(session, Layer.FILTERS);
+            return view(request, session, filterList(actor, networkId, page.offset()));
+        }
+        if (request instanceof NetworkTerminalRequest.OpenPreset open) {
+            if (session.layer != Layer.FILTERS && session.layer != Layer.PRESET)
+                throw new IllegalArgumentException("Invalid preset navigation");
+            var rules = filters().rules(actor, networkId, open.presetId(), open.revision(), open.offset());
+            var preset = Objects.requireNonNull(filters().summary(actor, networkId, open.presetId()));
+            session.presetId = open.presetId();
+            session.layer = Layer.PRESET;
+            return view(
+                    request,
+                    session,
+                    new NetworkTerminalState.Preset(
+                            summary(topology().inspectNetwork(actor, networkId)), preset, rules));
+        }
+        if (request instanceof NetworkTerminalRequest.BeginPresetEdit begin) {
+            if (begin.operation() == io.github.loongin.omniresonance.filter.PresetEditOperation.CREATE)
+                requireLayer(session, Layer.FILTERS);
+            else {
+                requireLayer(session, Layer.PRESET);
+                if (!Objects.equals(session.presetId, begin.presetId()))
+                    throw new IllegalArgumentException("Preset identity mismatch");
+            }
+            var edit = filters().begin(actor, networkId, begin.operation(), begin.presetId(), begin.originalRule());
+            session.presetEdit = edit;
+            session.presetId = begin.presetId();
+            session.layer = Layer.PRESET_EDIT;
+            return view(
+                    request,
+                    session,
+                    new NetworkTerminalState.PresetEdit(
+                            summary(topology().inspectNetwork(actor, networkId)),
+                            begin.presetId() == null ? null : filters().summary(actor, networkId, begin.presetId()),
+                            begin.operation(),
+                            edit.impact(),
+                            edit.originalRule()));
+        }
+        if (request instanceof NetworkTerminalRequest.SavePresetEdit save) {
+            requireLayer(session, Layer.PRESET_EDIT);
+            UUID saved = filters().save(actor, Objects.requireNonNull(session.presetEdit), save.value());
+            session.presetEdit = null;
+            session.presetId = saved;
+            if (saved == null) {
+                session.layer = Layer.FILTERS;
+                return view(request, session, filterList(actor, networkId, 0));
+            }
+            session.layer = Layer.PRESET;
+            return view(request, session, presetState(actor, networkId, saved, 0));
+        }
+        throw new IllegalArgumentException("Invalid filter operation");
+    }
+
+    private io.github.loongin.omniresonance.networking.ManagementTransferPool pool() {
+        return Objects.requireNonNull(nodeMenus, "Shared management coordinator unavailable")
+                .transfers();
+    }
+
+    private long gameTick() {
+        return server.overworld().getGameTime();
+    }
+
+    private NetworkTerminalResponse saveResourceRule(
+            ServerPlayer actor,
+            Session session,
+            long sequence,
+            @Nullable io.github.loongin.omniresonance.filter.ResourceRuleIntent intent) {
+        UUID saved = filters().saveRule(actor, Objects.requireNonNull(session.presetEdit), intent);
+        session.presetEdit = null;
+        session.layer = Layer.PRESET;
+        return new NetworkTerminalResponse.ViewState(
+                session.viewId,
+                session.id,
+                sequence,
+                presetState(actor, Objects.requireNonNull(session.networkId), saved, 0));
+    }
+
+    private NetworkTerminalResponse fullRuleReply(
+            Session session,
+            long sequence,
+            io.github.loongin.omniresonance.filter.ResourceFilterPreset snapshot,
+            @Nullable UUID sampleToken,
+            int tanks,
+            int tank) {
+        int size = io.github.loongin.omniresonance.networking.FullFilterCodec.snapshotSize(snapshot);
+        if (io.github.loongin.omniresonance.networking.FullFilterCodec.snapshotFitsPacket(size, sampleToken != null))
+            return new NetworkTerminalResponse.FullRule(
+                    session.viewId,
+                    session.id,
+                    sequence,
+                    sampleToken,
+                    tanks,
+                    tank,
+                    "",
+                    io.github.loongin.omniresonance.networking.FullFilterCodec.snapshot(snapshot));
+        if (session.filterTransfer != null) throw new IllegalStateException("Transfer already active");
+        UUID transfer = Objects.requireNonNull(sessionIds.get());
+        pool().beginDownload(
+                        session.player.getUUID(),
+                        session.id,
+                        transfer,
+                        size,
+                        gameTick(),
+                        () -> io.github.loongin.omniresonance.networking.FullFilterCodec.snapshot(snapshot));
+        session.filterTransfer = new FilterTransfer(
+                transfer, sequence, size, false, snapshot.id(), snapshot.revision(), session.presetEdit);
+        session.filterTransfer.expiresTick = gameTick() + 200;
+        return new NetworkTerminalResponse.RuleTransferReady(
+                session.viewId, session.id, sequence, transfer, size, false, sampleToken, tanks, tank);
+    }
+
+    private static final class FilterTransfer {
+        final UUID id, preset;
+        final long sequence, revision;
+        final int length;
+        final boolean upload;
+        final @Nullable io.github.loongin.omniresonance.filter.ItemFilterService.Edit edit;
+        int offset;
+        long expiresTick;
+
+        FilterTransfer(
+                UUID id,
+                long sequence,
+                int length,
+                boolean upload,
+                UUID preset,
+                long revision,
+                @Nullable io.github.loongin.omniresonance.filter.ItemFilterService.Edit edit) {
+            this.id = id;
+            this.sequence = sequence;
+            this.length = length;
+            this.upload = upload;
+            this.preset = preset;
+            this.revision = revision;
+            this.edit = edit;
+        }
+    }
+
+    private boolean transferAuthorized(Session session, FilterTransfer transfer) {
+        if (gameTick() >= transfer.expiresTick
+                || sessions.get(session.player.getUUID()) != session
+                || session.filterTransfer != transfer
+                || !Objects.equals(session.presetId, transfer.preset)
+                || session.presetEdit != transfer.edit
+                || session.layer != (transfer.edit == null ? Layer.PRESET : Layer.PRESET_EDIT)) return false;
+        var current = filters().summary(session.player, Objects.requireNonNull(session.networkId), transfer.preset);
+        if (current == null || current.revision() != transfer.revision) return false;
+        if (transfer.edit != null) filters().validateEdit(session.player, transfer.edit);
+        return true;
+    }
+
+    /** Handles only the actual terminal connection's previously admitted purpose-specific transfer. */
+    public @Nullable NetworkTerminalResponse handleTransfer(
+            ServerPlayer actor, io.github.loongin.omniresonance.networking.ManagementTransferMessage message) {
+        requireServerThread();
+        Session session = sessions.get(actor.getUUID());
+        if (session == null || session.player != actor || !session.id.equals(message.session())) return null;
+        FilterTransfer transfer = session.filterTransfer;
+        if (transfer == null || !transfer.id.equals(message.transfer())) return null;
+        try {
+            if (!transferAuthorized(session, transfer)) throw new IllegalStateException("Stale transfer authority");
+            if (message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Abort) {
+                cancelFilterTransfer(session);
+                return null;
+            }
+            if (!transfer.upload) throw new IllegalArgumentException("Wrong transfer direction");
+            if (message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk chunk) {
+                pool().upload(actor.getUUID(), session.id, transfer.id, chunk.offset(), chunk.data(), gameTick());
+                return null;
+            }
+            if (!(message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish))
+                throw new IllegalArgumentException("Unprepared filter transfer");
+            NetworkTerminalResponse[] result = new NetworkTerminalResponse[1];
+            io.github.loongin.omniresonance.filter.ResourceRuleIntent[] parsed =
+                    new io.github.loongin.omniresonance.filter.ResourceRuleIntent[1];
+            pool().finishUpload(
+                            actor.getUUID(),
+                            session.id,
+                            transfer.id,
+                            gameTick(),
+                            object -> parsed[0] =
+                                    io.github.loongin.omniresonance.networking.FullFilterCodec.readIntent(object),
+                            () -> transferAuthorized(session, transfer),
+                            object -> result[0] = saveResourceRule(actor, session, transfer.sequence, parsed[0]));
+            session.filterTransfer = null;
+            return result[0];
+        } catch (RuntimeException failure) {
+            cancelFilterTransfer(session);
+            return new NetworkTerminalResponse.Failure(
+                    session.viewId, session.id, transfer.sequence, NetworkTerminalResponse.Reason.INVALID_REQUEST);
+        }
+    }
+
+    private void tickFilterTransfer(Session session) {
+        FilterTransfer transfer = session.filterTransfer;
+        if (transfer == null) return;
+        try {
+            if (!transferAuthorized(session, transfer)) throw new IllegalStateException("Expired filter transfer");
+            if (transfer.upload) return;
+            byte[] data = pool().nextDownload(session.player.getUUID(), session.id, transfer.id, gameTick());
+            transferReplies.accept(
+                    session.player,
+                    new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
+                            session.id, transfer.id, transfer.offset, data));
+            transfer.offset += data.length;
+            if (transfer.offset == transfer.length) session.filterTransfer = null;
+        } catch (RuntimeException failure) {
+            cancelFilterTransfer(session);
+            directReplies.accept(
+                    session.player,
+                    new NetworkTerminalResponse.Failure(
+                            session.viewId,
+                            session.id,
+                            transfer.sequence,
+                            NetworkTerminalResponse.Reason.INVALID_REQUEST));
+        }
+    }
+
+    private void cancelFilterTransfer(Session session) {
+        FilterTransfer transfer = session.filterTransfer;
+        session.filterTransfer = null;
+        if (transfer != null) pool().abort(session.player.getUUID(), session.id, transfer.id);
+    }
+
     private NetworkAdministrationService administration() {
         if (administration == null) throw new IllegalStateException("Member management is unavailable");
         return administration;
@@ -1110,6 +1606,11 @@ public final class NetworkTerminalService {
         private Layer layer = Layer.DIRECTORY;
         private @Nullable UUID networkId;
         private @Nullable UUID tunnelId;
+        private @Nullable UUID presetId;
+        private @Nullable FilterTransfer filterTransfer;
+        private long sampleSequence, sampleStartedTick;
+        private @Nullable UUID sampleToken;
+        private @Nullable io.github.loongin.omniresonance.filter.ItemFilterService.Edit presetEdit;
         private @Nullable NetworkTopologyService.Edit edit;
         private @Nullable NetworkTopologyService.DeletionEdit deletion;
         private @Nullable NetworkAdministrationService.RemovalEdit removal;
@@ -1139,6 +1640,9 @@ public final class NetworkTerminalService {
         DELETE,
         MEMBERS,
         ADMIN_CANDIDATES,
-        ADMIN_REMOVE
+        ADMIN_REMOVE,
+        FILTERS,
+        PRESET,
+        PRESET_EDIT
     }
 }

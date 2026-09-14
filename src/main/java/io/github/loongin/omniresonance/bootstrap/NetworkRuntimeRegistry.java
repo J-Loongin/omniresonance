@@ -20,8 +20,11 @@ import io.github.loongin.omniresonance.node.NodeManagementService;
 import io.github.loongin.omniresonance.node.NodeMenuOpenEvent;
 import io.github.loongin.omniresonance.node.NodeMenuService;
 import io.github.loongin.omniresonance.node.NodeReconciliationQueue;
+import io.github.loongin.omniresonance.node.NodeTransferWakeEvent;
 import io.github.loongin.omniresonance.persistence.SavedNetworkRepository;
 import io.github.loongin.omniresonance.security.EditLockTable;
+import io.github.loongin.omniresonance.transfer.ResourceDirectRuntime;
+import io.github.loongin.omniresonance.transfer.ResourceDirectScheduler;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -60,7 +63,8 @@ public final class NetworkRuntimeRegistry {
             @Nullable NodeAuthorityService nodes,
             @Nullable NodeManagementService nodeManagement,
             @Nullable NodeMenuService nodeMenus,
-            @Nullable NetworkTopologyService topology) {
+            @Nullable NetworkTopologyService topology,
+            @Nullable ResourceDirectRuntime directTransfers) {
         RuntimeComponents {
             Objects.requireNonNull(terminal, "terminal");
             if (nodeManagement != null && nodes == null) {
@@ -72,6 +76,15 @@ public final class NetworkRuntimeRegistry {
             if (topology != null && nodeManagement == null) {
                 throw new IllegalArgumentException("Topology management requires the shared node-management locks");
             }
+        }
+
+        RuntimeComponents(
+                NetworkTerminalService terminal,
+                @Nullable NodeAuthorityService nodes,
+                @Nullable NodeManagementService nodeManagement,
+                @Nullable NodeMenuService nodeMenus,
+                @Nullable NetworkTopologyService topology) {
+            this(terminal, nodes, nodeManagement, nodeMenus, topology, null);
         }
 
         RuntimeComponents(NetworkTerminalService terminal, @Nullable NodeAuthorityService nodes) {
@@ -104,6 +117,14 @@ public final class NetworkRuntimeRegistry {
     private boolean pendingOverflowLogged;
     private boolean unavailable;
     private long lastWorldEpoch = -1;
+    private final java.util.concurrent.atomic.AtomicLong tagGeneration = new java.util.concurrent.atomic.AtomicLong();
+    private long appliedTagGeneration;
+
+    /** SERVER_DATA_LOAD may fire on an integrated client thread: signal only, retain no event/world references. */
+    public void onTagsUpdated(net.neoforged.neoforge.event.TagsUpdatedEvent event) {
+        if (event.getUpdateCause() == net.neoforged.neoforge.event.TagsUpdatedEvent.UpdateCause.SERVER_DATA_LOAD)
+            tagGeneration.incrementAndGet();
+    }
 
     /** Retains native configuration without live world access; production composition stays lazy until start. */
     public NetworkRuntimeRegistry(ServerConfig config) {
@@ -145,14 +166,45 @@ public final class NetworkRuntimeRegistry {
         if (nodes != null) {
             if (event instanceof NodeLifecycleEvent.Loaded loaded) {
                 nodes.reconcileLoaded(loaded.entity());
+                if (runtime != null && runtime.directTransfers() != null)
+                    loaded.entity()
+                            .state()
+                            .ifPresent(state -> runtime.directTransfers().nodeChanged(state.nodeId()));
             } else {
                 NodeLifecycleEvent.Removed removed = (NodeLifecycleEvent.Removed) event;
                 nodes.removePhysical(removed.nodeId(), GlobalPos.of(level.dimension(), removed.position()));
+                if (runtime != null && runtime.directTransfers() != null)
+                    runtime.directTransfers().nodeChanged(removed.nodeId());
             }
         } else if (server == null && event instanceof NodeLifecycleEvent.Loaded loaded) {
             offerPendingPosition(
                     eventServer, GlobalPos.of(level.dimension(), loaded.entity().getBlockPos()));
         }
+    }
+
+    /** Routes redstone/physical wakeups without discovering capabilities during block callbacks. */
+    public void onTransferWake(NodeTransferWakeEvent event) {
+        requireServerThread(event.level().getServer());
+        if (server == event.level().getServer() && runtime != null && runtime.directTransfers() != null)
+            runtime.directTransfers().nodeChanged(event.nodeId());
+    }
+
+    /** Releases handles by indexed node and target chunk before any later transfer can use them. */
+    public void onChunkUnload(ChunkEvent.Unload event) {
+        if (event.getLevel() instanceof ServerLevel level) {
+            requireServerThread(level.getServer());
+            if (server == level.getServer() && runtime != null && runtime.directTransfers() != null)
+                runtime.directTransfers()
+                        .chunkUnloaded(level.dimension(), event.getChunk().getPos());
+        }
+    }
+
+    /** Read-only server-thread status for the node configuration view. */
+    public ResourceDirectScheduler.Status directStatus(MinecraftServer owner, UUID nodeId, UUID channelId) {
+        requireServerThread(owner);
+        return server == owner && runtime != null && runtime.directTransfers() != null
+                ? runtime.directTransfers().status(nodeId, channelId)
+                : ResourceDirectScheduler.Status.IDLE;
     }
 
     /** Queues a chunk observation without accessing its contents during the early NeoForge load callback. */
@@ -228,6 +280,7 @@ public final class NetworkRuntimeRegistry {
             return;
         }
         if (runtime != null) {
+            if (runtime.directTransfers() != null) runtime.directTransfers().close();
             if (runtime.nodeMenus() != null) {
                 runtime.nodeMenus().close();
             }
@@ -268,6 +321,7 @@ public final class NetworkRuntimeRegistry {
         if (server == event.getServer() && runtime != null) {
             runtime.terminal().applyConfiguration(config.latest());
             runtime.terminal().tick();
+            if (runtime.nodeMenus() != null) runtime.nodeMenus().tick();
             if (runtime.topology() != null) {
                 runtime.topology().applyConfiguration(config.latest());
             }
@@ -280,6 +334,13 @@ public final class NetworkRuntimeRegistry {
             if (runtime.nodes() != null) {
                 runtime.nodes().tick();
             }
+            long currentTagGeneration = tagGeneration.get();
+            if (currentTagGeneration != appliedTagGeneration) {
+                appliedTagGeneration = currentTagGeneration;
+                if (runtime.directTransfers() != null) runtime.directTransfers().tagsChanged();
+            }
+            if (runtime.directTransfers() != null)
+                runtime.directTransfers().tick(event.getServer().overworld().getGameTime(), config.latest());
         }
     }
 
@@ -302,11 +363,19 @@ public final class NetworkRuntimeRegistry {
         return new NetworkTerminalResponse.Failure(request.viewId(), request.sessionId(), request.sequence(), reason);
     }
 
+    /** Dispatches the shared transport to an already existing actual terminal session. */
+    public @Nullable NetworkTerminalResponse handleTerminalTransfer(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.ManagementTransferMessage message) {
+        requireServerThread(player.server);
+        return server == player.server && runtime != null ? runtime.terminal().handleTransfer(player, message) : null;
+    }
+
     private void closePlayer(ServerPlayer player) {
         MinecraftServer senderServer = player.server;
         requireServerThread(senderServer);
         if (server == senderServer && runtime != null) {
             runtime.terminal().closePlayer(player);
+            if (runtime.nodeMenus() != null) runtime.nodeMenus().disconnect(player);
             if (runtime.nodeManagement() != null) {
                 runtime.nodeManagement().releasePlayer(player.getUUID());
             }
@@ -375,9 +444,11 @@ public final class NetworkRuntimeRegistry {
     }
 
     private static RuntimeComponents createRuntime(MinecraftServer server, ServerConfig.State initial) {
+        var adapters = io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory.nativeDefaults();
         SavedNetworkRepository repository = new SavedNetworkRepository(
                 server.overworld().getDataStorage(),
-                server.getWorldPath(LevelResource.ROOT).resolve("data"));
+                server.getWorldPath(LevelResource.ROOT).resolve("data"),
+                adapters);
         List<SavedNetworkRepository.LoadedNetwork> loaded = repository.loadNetworkData();
         NetworkDirectory networks = new NetworkDirectory(loaded.stream()
                 .map(SavedNetworkRepository.LoadedNetwork::metadata)
@@ -399,7 +470,18 @@ public final class NetworkRuntimeRegistry {
                 new NodeManagementService(server, networks, repository, nodes, authority, locks);
         NetworkTopologyService topology =
                 new NetworkTopologyService(server, networks, repository, nodes, locks, initial, UUID::randomUUID);
-        NodeMenuService nodeMenus = new NodeMenuService(server, nodeManagement, topology, networks, UUID::randomUUID);
+        ResourceDirectRuntime directTransfers = new ResourceDirectRuntime(server, repository, nodes, initial);
+        io.github.loongin.omniresonance.filter.ItemFilterService filters =
+                new io.github.loongin.omniresonance.filter.ItemFilterService(
+                        server,
+                        repository,
+                        networks,
+                        locks,
+                        topology::settingsSnapshot,
+                        directTransfers::ownerLibraryChanged,
+                        UUID::randomUUID);
+        NodeMenuService nodeMenus = new NodeMenuService(
+                server, nodeManagement, topology, networks, UUID::randomUUID, filters, directTransfers::status);
         ServerPlayerDirectory players = new ServerPlayerDirectory(server);
         NetworkAdministrationService administration =
                 new NetworkAdministrationService(server, repository, networks, locks, players, initial);
@@ -416,7 +498,9 @@ public final class NetworkRuntimeRegistry {
                 initial,
                 UUID::randomUUID,
                 (player, response) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, response));
-        return new RuntimeComponents(terminal, authority, nodeManagement, nodeMenus, topology);
+        terminal.installFilters(filters);
+        directTransfers.installSampleWork(filters::sampleStep);
+        return new RuntimeComponents(terminal, authority, nodeManagement, nodeMenus, topology, directTransfers);
     }
 
     private static void requireServerThread(MinecraftServer server) {

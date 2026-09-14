@@ -16,6 +16,85 @@ import org.junit.jupiter.api.Test;
 
 final class TerminalInteractionPolicyTest {
     @Test
+    void inventoryShortcutUsesTheCurrentMappingAndYieldsToEditableFocus() {
+        var mapping = new net.minecraft.client.KeyMapping(
+                "omniresonance.test.inventory", org.lwjgl.glfw.GLFW.GLFW_KEY_E, "key.categories.inventory");
+        assertTrue(TerminalInteractionPolicy.inventoryShortcut(mapping, null, org.lwjgl.glfw.GLFW.GLFW_KEY_E, 0));
+        mapping.setKey(
+                com.mojang.blaze3d.platform.InputConstants.Type.KEYSYM.getOrCreate(org.lwjgl.glfw.GLFW.GLFW_KEY_I));
+        assertFalse(TerminalInteractionPolicy.inventoryShortcut(mapping, null, org.lwjgl.glfw.GLFW.GLFW_KEY_E, 0));
+        assertTrue(TerminalInteractionPolicy.inventoryShortcut(mapping, null, org.lwjgl.glfw.GLFW.GLFW_KEY_I, 0));
+        var font = new net.minecraft.client.gui.Font(
+                id -> {
+                    throw new AssertionError("No rendering");
+                },
+                false);
+        var field = new TerminalEditBox(font, 0, 0, 100, 20, net.minecraft.network.chat.Component.empty());
+        field.setFocused(true);
+        assertFalse(TerminalInteractionPolicy.inventoryShortcut(mapping, field, org.lwjgl.glfw.GLFW.GLFW_KEY_I, 0));
+        field.setFocused(false);
+        assertTrue(TerminalInteractionPolicy.inventoryShortcut(mapping, field, org.lwjgl.glfw.GLFW.GLFW_KEY_I, 0));
+        mapping.setKey(com.mojang.blaze3d.platform.InputConstants.Type.KEYSYM.getOrCreate(
+                org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE));
+        assertFalse(TerminalInteractionPolicy.inventoryShortcut(mapping, null, org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE, 0));
+    }
+
+    @Test
+    void refreshedImpactRetainsTheSamePresetDraftButDifferentEditorDoesNot() {
+        var network = new NetworkSummary(new UUID(5, 1), new UUID(5, 2), "Network");
+        var initial = new NetworkTerminalState.PresetEdit(
+                network,
+                null,
+                io.github.loongin.omniresonance.filter.PresetEditOperation.CREATE,
+                new io.github.loongin.omniresonance.networking.FilterImpactSummary(0, 0, 0, true));
+        var refreshed = new NetworkTerminalState.PresetEdit(
+                network,
+                null,
+                initial.operation(),
+                new io.github.loongin.omniresonance.networking.FilterImpactSummary(1, 1, 1, true));
+        assertTrue(TerminalInteractionPolicy.sameEditor(initial, refreshed));
+        assertFalse(TerminalInteractionPolicy.sameEditor(initial, new NetworkTerminalState.NetworkRoot(network)));
+        assertFalse(TerminalInteractionPolicy.sameEditor(
+                initial,
+                new NetworkTerminalState.PresetEdit(
+                        new NetworkSummary(new UUID(5, 3), network.ownerId(), "Other"),
+                        null,
+                        initial.operation(),
+                        initial.impact())));
+    }
+
+    @Test
+    void pendingReadOnlyNavigationNeverCountsAsASubmittedDraft() {
+        var view = new UUID(4, 1);
+        var session = new UUID(4, 2);
+        var page =
+                new io.github.loongin.omniresonance.networking.NetworkTerminalRequest.PagePresets(view, session, 1, 0);
+        assertFalse(TerminalInteractionPolicy.submitsDraft(page));
+        assertEquals(
+                TerminalInteractionPolicy.BackAction.CONFIRM_DRAFT,
+                TerminalInteractionPolicy.shortcutAction(TerminalInteractionPolicy.submitsDraft(page), true));
+        var save = new io.github.loongin.omniresonance.networking.NetworkTerminalRequest.SavePresetEdit(
+                view, session, 1, "draft");
+        assertTrue(TerminalInteractionPolicy.submitsDraft(save));
+        assertEquals(
+                TerminalInteractionPolicy.BackAction.CLOSE_SCREEN,
+                TerminalInteractionPolicy.shortcutAction(TerminalInteractionPolicy.submitsDraft(save), true));
+    }
+
+    @Test
+    void shortcutExitsTheWholeTerminalExceptForOneUnsavedConfirmation() {
+        assertEquals(
+                TerminalInteractionPolicy.BackAction.CLOSE_SCREEN,
+                TerminalInteractionPolicy.shortcutAction(false, false));
+        assertEquals(
+                TerminalInteractionPolicy.BackAction.CONFIRM_DRAFT,
+                TerminalInteractionPolicy.shortcutAction(false, true));
+        assertEquals(
+                TerminalInteractionPolicy.BackAction.CLOSE_SCREEN,
+                TerminalInteractionPolicy.shortcutAction(true, true));
+    }
+
+    @Test
     void topBarChoosesCreationSettingsOrNoActionForTheCurrentPage() {
         NetworkSummary network = new NetworkSummary(new UUID(1, 1), new UUID(2, 2), "Network");
         NetworkTerminalState.TunnelList tunnels =

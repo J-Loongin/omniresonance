@@ -2,7 +2,13 @@
 package io.github.loongin.omniresonance.networking;
 
 import io.github.loongin.omniresonance.network.TransferDirection;
+import io.github.loongin.omniresonance.network.WorkingFaces;
+import io.github.loongin.omniresonance.node.NodeForm;
+import io.github.loongin.omniresonance.transfer.ResourcePolicyEdit;
+import io.github.loongin.omniresonance.transfer.ResourceTransferPolicy;
+import io.github.loongin.omniresonance.transfer.StoredResourcePolicy;
 import io.netty.handler.codec.DecoderException;
+import java.util.List;
 import java.util.Objects;
 import net.minecraft.network.FriendlyByteBuf;
 import org.jetbrains.annotations.Nullable;
@@ -103,9 +109,62 @@ public sealed interface NodeMenuState {
         }
     }
 
-    record DirectBindingEdit(NodeMenuNodeSummary node, NodeTunnelSummary tunnel, NodeChannelSummary channel)
+    record DirectBindingEdit(
+            NodeMenuNodeSummary node,
+            NodeTunnelSummary tunnel,
+            NodeChannelSummary channel,
+            @Nullable ResourcePolicyEdit policy,
+            FilterPresetPage presets,
+            @Nullable String selectedPresetName,
+            WorkingFaces workingFaces,
+            List<NodeFacePreview> previews)
             implements NodeMenuState {
+        public DirectBindingEdit(
+                NodeMenuNodeSummary node,
+                NodeTunnelSummary tunnel,
+                NodeChannelSummary channel,
+                ResourcePolicyEdit policy,
+                FilterPresetPage presets,
+                @Nullable String selectedPresetName) {
+            this(
+                    node,
+                    tunnel,
+                    channel,
+                    policy,
+                    presets,
+                    selectedPresetName,
+                    node.form() == NodeForm.PANEL ? WorkingFaces.attachedFace() : WorkingFaces.explicit(0),
+                    List.of());
+        }
+
+        public DirectBindingEdit(NodeMenuNodeSummary node, NodeTunnelSummary tunnel, NodeChannelSummary channel) {
+            this(
+                    node,
+                    tunnel,
+                    channel,
+                    ResourcePolicyEdit.fromStored(new StoredResourcePolicy(
+                            ResourceTransferPolicy.defaults(
+                                    channel.currentDirection() == null
+                                            ? TransferDirection.INPUT
+                                            : channel.currentDirection()),
+                            java.util.Map.of())),
+                    new FilterPresetPage(List.of(), 0, 0, 0),
+                    null);
+        }
+
+        public DirectBindingEdit withPolicy(@Nullable ResourcePolicyEdit value) {
+            return new DirectBindingEdit(
+                    node, tunnel, channel, value, presets, selectedPresetName, workingFaces, previews);
+        }
+
         public DirectBindingEdit {
+            Objects.requireNonNull(workingFaces, "workingFaces").validate(node.form());
+            previews = NodeFacePreview.validate(previews);
+            if (node.form() == NodeForm.PANEL
+                    && previews.stream().anyMatch(preview -> preview.direction() != node.facing()))
+                throw new IllegalArgumentException("Panel preview must match attachment");
+            Objects.requireNonNull(presets, "presets");
+            if (selectedPresetName != null) new io.github.loongin.omniresonance.network.ManagedName(selectedPresetName);
             Objects.requireNonNull(node, "node");
             Objects.requireNonNull(tunnel, "tunnel");
             Objects.requireNonNull(channel, "channel");
@@ -115,10 +174,20 @@ public sealed interface NodeMenuState {
         }
     }
 
-    record DirectChannelRoot(NodeMenuNodeSummary node, NodeTunnelSummary tunnel, NodeChannelSummary channel)
+    record DirectChannelRoot(
+            NodeMenuNodeSummary node,
+            NodeTunnelSummary tunnel,
+            NodeChannelSummary channel,
+            @Nullable NodeResourcePolicySummary policy,
+            NodeTransferStatus transferStatus)
             implements NodeMenuState {
+        public DirectChannelRoot(NodeMenuNodeSummary node, NodeTunnelSummary tunnel, NodeChannelSummary channel) {
+            this(node, tunnel, channel, null, NodeTransferStatus.IDLE);
+        }
+
         public DirectChannelRoot {
             requireEnabledChannelView(node, tunnel, channel);
+            Objects.requireNonNull(transferStatus, "transferStatus");
         }
     }
 
@@ -183,6 +252,18 @@ public sealed interface NodeMenuState {
         }
     }
 
+    private static NodeTransferStatus readTransferStatus(FriendlyByteBuf buffer) {
+        return switch (buffer.readUnsignedByte()) {
+            case 0 -> NodeTransferStatus.IDLE;
+            case 1 -> NodeTransferStatus.RUNNING;
+            case 2 -> NodeTransferStatus.WAITING_BUDGET;
+            case 3 -> NodeTransferStatus.BLOCKED;
+            case 4 -> NodeTransferStatus.FAILED;
+            case 5 -> NodeTransferStatus.NO_WORK_FACES;
+            default -> throw new DecoderException("Invalid item transfer status");
+        };
+    }
+
     static NodeMenuState read(FriendlyByteBuf buffer) {
         return switch (buffer.readUnsignedByte()) {
             case 0 -> new Unavailable();
@@ -206,7 +287,12 @@ public sealed interface NodeMenuState {
                 new DirectBindingEdit(
                         NodeMenuNodeSummary.read(buffer),
                         NodeTunnelSummary.read(buffer),
-                        NodeChannelSummary.read(buffer));
+                        NodeChannelSummary.read(buffer),
+                        buffer.readBoolean() ? ResourcePolicyMenuCodec.read(buffer) : null,
+                        FilterPresetPage.read(buffer),
+                        buffer.readBoolean() ? NetworkSummary.readName(buffer) : null,
+                        NodeWorkingFacesCodec.read(buffer),
+                        NodeFacePreview.readList(buffer));
             case 15 ->
                 new DomainRoot(
                         NodeMenuNodeSummary.read(buffer),
@@ -230,7 +316,9 @@ public sealed interface NodeMenuState {
                 new DirectChannelRoot(
                         NodeMenuNodeSummary.read(buffer),
                         NodeTunnelSummary.read(buffer),
-                        NodeChannelSummary.read(buffer));
+                        NodeChannelSummary.read(buffer),
+                        buffer.readBoolean() ? NodeResourcePolicySummary.read(buffer) : null,
+                        readTransferStatus(buffer));
             case 20 ->
                 new DirectChannelSettings(
                         NodeMenuNodeSummary.read(buffer),
@@ -303,6 +391,13 @@ public sealed interface NodeMenuState {
                 edit.node().write(buffer);
                 edit.tunnel().write(buffer);
                 edit.channel().write(buffer);
+                buffer.writeBoolean(edit.policy() != null);
+                if (edit.policy() != null) ResourcePolicyMenuCodec.write(buffer, edit.policy());
+                edit.presets().write(buffer);
+                buffer.writeBoolean(edit.selectedPresetName() != null);
+                if (edit.selectedPresetName() != null) NetworkSummary.writeName(buffer, edit.selectedPresetName());
+                NodeWorkingFacesCodec.write(buffer, edit.workingFaces());
+                NodeFacePreview.writeList(buffer, edit.previews());
             }
             case DomainRoot root -> {
                 buffer.writeByte(15);
@@ -338,6 +433,17 @@ public sealed interface NodeMenuState {
                 root.node().write(buffer);
                 root.tunnel().write(buffer);
                 root.channel().write(buffer);
+                buffer.writeBoolean(root.policy() != null);
+                if (root.policy() != null) NodeResourcePolicySummary.write(buffer, root.policy());
+                buffer.writeByte(
+                        switch (root.transferStatus()) {
+                            case IDLE -> 0;
+                            case RUNNING -> 1;
+                            case WAITING_BUDGET -> 2;
+                            case BLOCKED -> 3;
+                            case FAILED -> 4;
+                            case NO_WORK_FACES -> 5;
+                        });
             }
             case DirectChannelSettings settings -> {
                 buffer.writeByte(20);

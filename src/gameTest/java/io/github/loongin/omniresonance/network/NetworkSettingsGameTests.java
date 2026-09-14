@@ -121,6 +121,37 @@ public final class NetworkSettingsGameTests {
         }
     }
 
+    /** A case-only display rename keeps UUID access, consumes one revision and releases the metadata lock. */
+    @GameTest(template = "bootstrap")
+    public static void caseOnlyNetworkRenamePreservesIdentityAndReleasesLock(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER);
+            ServerPlayer administrator = player(helper, ADMINISTRATOR);
+            fixture.settings.rename(owner, fixture.settings.beginRename(owner, TARGET), "Alpha");
+            long revision = fixture.target.managementRevision();
+            fixture.target.setDirty(false);
+
+            NetworkMetadata renamed =
+                    fixture.settings.rename(owner, fixture.settings.beginRename(owner, TARGET), "ALPHA");
+
+            helper.assertTrue(renamed.name().value().equals("ALPHA"), "Case-only rename lost display casing");
+            helper.assertTrue(
+                    fixture.target.managementRevision() == revision + 1,
+                    "Case-only rename did not consume exactly one revision");
+            helper.assertTrue(fixture.target.isDirty(), "Case-only rename was not marked for persistence");
+            helper.assertTrue(
+                    fixture.directory.find(TARGET).orElseThrow().equals(renamed),
+                    "Case-only rename lost UUID directory access");
+            NetworkSettingsService.RenameEdit next = fixture.settings.beginRename(administrator, TARGET);
+            fixture.target.setDirty(false);
+            fixture.settings.rename(administrator, next, "ALPHA");
+            helper.assertTrue(
+                    !fixture.target.isDirty() && fixture.target.managementRevision() == revision + 1,
+                    "Exact same-name save changed the network");
+            helper.succeed();
+        }
+    }
+
     /** Rename and administrator management serialize on the same network metadata lock. */
     @GameTest(template = "bootstrap")
     public static void settingsAndMembershipShareOneLock(GameTestHelper helper) throws IOException {
@@ -252,6 +283,62 @@ public final class NetworkSettingsGameTests {
                     NetworkSettingsService.Reason.STALE_REVISION,
                     () -> fixture.settings.delete(owner, revision));
             helper.assertTrue(fixture.directory.find(TARGET).isPresent(), "Stale summary removed the network");
+            helper.succeed();
+        }
+    }
+
+    /** Recovery prevents final deletion even when added after the deletion summary was issued. */
+    @GameTest(template = "bootstrap")
+    public static void recoveryPreventsDeletionAndPreservesDefault(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER);
+            OwnerSavedData ownerData = fixture.repository.createOwner(OWNER, TARGET);
+            var edit = fixture.settings.beginDeletion(owner, TARGET);
+            var key = new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                    net.minecraft.resources.ResourceLocation.parse("unknown:raw"), new byte[0]);
+            try (var reservation =
+                    fixture.target.recovery().reserve(key, 7, 64, 1048576).orElseThrow()) {
+                reservation.commit(7);
+            }
+            rejected(
+                    helper,
+                    NetworkSettingsService.Reason.STORAGE_UNVERIFIED,
+                    () -> fixture.settings.delete(owner, edit));
+            helper.assertTrue(
+                    ownerData.defaultNetworkId().equals(Optional.of(TARGET)), "Recovery rejection changed default");
+            helper.assertTrue(
+                    fixture.repository.findLoadedNetwork(TARGET).isPresent(), "Recovery rejection detached data");
+            helper.assertTrue(fixture.directory.find(TARGET).isPresent(), "Recovery rejection changed directory");
+            helper.assertTrue(fixture.target.recovery().amount(key) == 7, "Recovery disappeared");
+            helper.succeed();
+        }
+    }
+
+    /** A native callback cannot delete the original recovery owner while extraction reserves its known remainder. */
+    @GameTest(template = "bootstrap")
+    public static void activeRecoveryReservationPreventsNetworkDeletion(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER);
+            var edit = fixture.settings.beginDeletion(owner, TARGET);
+            var key = new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                    net.minecraft.resources.ResourceLocation.parse("unknown:reserved"), new byte[0]);
+            try (var reservation =
+                    fixture.target.recovery().reserve(key, 7, 64, 1048576).orElseThrow()) {
+                helper.assertTrue(fixture.target.recovery().isEmpty(), "Reservation unexpectedly persisted resources");
+                rejected(
+                        helper,
+                        NetworkSettingsService.Reason.STORAGE_UNVERIFIED,
+                        () -> fixture.settings.delete(owner, edit));
+                reservation.commit(7);
+                helper.assertTrue(
+                        fixture.repository
+                                        .findLoadedNetwork(TARGET)
+                                        .orElseThrow()
+                                        .recovery()
+                                        .amount(key)
+                                == 7,
+                        "Known remainder lost its original network");
+            }
             helper.succeed();
         }
     }

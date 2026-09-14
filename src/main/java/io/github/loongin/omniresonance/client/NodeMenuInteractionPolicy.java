@@ -30,6 +30,7 @@ final class NodeMenuInteractionPolicy {
     private static final long HEARTBEAT_INTERVAL_TICKS = 40;
     private static final Set<NodeMenuResponse.Reason> CORRECTABLE_FAILURES = Set.of(
             NodeMenuResponse.Reason.INVALID_NAME,
+            NodeMenuResponse.Reason.INVALID_REQUEST,
             NodeMenuResponse.Reason.NAME_CONFLICT,
             NodeMenuResponse.Reason.QUOTA_REACHED,
             NodeMenuResponse.Reason.RESET_REQUIRED);
@@ -37,7 +38,7 @@ final class NodeMenuInteractionPolicy {
     private NodeMenuInteractionPolicy() {}
 
     static boolean bodyControlsVisible(boolean confirmationOpen) {
-        return !confirmationOpen;
+        return true;
     }
 
     static @Nullable NodeMenuNodeSummary linkedNode(@Nullable NodeMenuState state) {
@@ -79,6 +80,7 @@ final class NodeMenuInteractionPolicy {
     }
 
     enum PendingKind {
+        STATUS,
         PAGE,
         NAVIGATE,
         BEGIN_EDIT,
@@ -105,7 +107,11 @@ final class NodeMenuInteractionPolicy {
         }
     }
 
-    record Transition(Model model, boolean accepted) {
+    record Transition(Model model, boolean accepted, boolean rebuild) {
+        Transition(Model model, boolean accepted) {
+            this(model, accepted, true);
+        }
+
         Transition {
             Objects.requireNonNull(model, "model");
         }
@@ -120,7 +126,7 @@ final class NodeMenuInteractionPolicy {
             int containerId,
             @Nullable UUID sessionId,
             long lastIssuedSequence,
-            long expectedHeartbeatSequence,
+            long expectedBackgroundSequence,
             long nextHeartbeatTick) {
         Model {
             Objects.requireNonNull(editKind, "editKind");
@@ -128,7 +134,7 @@ final class NodeMenuInteractionPolicy {
                     || (authoritative == null && containerId != -1)
                     || (authoritative != null && containerId < 0)
                     || lastIssuedSequence < 0
-                    || expectedHeartbeatSequence < 0
+                    || expectedBackgroundSequence < 0
                     || nextHeartbeatTick < 0
                     || (editKind == EditKind.NONE && (dirty || discardConfirmation))) {
                 throw new IllegalArgumentException("Invalid node interaction model");
@@ -143,6 +149,19 @@ final class NodeMenuInteractionPolicy {
             return pending != null;
         }
 
+        Model resourceDraftDirty(boolean value) {
+            if (editKind != EditKind.BINDING) return this;
+            return copy(
+                    authoritative,
+                    editKind,
+                    value,
+                    discardConfirmation && value,
+                    pending,
+                    lastIssuedSequence,
+                    expectedBackgroundSequence,
+                    nextHeartbeatTick);
+        }
+
         Model edited() {
             if (editKind == EditKind.NONE || pending != null) {
                 throw new IllegalStateException("Only an idle node edit can become dirty");
@@ -154,22 +173,22 @@ final class NodeMenuInteractionPolicy {
                     false,
                     null,
                     lastIssuedSequence,
-                    expectedHeartbeatSequence,
+                    expectedBackgroundSequence,
                     nextHeartbeatTick);
         }
 
         Model confirmDiscard() {
-            if (editKind == EditKind.NONE || !dirty || pending != null) {
-                throw new IllegalStateException("Only an idle dirty node edit can request discard confirmation");
+            if (editKind == EditKind.NONE || !dirty || (pending != null && pending.kind() == PendingKind.SAVE)) {
+                throw new IllegalStateException("Only an unsent dirty node edit can request discard confirmation");
             }
             return copy(
                     authoritative,
                     editKind,
                     true,
                     true,
-                    null,
+                    pending,
                     lastIssuedSequence,
-                    expectedHeartbeatSequence,
+                    expectedBackgroundSequence,
                     nextHeartbeatTick);
         }
 
@@ -181,7 +200,7 @@ final class NodeMenuInteractionPolicy {
                     false,
                     pending,
                     lastIssuedSequence,
-                    expectedHeartbeatSequence,
+                    expectedBackgroundSequence,
                     nextHeartbeatTick);
         }
 
@@ -196,13 +215,18 @@ final class NodeMenuInteractionPolicy {
                     false,
                     pending,
                     lastIssuedSequence,
-                    expectedHeartbeatSequence,
+                    expectedBackgroundSequence,
                     nextHeartbeatTick);
         }
 
         Model submit(PendingKind kind, long sequence) {
             Objects.requireNonNull(kind, "kind");
-            if (authoritative == null || pending != null || sequence != lastIssuedSequence + 1) {
+            if (authoritative == null
+                    || pending != null
+                    || sequence != lastIssuedSequence + 1
+                    || (kind == PendingKind.STATUS
+                            && (expectedBackgroundSequence != 0
+                                    || !(authoritative instanceof NodeMenuState.DirectChannelRoot)))) {
                 throw new IllegalStateException("Node mutation request is not eligible");
             }
             return copy(
@@ -210,9 +234,9 @@ final class NodeMenuInteractionPolicy {
                     editKind,
                     dirty,
                     discardConfirmation,
-                    new Pending(kind, sequence),
+                    kind == PendingKind.STATUS ? null : new Pending(kind, sequence),
                     sequence,
-                    expectedHeartbeatSequence,
+                    kind == PendingKind.STATUS ? sequence : 0,
                     nextHeartbeatTick);
         }
 
@@ -228,7 +252,7 @@ final class NodeMenuInteractionPolicy {
                     discardConfirmation,
                     pending,
                     lastIssuedSequence,
-                    expectedHeartbeatSequence,
+                    expectedBackgroundSequence,
                     deadline);
         }
 
@@ -255,6 +279,12 @@ final class NodeMenuInteractionPolicy {
                     Math.addExact(currentTick, HEARTBEAT_INTERVAL_TICKS));
         }
 
+        BackAction exitAction() {
+            return dirty && (pending == null || pending.kind() != PendingKind.SAVE)
+                    ? BackAction.CONFIRM_DISCARD
+                    : BackAction.CLOSE_SCREEN;
+        }
+
         BackAction backAction() {
             if (discardConfirmation) {
                 return BackAction.CLOSE_CONFIRMATION;
@@ -279,6 +309,9 @@ final class NodeMenuInteractionPolicy {
         }
 
         Transition apply(NodeMenuResponse response) {
+            if (response instanceof NodeMenuResponse.UploadReady
+                    || response instanceof NodeMenuResponse.Download
+                    || response instanceof NodeMenuResponse.Catalog) return new Transition(this, false, false);
             Objects.requireNonNull(response, "response");
             if (!expected(response)) {
                 return new Transition(this, false);
@@ -287,6 +320,15 @@ final class NodeMenuInteractionPolicy {
             boolean preserveDraft = false;
             if (response instanceof NodeMenuResponse.State success) {
                 latest = success.state();
+                preserveDraft = pending != null
+                        && pending.kind() == PendingKind.NAVIGATE
+                        && authoritative instanceof NodeMenuState.DirectBindingEdit previous
+                        && latest instanceof NodeMenuState.DirectBindingEdit refreshed
+                        && previous.node().networkId().equals(refreshed.node().networkId())
+                        && previous.node().nodeId().equals(refreshed.node().nodeId())
+                        && previous.channel()
+                                .channelId()
+                                .equals(refreshed.channel().channelId());
             } else {
                 NodeMenuResponse.Failure failure = (NodeMenuResponse.Failure) response;
                 latest = failure.state() == null ? new NodeMenuState.Unavailable() : failure.state();
@@ -300,14 +342,22 @@ final class NodeMenuInteractionPolicy {
                     latest,
                     nextEdit,
                     preserveDraft && dirty,
-                    false,
+                    preserveDraft && discardConfirmation,
                     null,
                     response.containerId(),
                     response.sessionId(),
                     nextIssued,
                     0,
                     nextEdit == EditKind.NONE ? 0 : nextHeartbeatTick);
-            return new Transition(applied, true);
+            boolean statusOnly = pending == null
+                    && authoritative instanceof NodeMenuState.DirectChannelRoot previous
+                    && latest instanceof NodeMenuState.DirectChannelRoot refreshed
+                    && response instanceof NodeMenuResponse.State
+                    && previous.node().equals(refreshed.node())
+                    && previous.tunnel().equals(refreshed.tunnel())
+                    && previous.channel().equals(refreshed.channel())
+                    && Objects.equals(previous.policy(), refreshed.policy());
+            return new Transition(applied, true, !statusOnly);
         }
 
         private boolean expected(NodeMenuResponse response) {
@@ -320,7 +370,7 @@ final class NodeMenuInteractionPolicy {
             if (pending != null) {
                 return response.sequence() == pending.sequence();
             }
-            return expectedHeartbeatSequence > 0 && response.sequence() == expectedHeartbeatSequence;
+            return expectedBackgroundSequence > 0 && response.sequence() == expectedBackgroundSequence;
         }
 
         private Model copy(

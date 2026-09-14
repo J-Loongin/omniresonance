@@ -48,6 +48,42 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     private long lastSequence;
     private EditKind editKind = EditKind.NONE;
     private boolean closed;
+    private @Nullable PolicyTransfer transfer;
+
+    private static final class PolicyTransfer {
+        final UUID id;
+        final long sequence;
+        final long deadline;
+        final NetworkTopologyService.Edit edit;
+        final UUID channel;
+        final UUID tunnel;
+        final int length;
+        final @Nullable NodeMenuRequest.BeginPolicyUpload upload;
+        int offset;
+
+        PolicyTransfer(
+                UUID id,
+                long sequence,
+                long deadline,
+                NetworkTopologyService.Edit edit,
+                UUID channel,
+                UUID tunnel,
+                int length,
+                @Nullable NodeMenuRequest.BeginPolicyUpload upload) {
+            this.id = id;
+            this.sequence = sequence;
+            this.deadline = deadline;
+            this.edit = edit;
+            this.channel = channel;
+            this.tunnel = tunnel;
+            this.length = length;
+            this.upload = upload;
+        }
+    }
+
+    UUID playerId() {
+        return playerId;
+    }
 
     ResonanceNodeMenu(
             int containerId,
@@ -147,6 +183,8 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         try {
             refreshBlankLink(player);
             return switch (request) {
+                case NodeMenuRequest.BeginPolicyUpload begin -> beginPolicyUpload(player, begin);
+                case NodeMenuRequest.ResourceCatalog page -> resourceCatalog(player, page);
                 case NodeMenuRequest.Page page -> page(player, page);
                 case NodeMenuRequest.BeginBlank begin -> beginBlank(player, begin);
                 case NodeMenuRequest.Link link -> link(player, link);
@@ -169,6 +207,9 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 case NodeMenuRequest.PageChannels page -> pageChannels(player, page);
                 case NodeMenuRequest.BeginBinding begin -> beginBinding(player, begin);
                 case NodeMenuRequest.SetBindingDirection direction -> setBindingDirection(player, direction);
+                case NodeMenuRequest.SaveResourcePolicy save -> saveResourcePolicy(player, save);
+                case NodeMenuRequest.PageItemPresets page -> pageItemPresets(player, page);
+                case NodeMenuRequest.PollItemStatus poll -> pollItemStatus(player, poll);
                 case NodeMenuRequest.RemoveBinding ignored -> removeBinding(player, request);
                 case NodeMenuRequest.OpenDomain ignored -> openDomain(player, request);
                 case NodeMenuRequest.BeginDomainEdit ignored -> beginDomainEdit(player, request);
@@ -188,6 +229,19 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             return rejected(player, request, rejected.reason());
         } catch (NetworkTopologyService.Rejected rejected) {
             return rejected(player, request, rejected.reason());
+        } catch (io.github.loongin.omniresonance.filter.ItemFilterService.Rejected rejected) {
+            if (rejected.reason() == io.github.loongin.omniresonance.filter.ItemFilterService.Reason.NO_ACCESS) {
+                safeCancel(player);
+                state = new NodeMenuState.NoAccess();
+                linkedNetworkId = null;
+                return failure(request, NodeMenuResponse.Reason.NO_ACCESS, null);
+            }
+            return failure(
+                    request,
+                    rejected.reason() == io.github.loongin.omniresonance.filter.ItemFilterService.Reason.INVALID_REQUEST
+                            ? NodeMenuResponse.Reason.INVALID_REQUEST
+                            : NodeMenuResponse.Reason.UNAVAILABLE,
+                    state);
         } catch (IllegalArgumentException invalidRequest) {
             return failure(request, NodeMenuResponse.Reason.INVALID_REQUEST, state);
         } catch (RuntimeException failure) {
@@ -237,11 +291,11 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     private NodeMenuResponse page(ServerPlayer player, NodeMenuRequest.Page request) {
         if (state instanceof NodeMenuState.BlankList) {
             state = new NodeMenuState.BlankList(service.page(player, request.anchor(), request.backwards()));
-            return response(request);
+            return response(player, request);
         }
         if (state instanceof NodeMenuState.NetworkSelection && linkedNetworkId != null) {
             state = service.networkSelection(player, linkedNetworkId, nodeId, request.anchor(), request.backwards());
-            return response(request);
+            return response(player, request);
         }
         return invalid(request);
     }
@@ -258,7 +312,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             editNetworkId = request.networkId();
             editRevision = -1;
             editKind = EditKind.BLANK;
-            return response(request);
+            return response(player, request);
         } catch (RuntimeException failure) {
             try {
                 service.management().cancel(player, token);
@@ -287,7 +341,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         clearEdit();
         linkedNetworkId = networkId;
         state = service.modeRoot(player, networkId, linked.nodeId());
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse beginRename(ServerPlayer player, NodeMenuRequest request) {
@@ -304,7 +358,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         editRevision = edit.node().revision();
         editKind = EditKind.RENAME;
         state = service.linkedRename(player, linkedNetworkId, nodeId);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse rename(ServerPlayer player, NodeMenuRequest.Rename request) {
@@ -322,7 +376,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 service.management().rename(player, networkId, editRevision, name, requireEditToken());
         clearEdit();
         state = service.linkedRoute(player, networkId, renamed.nodeId());
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse beginMode(ServerPlayer player, NodeMenuRequest request) {
@@ -342,7 +396,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         editRevision = edit.node().revision();
         editKind = EditKind.MODE;
         state = service.linkedMode(player, linkedNetworkId, nodeId);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse setMode(ServerPlayer player, NodeMenuRequest.SetMode request) {
@@ -354,7 +408,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 .setMode(player, networkId, editRevision, request.mode(), request.confirmedReset(), requireEditToken());
         clearEdit();
         state = service.linkedRoute(player, networkId, changed.nodeId());
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse setEnabled(ServerPlayer player, NodeMenuRequest.SetEnabled request) {
@@ -368,7 +422,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             NetworkNodeRecord changed = service.management()
                     .setEnabled(player, networkId, edit.node().revision(), request.enabled(), edit.token());
             state = service.linkedRoute(player, networkId, changed.nodeId());
-            return response(request);
+            return response(player, request);
         } catch (RuntimeException failure) {
             safeCancel(player, edit.token());
             throw failure;
@@ -391,7 +445,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                     .setChunkLoadingRequested(
                             player, networkId, edit.node().revision(), request.requested(), edit.token());
             state = service.linkedRoute(player, networkId, changed.nodeId());
-            return response(request);
+            return response(player, request);
         } catch (RuntimeException failure) {
             safeCancel(player, edit.token());
             throw failure;
@@ -402,7 +456,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         if (state instanceof NodeMenuState.BlankEdit && editKind == EditKind.BLANK) {
             safeCancel(player);
             state = service.blankRoot(player);
-            return response(request);
+            return response(player, request);
         }
         UUID networkId = linkedNetworkId;
         if (networkId == null) {
@@ -458,7 +512,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         } else {
             return invalid(request);
         }
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse openModeRoot(ServerPlayer player, NodeMenuRequest request) {
@@ -466,7 +520,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             return invalid(request);
         }
         state = service.modeRoot(player, linkedNetworkId, nodeId);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse openNetworkSelection(ServerPlayer player, NodeMenuRequest request) {
@@ -478,7 +532,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             return failure(request, NodeMenuResponse.Reason.NODE_DISABLED, state);
         }
         state = service.networkSelection(player, linkedNetworkId, nodeId, null, false);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse beginNetworkMove(ServerPlayer player, NodeMenuRequest.BeginNetworkMove request) {
@@ -489,7 +543,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         }
         if (linkedNetworkId.equals(request.targetNetworkId())) {
             state = service.linkedRoute(player, linkedNetworkId, nodeId);
-            return response(request);
+            return response(player, request);
         }
         NodeManagementService.NetworkMoveEdit edit =
                 service.management().beginNetworkMove(player, linkedNetworkId, nodeId, request.targetNetworkId());
@@ -499,7 +553,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         editRevision = edit.node().revision();
         editKind = EditKind.NETWORK_MOVE;
         state = service.networkMoveEdit(player, linkedNetworkId, nodeId, request.targetNetworkId());
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse moveNetwork(ServerPlayer player, NodeMenuRequest.MoveNetwork request) {
@@ -519,7 +573,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         clearEdit();
         linkedNetworkId = edit.targetNetworkId();
         state = service.modeRoot(player, edit.targetNetworkId(), moved.nodeId());
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse openDirect(ServerPlayer player, NodeMenuRequest request) {
@@ -527,7 +581,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             return invalid(request);
         }
         state = service.directRoute(player, linkedNetworkId, nodeId);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse pageTunnels(ServerPlayer player, NodeMenuRequest.PageTunnels request) {
@@ -535,7 +589,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             return invalid(request);
         }
         state = service.directTunnels(player, linkedNetworkId, nodeId, request.anchor(), request.backwards());
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse openTunnel(ServerPlayer player, NodeMenuRequest.OpenTunnel request) {
@@ -555,12 +609,12 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         NodeMenuState target = service.tunnelState(player, linkedNetworkId, nodeId, targetTunnelId, null, false);
         if (target instanceof NodeMenuState.RestrictedTunnel) {
             state = target;
-            return response(request);
+            return response(player, request);
         }
         Optional<UUID> currentTunnel = service.topology().directTunnelId(player, linkedNetworkId, nodeId);
         if (currentTunnel.isEmpty() || currentTunnel.orElseThrow().equals(targetTunnelId)) {
             state = target;
-            return response(request);
+            return response(player, request);
         }
         NetworkTopologyService.TunnelSwitchEdit switchEdit =
                 service.topology().requestTunnelSwitch(player, linkedNetworkId, nodeId, targetTunnelId);
@@ -570,7 +624,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             topologyEdit = switchEdit.edit();
             editNetworkId = linkedNetworkId;
             editKind = EditKind.TUNNEL_SWITCH;
-            return response(request);
+            return response(player, request);
         } catch (RuntimeException failure) {
             safeCancel(player, switchEdit.edit());
             throw failure;
@@ -589,7 +643,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         service.topology().confirmTunnelSwitch(player, switchEdit);
         clearEdit();
         state = service.tunnelState(player, linkedNetworkId, nodeId, targetTunnelId, null, false);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse pageChannels(ServerPlayer player, NodeMenuRequest.PageChannels request) {
@@ -598,7 +652,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         }
         state = service.tunnelState(
                 player, linkedNetworkId, nodeId, list.tunnel().tunnelId(), request.anchor(), request.backwards());
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse openChannel(ServerPlayer player, NodeMenuRequest.OpenChannel request) {
@@ -609,7 +663,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         }
         state = service.channelRoot(
                 player, linkedNetworkId, nodeId, list.tunnel().tunnelId(), request.channelId());
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse openChannelSettings(ServerPlayer player, NodeMenuRequest request) {
@@ -624,7 +678,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 nodeId,
                 root.tunnel().tunnelId(),
                 root.channel().channelId());
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse beginBinding(ServerPlayer player, NodeMenuRequest.BeginBinding request) {
@@ -648,7 +702,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             topologyEdit = edit;
             editNetworkId = linkedNetworkId;
             editKind = EditKind.BINDING;
-            return response(request);
+            return response(player, request);
         } catch (RuntimeException failure) {
             safeCancel(player, edit);
             throw failure;
@@ -670,7 +724,221 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                         player, edit, editState.channel().channelId(), request.direction(), request.confirmedReset());
         clearEdit();
         state = service.channelRoot(player, linkedNetworkId, nodeId, tunnelId, channelId);
-        return response(request);
+        return response(player, request);
+    }
+
+    private NodeMenuResponse pageItemPresets(ServerPlayer player, NodeMenuRequest.PageItemPresets request) {
+        if (editKind != EditKind.BINDING
+                || topologyEdit == null
+                || linkedNetworkId == null
+                || !(state instanceof NodeMenuState.DirectBindingEdit edit)) return invalid(request);
+        state = service.bindingEdit(
+                player,
+                linkedNetworkId,
+                nodeId,
+                edit.tunnel().tunnelId(),
+                edit.channel().channelId(),
+                request.offset(),
+                request.query(),
+                request.libraryRevision());
+        return response(player, request);
+    }
+
+    private NodeMenuResponse pollItemStatus(ServerPlayer player, NodeMenuRequest.PollItemStatus request) {
+        if (linkedNetworkId == null
+                || editKind != EditKind.NONE
+                || !(state instanceof NodeMenuState.DirectChannelRoot root)) return invalid(request);
+        state = service.channelRoot(
+                player,
+                linkedNetworkId,
+                nodeId,
+                root.tunnel().tunnelId(),
+                root.channel().channelId());
+        return response(player, request);
+    }
+
+    private NodeMenuResponse beginPolicyUpload(ServerPlayer player, NodeMenuRequest.BeginPolicyUpload request) {
+        if (transfer != null
+                || editKind != EditKind.BINDING
+                || !(state instanceof NodeMenuState.DirectBindingEdit edit)
+                || topologyEdit == null) return invalid(request);
+        service.topology()
+                .validateBindingEdit(player, topologyEdit, edit.channel().channelId());
+        request.faces().validate(edit.node().form());
+        long now = service.currentTick();
+        service.transfers().beginUpload(playerId, sessionId, request.transfer(), request.length(), now);
+        transfer = new PolicyTransfer(
+                request.transfer(),
+                request.sequence(),
+                now + 200,
+                topologyEdit,
+                edit.channel().channelId(),
+                edit.tunnel().tunnelId(),
+                request.length(),
+                request);
+        return new NodeMenuResponse.UploadReady(containerId, sessionId, request.sequence(), request.transfer());
+    }
+
+    void cancelTransfer() {
+        PolicyTransfer active = transfer;
+        transfer = null;
+        if (active != null && service != null) service.transfers().abort(playerId, sessionId, active.id);
+    }
+
+    private void authorizeTransfer(ServerPlayer player, PolicyTransfer active, long now) {
+        if (closed
+                || !player.getUUID().equals(playerId)
+                || !canTransfer(player)
+                || topologyEdit != active.edit
+                || now >= active.deadline) throw new IllegalStateException("Expired policy context");
+        service.topology().validateBindingEdit(player, active.edit, active.channel);
+    }
+
+    private boolean canTransfer(ServerPlayer player) {
+        return service != null && service.canKeepOpen(player, this);
+    }
+
+    /** Actual-connection router; only approved uploads accept chunks, and arbitrary Begin grants no authority. */
+    public @Nullable NodeMenuResponse handleTransfer(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.ManagementTransferMessage message) {
+        PolicyTransfer active = transfer;
+        if (active == null
+                || !player.getUUID().equals(playerId)
+                || !message.session().equals(sessionId)
+                || !message.transfer().equals(active.id)) return null;
+        boolean[] committing = {false};
+        try {
+            authorizeTransfer(player, active, service.currentTick());
+            if (message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Abort) {
+                cancelTransfer();
+                return null;
+            }
+            if (active.upload == null) throw new IllegalArgumentException("Unexpected upload direction");
+            if (message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk chunk) {
+                service.transfers()
+                        .upload(playerId, sessionId, active.id, chunk.offset(), chunk.data(), service.currentTick());
+                return null;
+            }
+            if (!(message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish))
+                throw new IllegalArgumentException("Unapproved Begin");
+            io.github.loongin.omniresonance.transfer.ResourcePolicyEdit[] decoded =
+                    new io.github.loongin.omniresonance.transfer.ResourcePolicyEdit[1];
+            service.transfers()
+                    .finishUpload(
+                            playerId,
+                            sessionId,
+                            active.id,
+                            service.currentTick(),
+                            view -> {
+                                decoded[0] =
+                                        io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.decode(view);
+                                service.topology()
+                                        .validatePolicyIntent(player, active.edit, active.channel, decoded[0]);
+                            },
+                            () -> {
+                                authorizeTransfer(player, active, service.currentTick());
+                                return true;
+                            },
+                            view -> {
+                                committing[0] = true;
+                                service.topology()
+                                        .saveDirectBinding(
+                                                player,
+                                                active.edit,
+                                                active.channel,
+                                                decoded[0],
+                                                active.upload.faces(),
+                                                active.upload.confirmedReset());
+                            });
+            transfer = null;
+            clearEdit();
+            state = service.channelRoot(player, linkedNetworkId, nodeId, active.tunnel, active.channel);
+            return new NodeMenuResponse.State(containerId, sessionId, active.sequence, state);
+        } catch (RuntimeException failure) {
+            cancelTransfer();
+            if (committing[0]) {
+                safeCancel(player);
+                state = new NodeMenuState.Unavailable();
+                linkedNetworkId = null;
+                return new NodeMenuResponse.Failure(
+                        containerId, sessionId, active.sequence, NodeMenuResponse.Reason.INTERNAL_ERROR, null);
+            }
+            return new NodeMenuResponse.Failure(
+                    containerId,
+                    sessionId,
+                    active.sequence,
+                    NodeMenuResponse.Reason.INVALID_REQUEST,
+                    state instanceof NodeMenuState.DirectBindingEdit edit ? edit.withPolicy(null) : state);
+        }
+    }
+
+    /** Server tick sends one bounded fragment, with authorization and a fixed nonrenewable deadline. */
+    void transferTick(ServerPlayer player, long now) {
+        transferTick(
+                player, now, payload -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, payload));
+    }
+
+    void transferTick(
+            ServerPlayer player,
+            long now,
+            java.util.function.Consumer<net.minecraft.network.protocol.common.custom.CustomPacketPayload> sender) {
+        PolicyTransfer active = transfer;
+        if (active == null) return;
+        try {
+            authorizeTransfer(player, active, now);
+            if (active.upload != null) return;
+            byte[] bytes = service.transfers().nextDownload(playerId, sessionId, active.id, now);
+            sender.accept(new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
+                    sessionId, active.id, active.offset, bytes));
+            active.offset += bytes.length;
+            if (active.offset == active.length) {
+                transfer = null;
+                sender.accept(new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish(
+                        sessionId, active.id));
+            }
+        } catch (RuntimeException failure) {
+            cancelTransfer();
+            sender.accept(new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Abort(
+                    sessionId, active.id));
+        }
+    }
+
+    private NodeMenuResponse resourceCatalog(ServerPlayer player, NodeMenuRequest.ResourceCatalog request) {
+        if (editKind != EditKind.BINDING
+                || !(state instanceof NodeMenuState.DirectBindingEdit edit)
+                || topologyEdit == null) return invalid(request);
+        service.topology()
+                .validateBindingEdit(player, topologyEdit, edit.channel().channelId());
+        var page = io.github.loongin.omniresonance.networking.ResourceTypeCatalogPage.from(
+                service.topology().resourceAdapters(),
+                sessionId,
+                request.offset(),
+                262144,
+                1 + net.minecraft.network.VarInt.getByteSize(containerId) + 16 + 8);
+        return new NodeMenuResponse.Catalog(containerId, sessionId, request.sequence(), page);
+    }
+
+    private NodeMenuResponse saveResourcePolicy(ServerPlayer player, NodeMenuRequest.SaveResourcePolicy request) {
+        if (editKind != EditKind.BINDING
+                || !(state instanceof NodeMenuState.DirectBindingEdit editState)
+                || topologyEdit == null
+                || linkedNetworkId == null) {
+            return invalid(request);
+        }
+        UUID tunnelId = editState.tunnel().tunnelId();
+        UUID channelId = editState.channel().channelId();
+        NetworkTopologyService.Edit edit = topologyEdit;
+        service.topology()
+                .saveDirectBinding(
+                        player,
+                        edit,
+                        editState.channel().channelId(),
+                        request.policy(),
+                        request.workingFaces(),
+                        request.confirmedReset());
+        clearEdit();
+        state = service.channelRoot(player, linkedNetworkId, nodeId, tunnelId, channelId);
+        return response(player, request);
     }
 
     private NodeMenuResponse removeBinding(ServerPlayer player, NodeMenuRequest request) {
@@ -693,7 +961,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                         nodeId,
                         root.tunnel().tunnelId(),
                         root.channel().channelId());
-                return response(request);
+                return response(player, request);
             } catch (RuntimeException failure) {
                 safeCancel(player, edit);
                 throw failure;
@@ -711,7 +979,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         service.topology().removeDirectBinding(player, edit, editState.channel().channelId());
         clearEdit();
         state = service.channelRoot(player, linkedNetworkId, nodeId, tunnelId, channelId);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse beginCreateChannel(ServerPlayer player, NodeMenuRequest.BeginCreateChannel request) {
@@ -729,7 +997,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             topologyEdit = edit;
             editNetworkId = linkedNetworkId;
             editKind = EditKind.CHANNEL;
-            return response(request);
+            return response(player, request);
         } catch (RuntimeException failure) {
             safeCancel(player, edit);
             throw failure;
@@ -751,7 +1019,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             topologyEdit = edit;
             editNetworkId = linkedNetworkId;
             editKind = EditKind.CHANNEL;
-            return response(request);
+            return response(player, request);
         } catch (RuntimeException failure) {
             safeCancel(player, edit);
             throw failure;
@@ -786,7 +1054,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         state = channelId == null
                 ? service.tunnelState(player, linkedNetworkId, nodeId, tunnelId, null, false)
                 : service.channelRoot(player, linkedNetworkId, nodeId, tunnelId, channelId);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse requestDeleteChannel(ServerPlayer player, NodeMenuRequest.RequestDeleteChannel request) {
@@ -804,7 +1072,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             channelDeletion = deletion;
             editNetworkId = linkedNetworkId;
             editKind = EditKind.CHANNEL_DELETE;
-            return response(request);
+            return response(player, request);
         } catch (RuntimeException failure) {
             safeCancel(player, deletion.edit());
             throw failure;
@@ -822,7 +1090,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         service.topology().confirmChannelDeletion(player, channelDeletion);
         clearEdit();
         state = service.tunnelState(player, linkedNetworkId, nodeId, tunnelId, null, false);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse openDomain(ServerPlayer player, NodeMenuRequest request) {
@@ -834,7 +1102,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             return failure(request, NodeMenuResponse.Reason.NODE_DISABLED, state);
         }
         state = service.domainRoot(player, linkedNetworkId, nodeId);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse beginDomainEdit(ServerPlayer player, NodeMenuRequest request) {
@@ -847,7 +1115,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             topologyEdit = edit;
             editNetworkId = linkedNetworkId;
             editKind = EditKind.DOMAIN;
-            return response(request);
+            return response(player, request);
         } catch (RuntimeException failure) {
             safeCancel(player, edit);
             throw failure;
@@ -865,7 +1133,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         service.topology().setDomainConfiguration(player, edit, request.direction(), request.confirmedReset());
         clearEdit();
         state = service.domainRoot(player, linkedNetworkId, nodeId);
-        return response(request);
+        return response(player, request);
     }
 
     private NodeMenuResponse removeDomain(ServerPlayer player, NodeMenuRequest request) {
@@ -879,7 +1147,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         service.topology().removeDomainConfiguration(player, edit);
         clearEdit();
         state = service.domainRoot(player, linkedNetworkId, nodeId);
-        return response(request);
+        return response(player, request);
     }
 
     private @Nullable NodeMenuResponse heartbeat(ServerPlayer player, NodeMenuRequest request) {
@@ -1022,6 +1290,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     }
 
     private void clearEdit() {
+        cancelTransfer();
         editToken = null;
         editNetworkId = null;
         editRevision = -1;
@@ -1067,8 +1336,39 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         };
     }
 
-    private NodeMenuResponse.State response(NodeMenuRequest request) {
-        return new NodeMenuResponse.State(containerId, sessionId, request.sequence(), state);
+    private NodeMenuResponse response(ServerPlayer player, NodeMenuRequest request) {
+        var response = new NodeMenuResponse.State(containerId, sessionId, request.sequence(), state);
+        if (state instanceof NodeMenuState.DirectBindingEdit edit
+                && edit.policy() != null
+                && io.github.loongin.omniresonance.networking.NodePolicyFrames.responseSize(response) > 262144) {
+            if (transfer != null) throw new IllegalStateException("Transfer already active");
+            service.topology()
+                    .validateBindingEdit(player, topologyEdit, edit.channel().channelId());
+            UUID id = UUID.randomUUID();
+            int length = io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encodedSize(edit.policy());
+            long now = service.currentTick();
+            service.transfers()
+                    .beginDownload(
+                            playerId,
+                            sessionId,
+                            id,
+                            length,
+                            now,
+                            () -> io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encode(
+                                    edit.policy()));
+            transfer = new PolicyTransfer(
+                    id,
+                    request.sequence(),
+                    now + 200,
+                    topologyEdit,
+                    edit.channel().channelId(),
+                    edit.tunnel().tunnelId(),
+                    length,
+                    null);
+            return new NodeMenuResponse.Download(
+                    containerId, sessionId, request.sequence(), edit.withPolicy(null), id, length);
+        }
+        return response;
     }
 
     private NodeMenuResponse.Failure invalid(NodeMenuRequest request) {
@@ -1078,7 +1378,11 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     private NodeMenuResponse.Failure failure(
             NodeMenuRequest request, NodeMenuResponse.Reason reason, @Nullable NodeMenuState latestState) {
         return new NodeMenuResponse.Failure(
-                request.containerId(), request.sessionId(), request.sequence(), reason, latestState);
+                request.containerId(),
+                request.sessionId(),
+                request.sequence(),
+                reason,
+                latestState instanceof NodeMenuState.DirectBindingEdit edit ? edit.withPolicy(null) : latestState);
     }
 
     private enum EditKind {

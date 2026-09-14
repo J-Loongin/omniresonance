@@ -64,6 +64,30 @@ public final class NetworkPersistenceGameTests {
                             GlobalPos.of(Level.OVERWORLD, new BlockPos(3, 64, 4)),
                             NodeForm.PANEL,
                             Direction.NORTH);
+            var recoveryKey = new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                    net.minecraft.resources.ResourceLocation.parse("unknown:raw"), new byte[] {1, -1, 0});
+            try (var reservation = repository
+                    .findLoadedNetwork(first.id())
+                    .orElseThrow()
+                    .recovery()
+                    .reserve(recoveryKey, Long.MAX_VALUE, 64, 1048576)
+                    .orElseThrow()) {
+                reservation.commit(Long.MAX_VALUE);
+            }
+            UUID presetId = new UUID(8, 2);
+            repository
+                    .findOwner(OWNER)
+                    .orElseThrow()
+                    .putPreset(
+                            new io.github.loongin.omniresonance.filter.ItemFilterPreset(
+                                    presetId,
+                                    new ManagedName("Stone"),
+                                    0,
+                                    java.util.Set.of(
+                                            net.minecraft.resources.ResourceLocation.parse("minecraft:stone"))),
+                            0,
+                            512,
+                            1024);
             storage.save();
             IOUtilities.waitUntilIOWorkerComplete();
             List<String> expectedFiles = List.of(
@@ -75,7 +99,7 @@ public final class NetworkPersistenceGameTests {
             CompoundTag wrapper =
                     NbtIo.readCompressed(directory.resolve(expectedFiles.getFirst()), NbtAccounter.unlimitedHeap());
             helper.assertTrue(
-                    wrapper.getCompound("data").getInt("schema_version") == 5, "Standard SavedData wrapper missing");
+                    wrapper.getCompound("data").getInt("schema_version") == 8, "Standard SavedData wrapper missing");
             helper.assertTrue(wrapper.contains("DataVersion"), "Standard data version missing");
             SavedNetworkRepository reloaded = new SavedNetworkRepository(storage(helper, directory), directory);
             NetworkDirectory reloadedIndex = new NetworkDirectory(reloaded.loadNetworks());
@@ -91,6 +115,21 @@ public final class NetworkPersistenceGameTests {
                     reloadedService.preferredNetwork(OWNER).orElseThrow().equals(first.id()),
                     "Default did not survive reload");
             helper.assertTrue(!reloaded.findOwner(OWNER).orElseThrow().isDirty(), "Reading owner dirtied it");
+            helper.assertTrue(
+                    reloaded.findLoadedNetwork(first.id())
+                                    .orElseThrow()
+                                    .recovery()
+                                    .amount(recoveryKey)
+                            == Long.MAX_VALUE,
+                    "Raw recovery failed native save/reload");
+            helper.assertTrue(
+                    !reloaded.findLoadedNetwork(first.id()).orElseThrow().isDirty(), "Recovery restore dirtied shard");
+            helper.assertTrue(
+                    reloaded.findOwner(OWNER).orElseThrow().findPreset(presetId).isPresent(),
+                    "Preset failed native save/reload");
+            helper.assertTrue(
+                    reloaded.findOwner(OWNER).orElseThrow().presetLibraryRevision() == 1,
+                    "Preset library revision failed reload");
             NetworkMetadata third = reloadedService.create(OWNER, "Third", -1);
             helper.assertTrue(third.creationOrder() == 2, "Reloaded creation order was reset");
             helper.succeed();

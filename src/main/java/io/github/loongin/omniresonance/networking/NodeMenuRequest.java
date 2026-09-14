@@ -2,7 +2,9 @@
 package io.github.loongin.omniresonance.networking;
 
 import io.github.loongin.omniresonance.network.TransferDirection;
+import io.github.loongin.omniresonance.network.WorkingFaces;
 import io.github.loongin.omniresonance.node.NodeMode;
+import io.github.loongin.omniresonance.transfer.ResourcePolicyEdit;
 import io.netty.handler.codec.DecoderException;
 import java.util.Objects;
 import java.util.UUID;
@@ -19,91 +21,125 @@ public sealed interface NodeMenuRequest extends CustomPacketPayload {
     StreamCodec<FriendlyByteBuf, NodeMenuRequest> STREAM_CODEC = new StreamCodec<>() {
         @Override
         public NodeMenuRequest decode(FriendlyByteBuf buffer) {
-            NodeMenuCodecSupport.requirePayloadBound(buffer);
+            NodeMenuCodecSupport.requirePayloadBound(buffer, TYPE.id());
             try {
                 int tag = buffer.readUnsignedByte();
-                if (tag > 36) {
+                if (tag > 41) {
                     throw new DecoderException("Unknown node-menu request");
                 }
                 int containerId = buffer.readVarInt();
                 UUID sessionId = buffer.readUUID();
                 long sequence = buffer.readLong();
-                return switch (tag) {
-                    case 0 ->
-                        new Page(
-                                containerId,
-                                sessionId,
-                                sequence,
-                                buffer.readBoolean() ? buffer.readUUID() : null,
-                                buffer.readBoolean());
-                    case 1 -> new BeginBlank(containerId, sessionId, sequence, buffer.readUUID());
-                    case 2 -> new Link(containerId, sessionId, sequence, NetworkSummary.readName(buffer));
-                    case 3 -> new BeginRename(containerId, sessionId, sequence);
-                    case 4 -> new Rename(containerId, sessionId, sequence, NetworkSummary.readName(buffer));
-                    case 5 -> new BeginMode(containerId, sessionId, sequence);
-                    case 6 ->
-                        new SetMode(
-                                containerId,
-                                sessionId,
-                                sequence,
-                                NodeMenuCodecSupport.readMode(buffer),
-                                buffer.readBoolean());
-                    case 7 -> new SetEnabled(containerId, sessionId, sequence, buffer.readBoolean());
-                    case 8 -> new SetChunkLoadingRequested(containerId, sessionId, sequence, buffer.readBoolean());
-                    case 9 -> new Heartbeat(containerId, sessionId, sequence);
-                    case 10 -> new CancelEdit(containerId, sessionId, sequence);
-                    case 11 -> new Back(containerId, sessionId, sequence);
-                    case 12 -> new OpenModeRoot(containerId, sessionId, sequence);
-                    case 13 -> new OpenNetworkSelection(containerId, sessionId, sequence);
-                    case 14 -> new BeginNetworkMove(containerId, sessionId, sequence, buffer.readUUID());
-                    case 15 -> new MoveNetwork(containerId, sessionId, sequence, NetworkSummary.readName(buffer));
-                    case 16 -> new OpenDirect(containerId, sessionId, sequence);
-                    case 18 ->
-                        new PageTunnels(
-                                containerId,
-                                sessionId,
-                                sequence,
-                                buffer.readBoolean() ? buffer.readUUID() : null,
-                                buffer.readBoolean());
-                    case 19 -> new OpenTunnel(containerId, sessionId, sequence, buffer.readUUID());
-                    case 20 ->
-                        new PageChannels(
-                                containerId,
-                                sessionId,
-                                sequence,
-                                buffer.readBoolean() ? buffer.readUUID() : null,
-                                buffer.readBoolean());
-                    case 21 -> new BeginBinding(containerId, sessionId, sequence, buffer.readUUID());
-                    case 22 ->
-                        new SetBindingDirection(
-                                containerId,
-                                sessionId,
-                                sequence,
-                                NodeMenuCodecSupport.readTransferDirection(buffer),
-                                buffer.readBoolean());
-                    case 23 -> new RemoveBinding(containerId, sessionId, sequence);
-                    case 24 -> new OpenDomain(containerId, sessionId, sequence);
-                    case 25 -> new BeginDomainEdit(containerId, sessionId, sequence);
-                    case 26 ->
-                        new SetDomainDirection(
-                                containerId,
-                                sessionId,
-                                sequence,
-                                NodeMenuCodecSupport.readTransferDirection(buffer),
-                                buffer.readBoolean());
-                    case 27 -> new RemoveDomain(containerId, sessionId, sequence);
-                    case 28 ->
-                        new BeginCreateChannel(containerId, sessionId, sequence, NetworkSummary.readName(buffer));
-                    case 29 -> new BeginRenameChannel(containerId, sessionId, sequence, buffer.readUUID());
-                    case 30 -> new SaveChannel(containerId, sessionId, sequence, NetworkSummary.readName(buffer));
-                    case 31 -> new RequestDeleteChannel(containerId, sessionId, sequence, buffer.readUUID());
-                    case 32 -> new ConfirmDeleteChannel(containerId, sessionId, sequence);
-                    case 33 -> new OpenChannel(containerId, sessionId, sequence, buffer.readUUID());
-                    case 34 -> new OpenChannelSettings(containerId, sessionId, sequence);
-                    case 35 -> new RequestTunnelSwitch(containerId, sessionId, sequence, buffer.readUUID());
-                    case 36 -> new ConfirmTunnelSwitch(containerId, sessionId, sequence);
-                    default -> throw new DecoderException("Unknown node-menu request");
-                };
+                NodeMenuRequest decoded =
+                        switch (tag) {
+                            case 0 ->
+                                new Page(
+                                        containerId,
+                                        sessionId,
+                                        sequence,
+                                        buffer.readBoolean() ? buffer.readUUID() : null,
+                                        buffer.readBoolean());
+                            case 1 -> new BeginBlank(containerId, sessionId, sequence, buffer.readUUID());
+                            case 2 -> new Link(containerId, sessionId, sequence, NetworkSummary.readName(buffer));
+                            case 3 -> new BeginRename(containerId, sessionId, sequence);
+                            case 4 -> new Rename(containerId, sessionId, sequence, NetworkSummary.readName(buffer));
+                            case 5 -> new BeginMode(containerId, sessionId, sequence);
+                            case 6 ->
+                                new SetMode(
+                                        containerId,
+                                        sessionId,
+                                        sequence,
+                                        NodeMenuCodecSupport.readMode(buffer),
+                                        buffer.readBoolean());
+                            case 7 -> new SetEnabled(containerId, sessionId, sequence, buffer.readBoolean());
+                            case 8 ->
+                                new SetChunkLoadingRequested(containerId, sessionId, sequence, buffer.readBoolean());
+                            case 9 -> new Heartbeat(containerId, sessionId, sequence);
+                            case 10 -> new CancelEdit(containerId, sessionId, sequence);
+                            case 11 -> new Back(containerId, sessionId, sequence);
+                            case 12 -> new OpenModeRoot(containerId, sessionId, sequence);
+                            case 13 -> new OpenNetworkSelection(containerId, sessionId, sequence);
+                            case 14 -> new BeginNetworkMove(containerId, sessionId, sequence, buffer.readUUID());
+                            case 15 ->
+                                new MoveNetwork(containerId, sessionId, sequence, NetworkSummary.readName(buffer));
+                            case 16 -> new OpenDirect(containerId, sessionId, sequence);
+                            case 18 ->
+                                new PageTunnels(
+                                        containerId,
+                                        sessionId,
+                                        sequence,
+                                        buffer.readBoolean() ? buffer.readUUID() : null,
+                                        buffer.readBoolean());
+                            case 19 -> new OpenTunnel(containerId, sessionId, sequence, buffer.readUUID());
+                            case 20 ->
+                                new PageChannels(
+                                        containerId,
+                                        sessionId,
+                                        sequence,
+                                        buffer.readBoolean() ? buffer.readUUID() : null,
+                                        buffer.readBoolean());
+                            case 21 -> new BeginBinding(containerId, sessionId, sequence, buffer.readUUID());
+                            case 22 ->
+                                new SetBindingDirection(
+                                        containerId,
+                                        sessionId,
+                                        sequence,
+                                        NodeMenuCodecSupport.readTransferDirection(buffer),
+                                        buffer.readBoolean());
+                            case 23 -> new RemoveBinding(containerId, sessionId, sequence);
+                            case 24 -> new OpenDomain(containerId, sessionId, sequence);
+                            case 25 -> new BeginDomainEdit(containerId, sessionId, sequence);
+                            case 26 ->
+                                new SetDomainDirection(
+                                        containerId,
+                                        sessionId,
+                                        sequence,
+                                        NodeMenuCodecSupport.readTransferDirection(buffer),
+                                        buffer.readBoolean());
+                            case 27 -> new RemoveDomain(containerId, sessionId, sequence);
+                            case 28 ->
+                                new BeginCreateChannel(
+                                        containerId, sessionId, sequence, NetworkSummary.readName(buffer));
+                            case 29 -> new BeginRenameChannel(containerId, sessionId, sequence, buffer.readUUID());
+                            case 30 ->
+                                new SaveChannel(containerId, sessionId, sequence, NetworkSummary.readName(buffer));
+                            case 31 -> new RequestDeleteChannel(containerId, sessionId, sequence, buffer.readUUID());
+                            case 32 -> new ConfirmDeleteChannel(containerId, sessionId, sequence);
+                            case 33 -> new OpenChannel(containerId, sessionId, sequence, buffer.readUUID());
+                            case 34 -> new OpenChannelSettings(containerId, sessionId, sequence);
+                            case 35 -> new RequestTunnelSwitch(containerId, sessionId, sequence, buffer.readUUID());
+                            case 36 -> new ConfirmTunnelSwitch(containerId, sessionId, sequence);
+                            case 38 ->
+                                new PageItemPresets(
+                                        containerId,
+                                        sessionId,
+                                        sequence,
+                                        buffer.readInt(),
+                                        buffer.readUtf(256),
+                                        buffer.readLong());
+                            case 41 ->
+                                new BeginPolicyUpload(
+                                        containerId,
+                                        sessionId,
+                                        sequence,
+                                        buffer.readUUID(),
+                                        buffer.readInt(),
+                                        NodeWorkingFacesCodec.read(buffer),
+                                        buffer.readBoolean());
+                            case 40 -> new ResourceCatalog(containerId, sessionId, sequence, buffer.readInt());
+                            case 39 -> new PollItemStatus(containerId, sessionId, sequence);
+                            case 37 ->
+                                new SaveResourcePolicy(
+                                        containerId,
+                                        sessionId,
+                                        sequence,
+                                        ResourcePolicyMenuCodec.read(buffer),
+                                        NodeWorkingFacesCodec.read(buffer),
+                                        buffer.readBoolean());
+                            default -> throw new DecoderException("Unknown node-menu request");
+                        };
+                if (tag >= 37 && buffer.isReadable()) throw new DecoderException("Trailing item-policy request fields");
+                return decoded;
             } catch (DecoderException failure) {
                 throw failure;
             } catch (IllegalArgumentException | IndexOutOfBoundsException failure) {
@@ -115,6 +151,17 @@ public sealed interface NodeMenuRequest extends CustomPacketPayload {
         public void encode(FriendlyByteBuf buffer, NodeMenuRequest request) {
             int start = buffer.writerIndex();
             switch (request) {
+                case BeginPolicyUpload begin -> {
+                    writeEnvelope(buffer, 41, begin);
+                    buffer.writeUUID(begin.transfer());
+                    buffer.writeInt(begin.length());
+                    NodeWorkingFacesCodec.write(buffer, begin.faces());
+                    buffer.writeBoolean(begin.confirmedReset());
+                }
+                case ResourceCatalog page -> {
+                    writeEnvelope(buffer, 40, page);
+                    buffer.writeInt(page.offset());
+                }
                 case Page page -> {
                     writeEnvelope(buffer, 0, page);
                     buffer.writeBoolean(page.anchor() != null);
@@ -223,10 +270,88 @@ public sealed interface NodeMenuRequest extends CustomPacketPayload {
                     buffer.writeUUID(switchRequest.targetTunnelId());
                 }
                 case ConfirmTunnelSwitch confirm -> writeEnvelope(buffer, 36, confirm);
+                case PageItemPresets page -> {
+                    writeEnvelope(buffer, 38, page);
+                    buffer.writeInt(page.offset());
+                    buffer.writeUtf(page.query(), 256);
+                    buffer.writeLong(page.libraryRevision());
+                }
+                case PollItemStatus poll -> writeEnvelope(buffer, 39, poll);
+                case SaveResourcePolicy save -> {
+                    writeEnvelope(buffer, 37, save);
+                    ResourcePolicyMenuCodec.write(buffer, save.policy());
+                    NodeWorkingFacesCodec.write(buffer, save.workingFaces());
+                    buffer.writeBoolean(save.confirmedReset());
+                }
             }
-            NodeMenuCodecSupport.requireEncodedBound(buffer, start);
+            NodeMenuCodecSupport.requireEncodedBound(buffer, start, TYPE.id());
         }
     };
+
+    record PageItemPresets(
+            int containerId, UUID sessionId, long sequence, int offset, String query, long libraryRevision)
+            implements NodeMenuRequest {
+        public PageItemPresets(int containerId, UUID sessionId, long sequence, int offset) {
+            this(containerId, sessionId, sequence, offset, "", -1);
+        }
+
+        public PageItemPresets {
+            requireEnvelope(containerId, sessionId, sequence);
+            if (offset < 0 || offset > 262144 || query == null || query.length() > 256 || libraryRevision < -1)
+                throw new IllegalArgumentException("Invalid preset query");
+        }
+    }
+
+    record PollItemStatus(int containerId, UUID sessionId, long sequence) implements NodeMenuRequest {
+        public PollItemStatus {
+            requireEnvelope(containerId, sessionId, sequence);
+        }
+    }
+
+    record SaveResourcePolicy(
+            int containerId,
+            UUID sessionId,
+            long sequence,
+            ResourcePolicyEdit policy,
+            WorkingFaces workingFaces,
+            boolean confirmedReset)
+            implements NodeMenuRequest {
+        public SaveResourcePolicy(
+                int containerId, UUID sessionId, long sequence, ResourcePolicyEdit policy, boolean confirmedReset) {
+            this(containerId, sessionId, sequence, policy, WorkingFaces.attachedFace(), confirmedReset);
+        }
+
+        public SaveResourcePolicy {
+            Objects.requireNonNull(workingFaces, "workingFaces");
+            requireEnvelope(containerId, sessionId, sequence);
+            Objects.requireNonNull(policy, "policy");
+        }
+    }
+
+    record BeginPolicyUpload(
+            int containerId,
+            UUID sessionId,
+            long sequence,
+            UUID transfer,
+            int length,
+            WorkingFaces faces,
+            boolean confirmedReset)
+            implements NodeMenuRequest {
+        public BeginPolicyUpload {
+            requireEnvelope(containerId, sessionId, sequence);
+            Objects.requireNonNull(transfer);
+            Objects.requireNonNull(faces);
+            if (length <= 0 || length > ManagementTransferPool.MAXIMUM_OBJECT_BYTES)
+                throw new IllegalArgumentException("Invalid policy length");
+        }
+    }
+
+    record ResourceCatalog(int containerId, UUID sessionId, long sequence, int offset) implements NodeMenuRequest {
+        public ResourceCatalog {
+            requireEnvelope(containerId, sessionId, sequence);
+            if (offset < 0) throw new IllegalArgumentException("Negative catalog offset");
+        }
+    }
 
     int containerId();
 

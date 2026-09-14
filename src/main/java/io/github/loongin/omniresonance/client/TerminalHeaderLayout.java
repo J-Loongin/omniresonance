@@ -18,14 +18,33 @@ final class TerminalHeaderLayout {
 
     /** Reserves the far-right action before arranging network, status and other controls to its left. */
     static ActionLayout atRightEdge(TerminalLayout.Rect available, boolean hasAction) {
-        int size = hasAction ? Math.min(HEIGHT, Math.min(available.width(), available.height())) : 0;
-        int gap = hasAction ? Math.min(TerminalLayout.GAP, Math.max(0, available.width() - size)) : 0;
+        int size = Math.min(HEIGHT, Math.min(available.width(), available.height()));
+        int gap = Math.min(TerminalLayout.GAP, Math.max(0, available.width() - size));
         return new ActionLayout(
                 new TerminalLayout.Rect(
                         available.x(), available.y(), available.width() - size - gap, available.height()),
                 new TerminalLayout.Rect(
-                        available.right() - size, available.y() + (available.height() - size) / 2, size, size));
+                        available.right() - size,
+                        available.y() + (available.height() - size) / 2,
+                        hasAction ? size : 0,
+                        hasAction ? size : 0));
     }
+
+    static NodeNames nodeNames(TerminalLayout.Rect remaining, boolean compact) {
+        int right =
+                remaining.right() - (compact ? 64 : 92) - TerminalLayout.GAP - (compact ? 52 : 66) - TerminalLayout.GAP;
+        int available = Math.max(0, right - remaining.x());
+        int nameWidth = available * 54 / 100;
+        return new NodeNames(
+                new TerminalLayout.Rect(remaining.x(), remaining.y(), nameWidth, HEIGHT),
+                new TerminalLayout.Rect(
+                        remaining.x() + nameWidth + TerminalLayout.GAP,
+                        remaining.y(),
+                        Math.max(0, available - nameWidth - TerminalLayout.GAP),
+                        HEIGHT));
+    }
+
+    record NodeNames(TerminalLayout.Rect node, TerminalLayout.Rect network) {}
 
     static TerminalLayout.Rect contentTitle(TerminalLayout.Rect content) {
         return new TerminalLayout.Rect(

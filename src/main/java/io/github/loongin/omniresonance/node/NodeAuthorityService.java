@@ -174,6 +174,12 @@ public final class NodeAuthorityService implements AutoCloseable {
             }
         }
 
+        if (idLookup.status() == NetworkNodeDirectory.Status.ABSENT
+                && state.linkState() == NodeLinkState.LINKED
+                && repository().hasUnreadableNetworkShards()) {
+            return;
+        }
+
         if (positionLookup.status() == NetworkNodeDirectory.Status.UNIQUE) {
             removeEntry(positionLookup.entry().orElseThrow());
         }

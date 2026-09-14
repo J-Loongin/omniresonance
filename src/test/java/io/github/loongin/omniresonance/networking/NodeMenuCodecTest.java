@@ -28,6 +28,99 @@ class NodeMenuCodecTest {
     private static final UUID NODE = new UUID(5, 6);
 
     @Test
+    void presetSearchBoundsAndRevisionRoundTrip() {
+        assertRoundTrip(
+                NodeMenuRequest.STREAM_CODEC,
+                new NodeMenuRequest.PageItemPresets(CONTAINER, SESSION, 12, 128, "MiXeD", 8));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new NodeMenuRequest.PageItemPresets(CONTAINER, SESSION, 12, 0, "x".repeat(257), -1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new NodeMenuRequest.PageItemPresets(CONTAINER, SESSION, 12, 0, "", -2));
+    }
+
+    @Test
+    void itemPolicyRequestsRejectTrailingDirectionFields() {
+        FriendlyByteBuf buffer = buffer();
+        try {
+            NodeMenuRequest.STREAM_CODEC.encode(
+                    buffer,
+                    new NodeMenuRequest.SaveResourcePolicy(
+                            CONTAINER,
+                            SESSION,
+                            1,
+                            io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(
+                                    new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                                            io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.defaults(
+                                                    TransferDirection.OUTPUT),
+                                            java.util.Map.of())),
+                            true));
+            buffer.writeLong(7);
+            assertThrows(DecoderException.class, () -> NodeMenuRequest.STREAM_CODEC.decode(buffer));
+        } finally {
+            buffer.release();
+        }
+    }
+
+    @Test
+    void presetPagesAndStatusQueriesRoundTripWithBoundedOffsets() {
+        assertRoundTrip(NodeMenuRequest.STREAM_CODEC, new NodeMenuRequest.PageItemPresets(CONTAINER, SESSION, 9, 128));
+        assertRoundTrip(NodeMenuRequest.STREAM_CODEC, new NodeMenuRequest.PollItemStatus(CONTAINER, SESSION, 10));
+        assertThrows(
+                IllegalArgumentException.class, () -> new NodeMenuRequest.PageItemPresets(CONTAINER, SESSION, 1, -1));
+    }
+
+    @Test
+    void itemPolicySnapshotsPreserveValuesPresetPageAndRuntimeStatus() {
+        var node = nodeSummary();
+        var tunnel = new NodeTunnelSummary(NODE, "Tunnel", 3, true, 4, 7, 2);
+        var channel = new NodeChannelSummary(new UUID(8, 9), "Channel", 5, 2, 3, TransferDirection.INPUT);
+        var preset = new FilterPresetSummary(new UUID(10, 20), "Only Iron", 7, 3, false);
+        var policy = new io.github.loongin.omniresonance.transfer.ItemTransferPolicy.Input(
+                20,
+                64,
+                io.github.loongin.omniresonance.transfer.RedstoneCondition.NO_SIGNAL,
+                preset.id(),
+                io.github.loongin.omniresonance.filter.FilterMode.BLACKLIST,
+                Long.MAX_VALUE);
+        var page = new FilterPresetPage(List.of(preset), 128, 129, 18);
+        assertRoundTrip(
+                NodeMenuResponse.STREAM_CODEC,
+                new NodeMenuResponse.State(
+                        CONTAINER,
+                        SESSION,
+                        1,
+                        new NodeMenuState.DirectBindingEdit(
+                                node,
+                                tunnel,
+                                channel,
+                                io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(
+                                        new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                                                io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(
+                                                        policy),
+                                                java.util.Map.of())),
+                                page,
+                                "Only Iron")));
+        assertRoundTrip(
+                NodeMenuResponse.STREAM_CODEC,
+                new NodeMenuResponse.State(
+                        CONTAINER,
+                        SESSION,
+                        2,
+                        new NodeMenuState.DirectChannelRoot(
+                                node,
+                                tunnel,
+                                channel,
+                                NodeResourcePolicySummary.from(
+                                        new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                                                io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.legacy(
+                                                        policy),
+                                                java.util.Map.of())),
+                                NodeTransferStatus.WAITING_BUDGET)));
+    }
+
+    @Test
     void everyRequestVariantRoundTripsWithoutSemanticNameTrust() {
         List<NodeMenuRequest> requests = List.of(
                 new NodeMenuRequest.Page(CONTAINER, SESSION, 1, null, false),
