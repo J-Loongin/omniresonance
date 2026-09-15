@@ -109,6 +109,28 @@ public sealed interface NodeMenuState {
         }
     }
 
+    sealed interface ResourceEdit extends NodeMenuState permits DirectBindingEdit, DomainEdit {
+        NodeMenuNodeSummary node();
+
+        @Nullable
+        ResourcePolicyEdit policy();
+
+        FilterPresetPage presets();
+
+        @Nullable
+        String selectedPresetName();
+
+        WorkingFaces workingFaces();
+
+        List<NodeFacePreview> previews();
+
+        ResourceEdit withPolicy(@Nullable ResourcePolicyEdit value);
+
+        default java.util.UUID policyContextId() {
+            return this instanceof DirectBindingEdit direct ? direct.channel().channelId() : node().nodeId();
+        }
+    }
+
     record DirectBindingEdit(
             NodeMenuNodeSummary node,
             NodeTunnelSummary tunnel,
@@ -118,7 +140,7 @@ public sealed interface NodeMenuState {
             @Nullable String selectedPresetName,
             WorkingFaces workingFaces,
             List<NodeFacePreview> previews)
-            implements NodeMenuState {
+            implements ResourceEdit {
         public DirectBindingEdit(
                 NodeMenuNodeSummary node,
                 NodeTunnelSummary tunnel,
@@ -205,15 +227,53 @@ public sealed interface NodeMenuState {
         }
     }
 
-    record DomainRoot(NodeMenuNodeSummary node, @Nullable TransferDirection direction) implements NodeMenuState {
+    record DomainRoot(NodeMenuNodeSummary node, @Nullable TransferDirection direction, NodeDomainStatus status)
+            implements NodeMenuState {
+        public DomainRoot(NodeMenuNodeSummary node, @Nullable TransferDirection direction) {
+            this(node, direction, direction == null ? NodeDomainStatus.UNCONFIGURED : NodeDomainStatus.PENDING);
+        }
+
         public DomainRoot {
             Objects.requireNonNull(node, "node");
+            Objects.requireNonNull(status);
         }
     }
 
-    record DomainEdit(NodeMenuNodeSummary node, @Nullable TransferDirection direction) implements NodeMenuState {
+    record DomainEdit(
+            NodeMenuNodeSummary node,
+            @Nullable TransferDirection direction,
+            @Nullable ResourcePolicyEdit policy,
+            FilterPresetPage presets,
+            @Nullable String selectedPresetName,
+            WorkingFaces workingFaces,
+            List<NodeFacePreview> previews)
+            implements ResourceEdit {
+        public DomainEdit(NodeMenuNodeSummary node, @Nullable TransferDirection direction) {
+            this(
+                    node,
+                    direction,
+                    ResourcePolicyEdit.fromStored(new StoredResourcePolicy(
+                            ResourceTransferPolicy.defaults(direction == null ? TransferDirection.INPUT : direction),
+                            java.util.Map.of())),
+                    new FilterPresetPage(List.of(), 0, 0, 0),
+                    null,
+                    node.form() == NodeForm.PANEL ? WorkingFaces.attachedFace() : WorkingFaces.explicit(0),
+                    List.of());
+        }
+
+        public DomainEdit withPolicy(@Nullable ResourcePolicyEdit value) {
+            return new DomainEdit(node, direction, value, presets, selectedPresetName, workingFaces, previews);
+        }
+
         public DomainEdit {
             Objects.requireNonNull(node, "node");
+            Objects.requireNonNull(presets);
+            Objects.requireNonNull(workingFaces).validate(node.form());
+            previews = NodeFacePreview.validate(previews);
+            if (node.form() == NodeForm.PANEL
+                    && previews.stream().anyMatch(preview -> preview.direction() != node.facing()))
+                throw new IllegalArgumentException("Panel preview must match attachment");
+            if (selectedPresetName != null) new io.github.loongin.omniresonance.network.ManagedName(selectedPresetName);
         }
     }
 
@@ -296,11 +356,17 @@ public sealed interface NodeMenuState {
             case 15 ->
                 new DomainRoot(
                         NodeMenuNodeSummary.read(buffer),
-                        buffer.readBoolean() ? NodeMenuCodecSupport.readTransferDirection(buffer) : null);
+                        buffer.readBoolean() ? NodeMenuCodecSupport.readTransferDirection(buffer) : null,
+                        buffer.readEnum(NodeDomainStatus.class));
             case 16 ->
                 new DomainEdit(
                         NodeMenuNodeSummary.read(buffer),
-                        buffer.readBoolean() ? NodeMenuCodecSupport.readTransferDirection(buffer) : null);
+                        buffer.readBoolean() ? NodeMenuCodecSupport.readTransferDirection(buffer) : null,
+                        buffer.readBoolean() ? ResourcePolicyMenuCodec.read(buffer) : null,
+                        FilterPresetPage.read(buffer),
+                        buffer.readBoolean() ? NetworkSummary.readName(buffer) : null,
+                        NodeWorkingFacesCodec.read(buffer),
+                        NodeFacePreview.readList(buffer));
             case 17 ->
                 new DirectChannelEdit(
                         NodeMenuNodeSummary.read(buffer),
@@ -403,11 +469,19 @@ public sealed interface NodeMenuState {
                 buffer.writeByte(15);
                 root.node().write(buffer);
                 writeOptionalDirection(buffer, root.direction());
+                buffer.writeEnum(root.status());
             }
             case DomainEdit edit -> {
                 buffer.writeByte(16);
                 edit.node().write(buffer);
                 writeOptionalDirection(buffer, edit.direction());
+                buffer.writeBoolean(edit.policy() != null);
+                if (edit.policy() != null) ResourcePolicyMenuCodec.write(buffer, edit.policy());
+                edit.presets().write(buffer);
+                buffer.writeBoolean(edit.selectedPresetName() != null);
+                if (edit.selectedPresetName() != null) NetworkSummary.writeName(buffer, edit.selectedPresetName());
+                NodeWorkingFacesCodec.write(buffer, edit.workingFaces());
+                NodeFacePreview.writeList(buffer, edit.previews());
             }
             case DirectChannelEdit edit -> {
                 buffer.writeByte(17);

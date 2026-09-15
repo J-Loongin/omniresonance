@@ -24,17 +24,14 @@ final class NodeResourceTypeSelectionView {
     static Layout layout(TerminalLayout.Rect body, NodeResourceTypeSelection selection) {
         boolean scope = selection.scope() != null;
         int header = scope ? 28 : 0;
-        int footer = scope ? 28 : 0;
+        int footer = scope ? 34 : 0;
         var listBody = new TerminalLayout.Rect(
                 body.x(), body.y() + header, body.width(), Math.max(0, body.height() - header - footer));
         var list = NodeRoutingView.tunnelList(
                 listBody, selection.search().expanded(), selection.results().size(), selection.scroll());
         selection.viewport(list.visibleRows());
         return new Layout(
-                listBody,
-                new TerminalLayout.Rect(body.x() + 4, body.y() + 4, body.width() - 8, 20),
-                new TerminalLayout.Rect(body.x() + 4, body.bottom() - 24, body.width() - 8, 20),
-                list);
+                listBody, new TerminalLayout.Rect(body.x() + 4, body.y() + 4, body.width() - 8, 20), body, list);
     }
 
     @Nullable
@@ -117,19 +114,22 @@ final class NodeResourceTypeSelectionView {
                 });
         NodeResourcePolicyView.button(
                 add,
-                new TerminalLayout.Rect(
-                        layout.actions().right() - 136, layout.actions().y(), 64, 20),
+                TerminalActionLayout.of(layout.actions()).secondary(),
                 NodeResourcePolicyView.text("cancel"),
                 active,
                 cancel);
-        NodeResourcePolicyView.button(
-                add,
-                new TerminalLayout.Rect(
-                        layout.actions().right() - 64, layout.actions().y(), 64, 20),
+        var bounds = TerminalActionLayout.of(layout.actions()).primary();
+        var submit = new TerminalButton(
+                bounds.x(),
+                bounds.y(),
+                bounds.width(),
+                bounds.height(),
                 NodeResourcePolicyView.text("apply"),
-                active
-                        && (scope.kind() == io.github.loongin.omniresonance.transfer.ResourceScope.Kind.ALL
-                                || scope.selectedCount() > 0),
-                apply);
+                ignored -> apply.run(),
+                true);
+        submit.active = active
+                && (scope.kind() == io.github.loongin.omniresonance.transfer.ResourceScope.Kind.ALL
+                        || scope.selectedCount() > 0);
+        add.accept(submit);
     }
 }

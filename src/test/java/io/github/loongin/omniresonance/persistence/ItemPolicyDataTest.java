@@ -50,7 +50,7 @@ class ItemPolicyDataTest {
 
     @Test
     void writesResourceWorkingFaceSchemaEight() {
-        assertEquals(8, data().save(new CompoundTag(), RegistryAccess.EMPTY).getInt("schema_version"));
+        assertEquals(9, data().save(new CompoundTag(), RegistryAccess.EMPTY).getInt("schema_version"));
     }
 
     @Test
@@ -80,6 +80,7 @@ class ItemPolicyDataTest {
     void v6MigrationKeepsAttachedFaceAndSourceTagUntouched() {
         CompoundTag tag = data().save(new CompoundTag(), RegistryAccess.EMPTY);
         tag.putInt("schema_version", 6);
+        tag.remove("bucket_created_mask");
         CompoundTag binding = tag.getList("direct_bindings", Tag.TAG_COMPOUND).getCompound(0);
         binding.remove("resource_policy");
         binding.put("item_policy", ItemPolicyNbt.encode(ItemTransferPolicy.defaults(TransferDirection.INPUT)));
@@ -169,6 +170,7 @@ class ItemPolicyDataTest {
         data.setDirectBinding(NODE, 2, CHANNEL, policy(), false, 16);
         CompoundTag saved = data.save(new CompoundTag(), RegistryAccess.EMPTY);
         saved.putInt("schema_version", 6);
+        saved.remove("bucket_created_mask");
         CompoundTag legacyBinding =
                 saved.getList("direct_bindings", Tag.TAG_COMPOUND).getCompound(0);
         legacyBinding.remove("resource_policy");
@@ -193,6 +195,7 @@ class ItemPolicyDataTest {
         NetworkSavedData data = data();
         CompoundTag tag = data.save(new CompoundTag(), RegistryAccess.EMPTY);
         tag.putInt("schema_version", 5);
+        tag.remove("bucket_created_mask");
         tag.remove("recovery");
         tag.getList("direct_bindings", Tag.TAG_COMPOUND).getCompound(0).remove("resource_policy");
         tag.getList("direct_bindings", Tag.TAG_COMPOUND).getCompound(0).remove("working_face_mask");

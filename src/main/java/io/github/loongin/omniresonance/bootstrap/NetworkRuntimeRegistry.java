@@ -482,6 +482,7 @@ public final class NetworkRuntimeRegistry {
                         UUID::randomUUID);
         NodeMenuService nodeMenus = new NodeMenuService(
                 server, nodeManagement, topology, networks, UUID::randomUUID, filters, directTransfers::status);
+        nodeMenus.installDomainStatus(directTransfers::domainStatus);
         ServerPlayerDirectory players = new ServerPlayerDirectory(server);
         NetworkAdministrationService administration =
                 new NetworkAdministrationService(server, repository, networks, locks, players, initial);

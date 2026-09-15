@@ -903,11 +903,30 @@ public final class NodeRoutingMenuGameTests {
     @GameTest(template = "bootstrap")
     public static void largePolicyRoutesRegisteredFramesAndCommitsFacesExactlyOnce(GameTestHelper helper)
             throws IOException {
+        largePolicyRoute(helper, false);
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void largeDomainPolicyRoutesRegisteredFramesWithoutAChannel(GameTestHelper helper)
+            throws IOException {
+        largePolicyRoute(helper, true);
+    }
+
+    private static void largePolicyRoute(GameTestHelper helper, boolean domain) throws IOException {
         try (Fixture f = new Fixture(helper)) {
             BlockPos position = helper.absolutePos(new BlockPos(2, 3, 2));
             f.authority.link(SOURCE, place(helper, position), new ManagedName("Node"));
-            f.seedTunnels();
-            f.setDirectMode();
+            if (!domain) {
+                f.seedTunnels();
+                f.setDirectMode();
+            } else {
+                var oldNode = f.nodes.byId(NODE).entry().orElseThrow();
+                var changed = f.source
+                        .setNodeMode(NODE, oldNode.record().revision(), NodeMode.DOMAIN, false)
+                        .orElseThrow();
+                f.nodes.update(oldNode, new NetworkNodeDirectory.Entry(SOURCE, changed));
+            }
+            UUID contextId = domain ? NODE : CHANNEL;
             var ids = new java.util.LinkedHashSet<net.minecraft.resources.ResourceLocation>();
             for (int index = 0; index < 3000; index++)
                 ids.add(net.minecraft.resources.ResourceLocation.parse("missing:" + "a".repeat(100) + index));
@@ -920,21 +939,35 @@ public final class NodeRoutingMenuGameTests {
                     java.util.Map.of(),
                     16);
             var previous = f.nodes.byId(NODE).entry().orElseThrow();
-            var updated = f.source.setDirectBinding(
-                    NODE,
-                    previous.record().revision(),
-                    CHANNEL,
-                    new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(policy, java.util.Map.of()),
-                    io.github.loongin.omniresonance.network.WorkingFaces.explicit(1),
-                    false,
-                    -1);
+            var updated = domain
+                    ? f.source.saveDomainConfiguration(
+                            NODE,
+                            previous.record().revision(),
+                            new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                                    policy, java.util.Map.of()),
+                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(1),
+                            false)
+                    : f.source.setDirectBinding(
+                            NODE,
+                            previous.record().revision(),
+                            CHANNEL,
+                            new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                                    policy, java.util.Map.of()),
+                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(1),
+                            false,
+                            -1);
             f.nodes.update(previous, new NetworkNodeDirectory.Entry(SOURCE, updated));
             ServerPlayer owner = player(helper, OWNER, position);
             ResonanceNodeMenu menu = f.menus.createMenu(92, owner, position, SESSION);
             owner.containerMenu = menu;
-            menu.handle(owner, registeredRequest(new NodeMenuRequest.OpenChannel(92, SESSION, 1, CHANNEL)));
-            var result = registeredResponse(
-                    menu.handle(owner, registeredRequest(new NodeMenuRequest.BeginBinding(92, SESSION, 2, CHANNEL))));
+            if (domain) menu.handle(owner, registeredRequest(new NodeMenuRequest.OpenDomain(92, SESSION, 1)));
+            else menu.handle(owner, registeredRequest(new NodeMenuRequest.OpenChannel(92, SESSION, 1, CHANNEL)));
+            var result = registeredResponse(menu.handle(
+                    owner,
+                    registeredRequest(
+                            domain
+                                    ? new NodeMenuRequest.BeginDomainEdit(92, SESSION, 2)
+                                    : new NodeMenuRequest.BeginBinding(92, SESSION, 2, CHANNEL))));
             helper.assertTrue(
                     result instanceof NodeMenuResponse.Download, "Large snapshot was not independently downloaded");
             var download = (NodeMenuResponse.Download) result;
@@ -948,7 +981,7 @@ public final class NodeRoutingMenuGameTests {
                     SESSION,
                     download.transfer(),
                     io.github.loongin.omniresonance.networking.ManagementTransferMessage.Context.NODE,
-                    CHANNEL,
+                    contextId,
                     io.github.loongin.omniresonance.networking.ManagementTransferMessage.Purpose.NODE_POLICY,
                     download.length());
             assembler.begin(
@@ -957,7 +990,7 @@ public final class NodeRoutingMenuGameTests {
                             download.transfer(),
                             io.github.loongin.omniresonance.networking.ManagementTransferMessage.Direction.DOWNLOAD,
                             pin.context(),
-                            CHANNEL,
+                            contextId,
                             pin.purpose(),
                             download.length()),
                     pin,
@@ -1037,10 +1070,15 @@ public final class NodeRoutingMenuGameTests {
                             && f.source.findNode(NODE).orElseThrow().revision() == updated.revision() + 1,
                     "Logical save sequence or single revision commit lost");
             helper.assertTrue(
-                    f.source
-                                    .findDirectBinding(NODE, CHANNEL)
-                                    .orElseThrow()
-                                    .workingFaces()
+                    (domain
+                                            ? f.source
+                                                    .domainConfiguration(NODE)
+                                                    .orElseThrow()
+                                                    .workingFaces()
+                                            : f.source
+                                                    .findDirectBinding(NODE, CHANNEL)
+                                                    .orElseThrow()
+                                                    .workingFaces())
                                     .equals(io.github.loongin.omniresonance.network.WorkingFaces.explicit(48))
                             && f.menus.transfers().reservedBytes() == 0,
                     "Multipart Save omitted working faces or retained reservation");
@@ -1201,6 +1239,74 @@ public final class NodeRoutingMenuGameTests {
         FakePlayer player = new FakePlayer(helper.getLevel(), new GameProfile(id, "Routing"));
         player.setPos(near.getX() + 0.5, near.getY() + 0.5, near.getZ() + 0.5);
         return player;
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void domainResourceFormSavesInlineAndExpiredUploadCannotCommit(GameTestHelper helper)
+            throws IOException {
+        try (Fixture f = new Fixture(helper)) {
+            BlockPos position = helper.absolutePos(new BlockPos(2, 3, 2));
+            f.authority.link(SOURCE, place(helper, position), new ManagedName("Node"));
+            ServerPlayer owner = player(helper, OWNER, position);
+            ResonanceNodeMenu menu = f.menus.createMenu(97, owner, position, SESSION);
+            owner.containerMenu = menu;
+            menu.handle(owner, new NodeMenuRequest.BeginMode(97, SESSION, 1));
+            menu.handle(owner, new NodeMenuRequest.SetMode(97, SESSION, 2, NodeMode.DOMAIN, false));
+            var response = (NodeMenuResponse.State) registeredResponse(
+                    menu.handle(owner, registeredRequest(new NodeMenuRequest.BeginDomainEdit(97, SESSION, 3))));
+            var edit = (NodeMenuState.DomainEdit) response.state();
+            helper.assertTrue(
+                    edit.policy() != null && edit.previews().size() == 6,
+                    "Domain form lost complete policy or face previews");
+            var catalog = menu.handle(owner, registeredRequest(new NodeMenuRequest.ResourceCatalog(97, SESSION, 4, 0)));
+            helper.assertTrue(
+                    catalog instanceof NodeMenuResponse.Catalog, "Domain form could not load resource catalog");
+            var saved = registeredResponse(menu.handle(
+                    owner,
+                    registeredRequest(new NodeMenuRequest.SaveResourcePolicy(
+                            97,
+                            SESSION,
+                            5,
+                            edit.policy(),
+                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(1),
+                            false))));
+            helper.assertTrue(
+                    saved instanceof NodeMenuResponse.State state
+                            && state.state() instanceof NodeMenuState.DomainRoot
+                            && f.source.domainConfiguration(NODE).orElseThrow().configured(),
+                    "Inline domain save did not complete authoritative configuration");
+            menu.handle(owner, new NodeMenuRequest.BeginDomainEdit(97, SESSION, 6));
+            long revision = f.source.findNode(NODE).orElseThrow().revision();
+            byte[] bytes = io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encode(edit.policy());
+            UUID upload = new UUID(970, 1);
+            helper.assertTrue(
+                    menu.handle(
+                                    owner,
+                                    new NodeMenuRequest.BeginPolicyUpload(
+                                            97,
+                                            SESSION,
+                                            7,
+                                            upload,
+                                            bytes.length,
+                                            io.github.loongin.omniresonance.network.WorkingFaces.explicit(48),
+                                            false))
+                            instanceof NodeMenuResponse.UploadReady,
+                    "Domain upload was not admitted");
+            menu.transferTick(owner, f.menus.currentTick() + 200, ignored -> {});
+            menu.handleTransfer(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
+                            SESSION, upload, 0, bytes));
+            menu.handleTransfer(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish(SESSION, upload));
+            helper.assertTrue(
+                    f.menus.transfers().reservedBytes() == 0
+                            && f.source.findNode(NODE).orElseThrow().revision() == revision,
+                    "Expired domain upload retained capacity or changed configuration");
+            menu.removed(owner);
+        }
+        helper.succeed();
     }
 
     private static final class Fixture implements AutoCloseable {

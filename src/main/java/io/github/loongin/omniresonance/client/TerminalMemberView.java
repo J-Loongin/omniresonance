@@ -276,30 +276,30 @@ final class TerminalMemberView {
     }
 
     private TerminalLayout.Rect removalBounds() {
-        TerminalLayout.Rect content = layout.content();
-        int width = Math.min(380, Math.max(0, content.width() - 16));
-        int height = Math.min(130, Math.max(0, content.height() - 16));
-        return new TerminalLayout.Rect(
-                content.x() + (content.width() - width) / 2,
-                content.y() + (content.height() - height) / 2,
-                width,
-                height);
+        var remove = (NetworkTerminalState.RemoveAdministrator) state;
+        return TerminalDialogLayout.confirmation(
+                layout.content(),
+                font,
+                Component.translatable(
+                        "omniresonance.terminal.members.remove_warning",
+                        remove.target().name()));
     }
 
     private void buildRemoval() {
         TerminalLayout.Rect modal = removalBounds();
-        int width = (modal.width() - 30) / 2;
+        var footer = TerminalActionLayout.of(modal);
+        int width = footer.primary().width();
         TerminalButton cancel = new TerminalButton(
-                modal.x() + 10,
-                modal.bottom() - 30,
+                footer.secondary().x(),
+                footer.secondary().y(),
                 width,
                 20,
                 Component.translatable("omniresonance.terminal.cancel"),
                 ignored -> actions.accept(new Action.Back()),
                 false);
         TerminalButton confirm = new TerminalButton(
-                modal.x() + 20 + width,
-                modal.bottom() - 30,
+                footer.primary().x(),
+                footer.primary().y(),
                 width,
                 20,
                 text("remove"),

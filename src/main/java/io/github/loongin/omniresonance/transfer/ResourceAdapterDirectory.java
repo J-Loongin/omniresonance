@@ -41,6 +41,8 @@ public final class ResourceAdapterDirectory {
     private final int capacity;
     private final Map<ResourceLocation, Descriptor> descriptors = new LinkedHashMap<>();
     private final Map<ResourceLocation, Binding<?>> bindings = new LinkedHashMap<>();
+    private final Map<ResourceLocation, BiFunction<ResourceVariantKey, HolderLookup.Provider, ResourceVariant>>
+            decoders = new LinkedHashMap<>();
     private @Nullable List<ResourceLocation> types;
 
     public ResourceAdapterDirectory(int capacity) {
@@ -67,6 +69,34 @@ public final class ResourceAdapterDirectory {
         Objects.requireNonNull(factory);
         register(descriptor);
         bindings.put(descriptor.typeId(), new Binding<>(capability, factory));
+    }
+
+    /** Registers an optional lossless server-thread stored-key decoder during initialization. It must perform
+     * no world/native access or mutation; absent/failed decoders leave the original resource opaque. */
+    public <T> void register(
+            Descriptor descriptor,
+            BlockCapability<T, Direction> capability,
+            BiFunction<T, HolderLookup.Provider, ResourcePort> factory,
+            BiFunction<ResourceVariantKey, HolderLookup.Provider, ResourceVariant> decoder) {
+        Objects.requireNonNull(decoder);
+        register(descriptor, capability, factory);
+        decoders.put(descriptor.typeId(), decoder);
+    }
+
+    /** Attempts server-thread reconstruction without retaining a cache, modifying the key, or discarding opaque
+     * inventory. A decoder must return precisely the original identity; failures are unavailable, never an empty resource. */
+    public Optional<ResourceVariant> decode(ResourceVariantKey key, HolderLookup.Provider provider) {
+        types();
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(provider);
+        var decoder = decoders.get(key.typeId());
+        if (decoder == null) return Optional.empty();
+        try {
+            ResourceVariant restored = decoder.apply(key, provider);
+            return restored != null && key.equals(restored.key()) ? Optional.of(restored) : Optional.empty();
+        } catch (RuntimeException unavailable) {
+            return Optional.empty();
+        }
     }
 
     /** Freezes insertion order; repeated freeze is harmless and does not invoke factories. */
@@ -99,15 +129,22 @@ public final class ResourceAdapterDirectory {
         directory.register(
                 new Descriptor(ResourceTypes.ITEM, "item", ResourceTypes.defaultExactBatchSize(ResourceTypes.ITEM)),
                 Capabilities.ItemHandler.BLOCK,
-                ItemResourcePort::new);
+                ItemResourcePort::new,
+                ItemVariant::restore);
         directory.register(
                 new Descriptor(ResourceTypes.FLUID, "mB", ResourceTypes.defaultExactBatchSize(ResourceTypes.FLUID)),
                 Capabilities.FluidHandler.BLOCK,
-                FluidResourcePort::new);
+                FluidResourcePort::new,
+                FluidVariant::restore);
         directory.register(
                 new Descriptor(ResourceTypes.ENERGY, "FE", ResourceTypes.defaultExactBatchSize(ResourceTypes.ENERGY)),
                 Capabilities.EnergyStorage.BLOCK,
-                (handler, provider) -> new EnergyResourcePort(handler));
+                (handler, provider) -> new EnergyResourcePort(handler),
+                (key, provider) -> {
+                    if (!EnergyVariant.INSTANCE.key().equals(key))
+                        throw new IllegalArgumentException("Invalid stored energy identity");
+                    return EnergyVariant.INSTANCE;
+                });
     }
 
     @Nullable

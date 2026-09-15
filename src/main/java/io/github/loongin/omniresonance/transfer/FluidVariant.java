@@ -26,6 +26,27 @@ public final class FluidVariant implements ResourceVariant {
         this.fluid = fluid;
     }
 
+    /** Restores one trusted stored key on the server thread, without mutation or native calls. Unknown IDs,
+     * malformed structure, or any lossy component decoding reject; callers must retain the opaque original key. */
+    public static FluidVariant restore(ResourceVariantKey key, HolderLookup.Provider provider) {
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(provider);
+        if (!key.typeId().equals(TYPE_ID)) throw new IllegalArgumentException("Wrong resource type");
+        var decoded = CanonicalResourceNbt.decode(key.canonicalBytes());
+        if (!(decoded instanceof CompoundTag identity)
+                || !identity.getAllKeys().equals(java.util.Set.of("id", "components"))
+                || !identity.contains("id", net.minecraft.nbt.Tag.TAG_STRING)
+                || !identity.contains("components", net.minecraft.nbt.Tag.TAG_COMPOUND))
+            throw new IllegalArgumentException("Invalid stored fluid identity");
+        ResourceLocation id = ResourceLocation.parse(identity.getString("id"));
+        if (!id.toString().equals(identity.getString("id")) || !BuiltInRegistries.FLUID.containsKey(id))
+            throw new IllegalArgumentException("Missing stored fluid");
+        FluidVariant restored = new FluidVariant(key, provider, BuiltInRegistries.FLUID.get(id));
+        FluidVariant roundTrip = from(restored.stack(1), provider);
+        if (!roundTrip.key().equals(key)) throw new IllegalArgumentException("Stored fluid identity cannot round trip");
+        return restored;
+    }
+
     /** Captures full effective components without amount or patch history; rejects lossy codecs before mutation. */
     public static FluidVariant from(FluidStack stack, HolderLookup.Provider provider) {
         Objects.requireNonNull(stack);

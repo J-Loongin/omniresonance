@@ -131,6 +131,20 @@ class TerminalFullFilterViewTest {
                     RULE.toString());
             view.apply(edit);
             widgets = build(view, layout, edit, actions);
+            var footer = TerminalActionLayout.of(layout.content());
+            for (var widget : widgets) {
+                if (key(widget).endsWith(".save") || key(widget).endsWith(".cancel")) {
+                    assertEquals(footer.primary().y(), widget.getY());
+                    assertEquals(footer.primary().width(), widget.getWidth());
+                    assertEquals(
+                            key(widget).endsWith(".save")
+                                    ? footer.primary().x()
+                                    : footer.secondary().x(),
+                            widget.getX());
+                } else {
+                    assertTrue(widget.getBottom() <= footer.content().bottom(), "Scrollable content overlaps actions");
+                }
+            }
             var field = (TerminalEditBox) widgets.stream()
                     .filter(widget -> key(widget).endsWith(".selector_value"))
                     .findFirst()

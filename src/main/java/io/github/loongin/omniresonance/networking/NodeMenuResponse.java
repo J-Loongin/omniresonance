@@ -107,7 +107,7 @@ public sealed interface NodeMenuResponse extends CustomPacketPayload {
             int containerId,
             UUID sessionId,
             long sequence,
-            NodeMenuState.DirectBindingEdit metadata,
+            NodeMenuState.ResourceEdit metadata,
             UUID transfer,
             int length)
             implements NodeMenuResponse {
@@ -201,9 +201,9 @@ public sealed interface NodeMenuResponse extends CustomPacketPayload {
         }
     }
 
-    private static NodeMenuState.DirectBindingEdit readPolicyMetadata(FriendlyByteBuf buffer) {
+    private static NodeMenuState.ResourceEdit readPolicyMetadata(FriendlyByteBuf buffer) {
         NodeMenuState state = NodeMenuState.read(buffer);
-        if (!(state instanceof NodeMenuState.DirectBindingEdit edit))
+        if (!(state instanceof NodeMenuState.ResourceEdit edit))
             throw new DecoderException("Expected node policy metadata");
         return edit;
     }

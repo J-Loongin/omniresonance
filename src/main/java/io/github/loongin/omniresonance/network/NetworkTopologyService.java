@@ -6,6 +6,7 @@ import io.github.loongin.omniresonance.config.ServerSettings;
 import io.github.loongin.omniresonance.node.NetworkNodeDirectory;
 import io.github.loongin.omniresonance.node.NetworkNodeRecord;
 import io.github.loongin.omniresonance.node.NodeMode;
+import io.github.loongin.omniresonance.persistence.DomainStorage;
 import io.github.loongin.omniresonance.persistence.NetworkSavedData;
 import io.github.loongin.omniresonance.persistence.SavedNetworkRepository;
 import io.github.loongin.omniresonance.security.EditLockTable;
@@ -199,6 +200,15 @@ public final class NetworkTopologyService implements AutoCloseable {
     public ServerSettings settingsSnapshot() {
         requireServerThread();
         return settings;
+    }
+
+    /**
+     * Returns a known storage failure on the server thread after checking access. This read does not activate
+     * buckets, mutate inventory, or prove that an inactive domain is healthy; denied access is rejected normally.
+     */
+    public boolean domainStorageUnavailable(ServerPlayer actor, UUID networkId) {
+        requireNetwork(actor, networkId);
+        return repository().domainStorage(networkId).state() == DomainStorage.State.UNAVAILABLE;
     }
 
     public NetworkMetadata inspectNetwork(ServerPlayer actor, UUID networkId) {
@@ -398,6 +408,16 @@ public final class NetworkTopologyService implements AutoCloseable {
             throw rejected(Reason.UNAVAILABLE);
         }
         return network.domainConfiguration(nodeId).map(DomainNodeConfiguration::direction);
+    }
+
+    /** Returns authorized domain configuration without locking, mutation or world discovery. */
+    public Optional<DomainNodeConfiguration> inspectDomainConfiguration(
+            ServerPlayer actor, UUID networkId, UUID nodeId) {
+        NetworkSavedData network = requireNetwork(actor, networkId);
+        NetworkNodeRecord node = requireNode(networkId, nodeId, network);
+        requireEnabled(node);
+        if (node.mode() != NodeMode.DOMAIN) throw rejected(Reason.UNAVAILABLE);
+        return network.domainConfiguration(nodeId);
     }
 
     public Edit acquireTunnelCollection(ServerPlayer actor, UUID networkId) {
@@ -885,6 +905,67 @@ public final class NetworkTopologyService implements AutoCloseable {
         NetworkNodeRecord updated = network.removeDirectBinding(node.nodeId(), node.revision(), channelId)
                 .orElseThrow(() -> rejected(Reason.STALE_REVISION));
         return commitNode(actor, edit, node, updated);
+    }
+
+    /** Returns the current complete domain seed under the same authoritative lease, without publication or mutation. */
+    public DomainNodeConfiguration validateDomainEdit(ServerPlayer actor, Edit edit) {
+        NetworkSavedData network = requireEdit(actor, edit, Kind.NODE);
+        NetworkNodeRecord node = currentNode(network, edit);
+        requireEnabled(node);
+        if (node.mode() != NodeMode.DOMAIN) throw rejected(Reason.UNAVAILABLE);
+        return network.domainConfiguration(node.nodeId())
+                .orElseGet(() -> new DomainNodeConfiguration(
+                        node.nodeId(),
+                        new StoredResourcePolicy(
+                                ResourceTransferPolicy.defaults(TransferDirection.INPUT), java.util.Map.of()),
+                        node.form() == io.github.loongin.omniresonance.node.NodeForm.PANEL
+                                ? WorkingFaces.attachedFace()
+                                : WorkingFaces.explicit(0),
+                        false));
+    }
+
+    /** Validates a detached domain edit intent against its current trusted missing-type seed, without mutation. */
+    public void validateDomainPolicyIntent(ServerPlayer actor, Edit edit, ResourcePolicyEdit intent) {
+        intent.reconcile(
+                validateDomainEdit(actor, edit).storedPolicy(), repository().registeredResourceTypes());
+    }
+
+    /** Server-thread full-form save; only this intent clears a legacy domain's pending state after validation. */
+    public NetworkNodeRecord saveDomainConfiguration(
+            ServerPlayer actor, Edit edit, ResourcePolicyEdit intent, WorkingFaces faces, boolean confirmedReset) {
+        NetworkSavedData network = requireEdit(actor, edit, Kind.NODE);
+        NetworkNodeRecord node = currentNode(network, edit);
+        DomainNodeConfiguration current = validateDomainEdit(actor, edit);
+        Objects.requireNonNull(intent, "intent");
+        if (intent.discardPreviousDirectionFields() && !confirmedReset) throw rejected(Reason.RESET_REQUIRED);
+        StoredResourcePolicy stored;
+        try {
+            stored = intent.reconcile(current.storedPolicy(), repository().registeredResourceTypes());
+            Objects.requireNonNull(faces, "faces").validate(node.form());
+        } catch (IllegalArgumentException invalidIntent) {
+            throw rejected(Reason.UNAVAILABLE);
+        }
+        ResourceTransferPolicy policy = stored.effectivePolicy();
+        if (network.domainConfiguration(node.nodeId()).isPresent()
+                && current.direction() != policy.direction()
+                && !confirmedReset) throw rejected(Reason.RESET_REQUIRED);
+        UUID selected = policy.filterPresetId();
+        if (selected != null
+                && !selected.equals(current.policy().filterPresetId())
+                && repository()
+                        .findOwner(network.metadata().ownerId())
+                        .flatMap(owner -> owner.findPreset(selected))
+                        .isEmpty()) throw rejected(Reason.UNAVAILABLE);
+        try {
+            NetworkNodeRecord updated =
+                    network.saveDomainConfiguration(node.nodeId(), node.revision(), stored, faces, confirmedReset);
+            return commitNode(actor, edit, node, updated);
+        } catch (IllegalStateException invalidAuthority) {
+            releaseQuietly(actor, edit);
+            throw rejected(Reason.UNAVAILABLE);
+        } catch (IllegalArgumentException invalidPolicy) {
+            throw rejected(Reason.UNAVAILABLE);
+        }
     }
 
     public NetworkNodeRecord setDomainConfiguration(

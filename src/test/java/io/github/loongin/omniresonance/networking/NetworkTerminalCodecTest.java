@@ -85,6 +85,7 @@ class NetworkTerminalCodecTest {
         NetworkMemberPage memberPage = new NetworkMemberPage(List.of(owner, admin), 2, false, false);
         List<NetworkTerminalState> states = List.of(
                 new NetworkTerminalState.NetworkRoot(network),
+                new NetworkTerminalState.NetworkRoot(network, true),
                 new NetworkTerminalState.TunnelList(network, tunnelPage),
                 new NetworkTerminalState.TunnelEdit(network, null, "Tunnel 2"),
                 new NetworkTerminalState.TunnelEdit(network, tunnel, null),

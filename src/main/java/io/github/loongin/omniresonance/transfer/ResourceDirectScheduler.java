@@ -25,7 +25,13 @@ import org.slf4j.LoggerFactory;
  * entry owns its resource cursors and passive windows; no extracted resource survives a synchronous engine call.
  * Endpoint and matching state is bounded by registered types and discarded on authority/version changes. */
 public final class ResourceDirectScheduler {
-    public record Key(UUID nodeId, UUID channelId) {}
+    private sealed interface WorkKey permits Key, RecoveryKey, DomainKey {}
+
+    private record DomainKey(UUID nodeId) implements WorkKey {}
+
+    public record Key(UUID nodeId, UUID channelId) implements WorkKey {}
+
+    private record RecoveryKey(UUID networkId) implements WorkKey {}
 
     public record Configuration(
             UUID networkId,
@@ -57,6 +63,14 @@ public final class ResourceDirectScheduler {
      * stable. Registered types are immutable and stable for this environment lifetime. Preparation is pure,
      * bounded by workUnits, and returns the actual progress made; zero progress is deferred to a later tick. */
     public interface Environment {
+        default @Nullable UUID domainNetwork(UUID nodeId) {
+            return null;
+        }
+
+        default long advanceDomain(UUID nodeId, long tick, ServerSettings settings, TransferWorkBudget budget) {
+            return Long.MAX_VALUE;
+        }
+
         List<ResourceLocation> registeredTypes();
 
         boolean active(Configuration config);
@@ -66,6 +80,14 @@ public final class ResourceDirectScheduler {
                 Configuration config, ResourceLocation type, Direction face, TransferWorkBudget budget);
 
         RecoveryBuffer recovery(UUID networkId);
+
+        /** Constant-time recovery eligibility; false must not inspect buffered entries or discover endpoints. */
+        default boolean hasRecoveryWork(UUID networkId) {
+            return false;
+        }
+
+        /** Executes at most one buffered key on this server thread; no external capability calls. */
+        default void advanceRecovery(UUID networkId, ServerSettings settings) {}
 
         default int faceMask(Configuration config) {
             return config.workingFaces().effectiveMask(Direction.DOWN);
@@ -87,8 +109,42 @@ public final class ResourceDirectScheduler {
     private static final Logger LOGGER = LoggerFactory.getLogger(ResourceDirectScheduler.class);
     private final Environment environment;
     private final List<ResourceLocation> types;
+    private final Map<ResourceLocation, Integer> typeIndices = new HashMap<>();
     private final ResourceTransferEngine engine = new ResourceTransferEngine();
-    private final FairDueScheduler<Key> due = new FairDueScheduler<>();
+    private final FairDueScheduler<WorkKey> due = new FairDueScheduler<>();
+
+    /** Updates one deduplicated recovery job without changing node windows, cursors or quotas. */
+    public void wakeRecovery(UUID networkId, long tick) {
+        RecoveryKey key = new RecoveryKey(Objects.requireNonNull(networkId));
+        if (environment.hasRecoveryWork(networkId)) due.scheduleLowPriority(key, networkId, tick);
+        else due.remove(key);
+    }
+
+    /** Publishes one domain job into the same network ring and tick budget as direct and recovery work. */
+    public void scheduleDomain(UUID nodeId, @Nullable UUID networkId, long tick) {
+        DomainKey key = new DomainKey(nodeId);
+        if (networkId == null || tick == Long.MAX_VALUE) due.remove(key);
+        else due.schedule(key, networkId, tick);
+    }
+
+    /** Returns -1 once a direct input is not due or has completed its current window; otherwise its next turn.
+     * A budget-paused open window remains ahead of a domain input sharing the physical source. */
+    public long directInputTurn(Key key, ResourceLocation type, long tick) {
+        State state = states.get(key);
+        Integer index = typeIndices.get(type);
+        if (state == null
+                || index == null
+                || !(state.config.policy() instanceof ResourceTransferPolicy.Input)
+                || !state.config.policy().scope().includes(type)
+                || state.blockedUntilTick > tick
+                || !environment.active(state.config)) return -1;
+        TypeState resource = state.types[index];
+        ResourceTransferPolicy.Input policy = (ResourceTransferPolicy.Input) state.config.policy();
+        if (resource.open && policy.rate(type) - resource.spent < batch(policy, type)) return -1;
+        if (resource.minimumRunTick > tick || resource.nextRunTick > tick && !resource.open) return -1;
+        return Math.max(tick, resource.nextRunTick);
+    }
+
     private final Map<Key, State> states = new HashMap<>();
     private final Map<UUID, Set<Key>> byNetwork = new HashMap<>(), byNode = new HashMap<>();
     private final Map<RouteKey, Set<Key>> inputRoutes = new HashMap<>();
@@ -98,6 +154,7 @@ public final class ResourceDirectScheduler {
     public ResourceDirectScheduler(Environment environment) {
         this.environment = Objects.requireNonNull(environment);
         types = List.copyOf(environment.registeredTypes());
+        for (int index = 0; index < types.size(); index++) typeIndices.put(types.get(index), index);
         if (types.size() > ResourceScope.MAXIMUM_RESOURCE_TYPE_IDS || new HashSet<>(types).size() != types.size())
             throw new IllegalArgumentException("Invalid registered types");
         for (var type : types) ResourceScope.validateResourceTypeId(type);
@@ -204,8 +261,33 @@ public final class ResourceDirectScheduler {
      * settle all known extracted amounts synchronously. Failures terminate the affected window and apply backoff. */
     public void tick(long tick, ServerSettings settings, TransferWorkBudget budget) {
         while (budget.canStart()) {
-            Key key = due.poll(tick, budget::canStart);
-            if (key == null) break;
+            WorkKey work = due.poll(tick, budget::canStart);
+            if (work == null) break;
+            if (work instanceof DomainKey domain) {
+                UUID networkId = environment.domainNetwork(domain.nodeId());
+                if (networkId == null) continue;
+                if (!budget.canStart()) {
+                    due.schedule(domain, networkId, tick);
+                    break;
+                }
+                long nextTick = environment.advanceDomain(domain.nodeId(), tick, settings, budget);
+                scheduleDomain(domain.nodeId(), networkId, nextTick);
+                continue;
+            }
+            if (work instanceof RecoveryKey recovery) {
+                if (!budget.canStart()) {
+                    due.scheduleLowPriority(recovery, recovery.networkId(), tick);
+                    break;
+                }
+                if (environment.hasRecoveryWork(recovery.networkId())) {
+                    environment.advanceRecovery(recovery.networkId(), settings);
+                    if (environment.hasRecoveryWork(recovery.networkId())) {
+                        due.scheduleLowPriority(recovery, recovery.networkId(), Math.addExact(tick, 1));
+                    }
+                }
+                continue;
+            }
+            Key key = (Key) work;
             State s = states.get(key);
             if (s == null) continue;
             if (!budget.canStart()) {

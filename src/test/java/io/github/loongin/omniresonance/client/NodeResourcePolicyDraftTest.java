@@ -114,7 +114,6 @@ class NodeResourcePolicyDraftTest {
     void confirmedDirectionDiscardsInvalidExclusiveTextWithoutParsingOrResurrection() {
         var draft = new NodeResourcePolicyDraft(input(), null, catalog());
         draft.addType(ResourceTypes.FLUID);
-        draft.expanded = true;
         draft.interval = "invalid-common";
         draft.quantity = "invalid-keep";
         draft.type(ResourceTypes.FLUID).rate = "invalid-rate";
@@ -125,7 +124,6 @@ class NodeResourcePolicyDraftTest {
         assertEquals("0", draft.quantity);
         assertEquals("invalid-common", draft.interval);
         assertEquals("invalid-rate", draft.type(ResourceTypes.FLUID).rate);
-        assertTrue(draft.expanded);
         draft.quantity = "invalid-priority";
         draft.confirmDirectionChange();
         assertEquals("1000", draft.type(ResourceTypes.FLUID).batch);
@@ -140,7 +138,6 @@ class NodeResourcePolicyDraftTest {
     @Test
     void exactGreaterThanRateRemainsValidAndUiOnlyStateIsNotDirty() {
         var draft = new NodeResourcePolicyDraft(input(), null, catalog());
-        draft.expanded = true;
         assertFalse(draft.dirty());
         draft.addType(ResourceTypes.ENERGY);
         assertEquals("2147483647", draft.type(ResourceTypes.ENERGY).rate);

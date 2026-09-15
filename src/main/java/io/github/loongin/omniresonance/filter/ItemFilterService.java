@@ -64,7 +64,8 @@ public final class ItemFilterService {
         }
     }
 
-    public record Reference(UUID networkId, UUID nodeId, UUID channelId) {}
+    public record Reference(
+            UUID networkId, UUID nodeId, @Nullable UUID channelId) {}
 
     public record Edit(
             EditLockTable.Token token,
@@ -714,6 +715,11 @@ public final class ItemFilterService {
                         result.computeIfAbsent(presetId, ignored -> new HashSet<>())
                                 .add(new Reference(networkId, node.nodeId(), binding.channelId()));
                 }
+                var domain = network.domainConfiguration(node.nodeId()).orElse(null);
+                UUID domainPreset = domain == null ? null : domain.policy().filterPresetId();
+                if (domainPreset != null)
+                    result.computeIfAbsent(domainPreset, ignored -> new HashSet<>())
+                            .add(new Reference(networkId, node.nodeId(), null));
             }
         }
         return result;

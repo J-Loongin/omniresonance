@@ -103,8 +103,8 @@ final class TerminalNetworkSettingsView {
         if (state instanceof NetworkTerminalState.NetworkRename) {
             return buildRename(font, terminal, renameDraft, pending, addWidget, updateDraft, actions);
         }
-        if (state instanceof NetworkTerminalState.NetworkDelete) {
-            buildDeletion(terminal, pending, addWidget, actions);
+        if (state instanceof NetworkTerminalState.NetworkDelete delete) {
+            buildDeletion(font, terminal, delete, pending, addWidget, actions);
             return null;
         }
         throw new IllegalArgumentException("Unsupported network settings state");
@@ -216,7 +216,7 @@ final class TerminalNetworkSettingsView {
             Consumer<AbstractWidget> addWidget,
             Consumer<String> updateDraft,
             Consumer<Action> actions) {
-        TerminalLayout.Rect content = terminal.content();
+        TerminalLayout.Rect content = TerminalDialogLayout.editor(terminal.content());
         int width = Math.min(420, Math.max(0, content.width() - 24));
         int x = content.x() + (content.width() - width) / 2;
         int y = content.y() + 52;
@@ -232,10 +232,11 @@ final class TerminalNetworkSettingsView {
         field.setResponder(updateDraft);
         field.active = !pending;
         addWidget.accept(field);
-        int half = Math.max(0, (width - TerminalLayout.GAP) / 2);
+        var footer = TerminalActionLayout.of(content);
+        int half = footer.primary().width();
         addWidget.accept(button(
-                x,
-                y + 30,
+                footer.secondary().x(),
+                footer.secondary().y(),
                 half,
                 Component.translatable("omniresonance.terminal.cancel"),
                 false,
@@ -243,8 +244,8 @@ final class TerminalNetworkSettingsView {
                 Action.CANCEL_RENAME,
                 actions));
         addWidget.accept(button(
-                x + half + TerminalLayout.GAP,
-                y + 30,
+                footer.primary().x(),
+                footer.primary().y(),
                 half,
                 Component.translatable("omniresonance.terminal.save"),
                 true,
@@ -255,12 +256,18 @@ final class TerminalNetworkSettingsView {
     }
 
     private static void buildDeletion(
-            TerminalLayout terminal, boolean pending, Consumer<AbstractWidget> addWidget, Consumer<Action> actions) {
-        TerminalLayout.Rect modal = deletionBounds(terminal);
-        int half = Math.max(0, (modal.width() - 16 - TerminalLayout.GAP) / 2);
+            Font font,
+            TerminalLayout terminal,
+            NetworkTerminalState.NetworkDelete state,
+            boolean pending,
+            Consumer<AbstractWidget> addWidget,
+            Consumer<Action> actions) {
+        TerminalLayout.Rect modal = TerminalDialogLayout.confirmation(terminal.content(), font, deletionMessage(state));
+        var footer = TerminalActionLayout.of(modal);
+        int half = footer.primary().width();
         int y = modal.bottom() - CONTROL_HEIGHT - 8;
         addWidget.accept(button(
-                modal.x() + 8,
+                footer.secondary().x(),
                 y,
                 half,
                 Component.translatable("omniresonance.terminal.cancel"),
@@ -269,7 +276,7 @@ final class TerminalNetworkSettingsView {
                 Action.CANCEL_DELETE,
                 actions));
         addWidget.accept(button(
-                modal.x() + 8 + half + TerminalLayout.GAP,
+                footer.primary().x(),
                 y,
                 half,
                 Component.translatable("omniresonance.terminal.delete.confirm"),
@@ -327,7 +334,8 @@ final class TerminalNetworkSettingsView {
     }
 
     private static void renderRename(GuiGraphics graphics, Font font, TerminalLayout terminal) {
-        TerminalLayout.Rect content = terminal.content();
+        TerminalLayout.Rect content = TerminalDialogLayout.editor(terminal.content());
+        TerminalDialogLayout.render(graphics, terminal.content(), content);
         graphics.drawString(
                 font,
                 Component.translatable("omniresonance.terminal.settings.rename_title"),
@@ -347,7 +355,7 @@ final class TerminalNetworkSettingsView {
     private static void renderDeletion(
             GuiGraphics graphics, Font font, TerminalLayout terminal, NetworkTerminalState.NetworkDelete state) {
         TerminalLayout.Rect content = terminal.content();
-        TerminalLayout.Rect modal = deletionBounds(terminal);
+        TerminalLayout.Rect modal = TerminalDialogLayout.confirmation(terminal.content(), font, deletionMessage(state));
         graphics.fill(content.x(), content.y(), content.right(), content.bottom(), 0xA000070C);
         TerminalTheme.renderPanel(graphics, modal);
         TerminalText.drawCentered(
@@ -359,39 +367,23 @@ final class TerminalNetworkSettingsView {
                 modal.x() + modal.width() / 2,
                 modal.y() + 12,
                 TerminalTheme.TEXT);
-        drawWrapped(
-                graphics,
+        graphics.drawWordWrap(
                 font,
-                Component.translatable("omniresonance.terminal.settings.delete.message"),
+                TerminalText.body(deletionMessage(state)),
                 modal.x() + 10,
-                modal.y() + 33,
+                modal.y() + 34,
                 modal.width() - 20,
-                TerminalTheme.MUTED,
-                2);
-        drawWrapped(
-                graphics,
-                font,
-                Component.translatable(
+                TerminalTheme.MUTED);
+    }
+
+    private static Component deletionMessage(NetworkTerminalState.NetworkDelete state) {
+        return Component.translatable("omniresonance.terminal.settings.delete.message")
+                .append("\n")
+                .append(Component.translatable(
                         "omniresonance.terminal.settings.delete.counts",
                         state.deletion().administratorCount(),
                         state.deletion().tunnelCount(),
-                        state.deletion().channelCount()),
-                modal.x() + 10,
-                modal.y() + 58,
-                modal.width() - 20,
-                TerminalTheme.ACCENT,
-                2);
-    }
-
-    private static TerminalLayout.Rect deletionBounds(TerminalLayout terminal) {
-        TerminalLayout.Rect content = terminal.content();
-        int width = Math.min(380, Math.max(0, content.width() - 16));
-        int height = Math.min(126, content.height());
-        return new TerminalLayout.Rect(
-                content.x() + (content.width() - width) / 2,
-                content.y() + (content.height() - height) / 2,
-                width,
-                height);
+                        state.deletion().channelCount()));
     }
 
     private static void drawWrapped(

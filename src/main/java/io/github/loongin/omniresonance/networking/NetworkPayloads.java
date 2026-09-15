@@ -27,7 +27,7 @@ public final class NetworkPayloads {
     public static void register(RegisterPayloadHandlersEvent event, NetworkRuntimeRegistry registry) {
         Objects.requireNonNull(registry, "registry");
         NodeMenuPayloads.installTerminalTransferHandler(registry::handleTerminalTransfer);
-        PayloadRegistrar registrar = event.registrar("6").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("7").executesOn(HandlerThread.MAIN);
         registrar.playToServer(NetworkTerminalRequest.TYPE, NetworkTerminalRequest.STREAM_CODEC, (request, context) -> {
             if (!(context.player() instanceof ServerPlayer sender)) {
                 throw new IllegalStateException("Terminal request requires a server player");

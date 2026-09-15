@@ -19,14 +19,24 @@ public final class FairDueScheduler<K> {
     private final Map<K, Entry<K>> entries = new HashMap<>();
     private final PriorityQueue<Entry<K>> due = new PriorityQueue<>(
             Comparator.<Entry<K>>comparingLong(e -> e.dueTick).thenComparingLong(e -> e.sequence));
-    private final LinkedHashMap<UUID, LinkedHashSet<Entry<K>>> ready = new LinkedHashMap<>();
+    private final LinkedHashMap<UUID, Ready<K>> ready = new LinkedHashMap<>();
     private long sequence, examined;
 
     public void schedule(K key, UUID networkId, long dueTick) {
+        schedule(key, networkId, dueTick, false);
+    }
+
+    /** Schedules bounded recovery work after currently ready ordinary work within its network, without I/O. */
+    public void scheduleLowPriority(K key, UUID networkId, long dueTick) {
+        schedule(key, networkId, dueTick, true);
+    }
+
+    private void schedule(K key, UUID networkId, long dueTick, boolean lowPriority) {
         Entry<K> old = entries.get(key);
-        if (old != null && old.dueTick == dueTick && old.networkId.equals(networkId)) return;
+        if (old != null && old.dueTick == dueTick && old.networkId.equals(networkId) && old.lowPriority == lowPriority)
+            return;
         remove(key);
-        Entry<K> entry = new Entry<>(key, networkId, dueTick, sequence++);
+        Entry<K> entry = new Entry<>(key, networkId, dueTick, sequence++, lowPriority);
         entries.put(key, entry);
         due.add(entry);
         compact();
@@ -35,7 +45,7 @@ public final class FairDueScheduler<K> {
     public void remove(K key) {
         Entry<K> old = entries.remove(key);
         if (old != null && old.ready) {
-            LinkedHashSet<Entry<K>> queue = ready.get(old.networkId);
+            Ready<K> queue = ready.get(old.networkId);
             queue.remove(old);
             if (queue.isEmpty()) ready.remove(old.networkId);
         }
@@ -52,23 +62,21 @@ public final class FairDueScheduler<K> {
             examined++;
             if (entries.get(e.key) != e) continue;
             e.ready = true;
-            ready.computeIfAbsent(e.networkId, ignored -> new LinkedHashSet<>()).add(e);
+            ready.computeIfAbsent(e.networkId, ignored -> new Ready<>()).add(e);
         }
         if (ready.isEmpty()) return null;
         var network = ready.entrySet().iterator().next();
         UUID id = network.getKey();
-        LinkedHashSet<Entry<K>> queue = network.getValue();
+        Ready<K> queue = network.getValue();
         ready.remove(id);
-        Entry<K> e = queue.iterator().next();
-        queue.remove(e);
+        Entry<K> e = queue.poll();
         if (!queue.isEmpty()) ready.put(id, queue);
         entries.remove(e.key);
         return e.key;
     }
 
     public int queuedEntries() {
-        return due.size()
-                + ready.values().stream().mapToInt(java.util.Set::size).sum();
+        return due.size() + ready.values().stream().mapToInt(Ready::size).sum();
     }
 
     public long examinedEntries() {
@@ -92,12 +100,42 @@ public final class FairDueScheduler<K> {
         final UUID networkId;
         final long dueTick, sequence;
         boolean ready;
+        final boolean lowPriority;
 
-        Entry(K key, UUID networkId, long dueTick, long sequence) {
+        Entry(K key, UUID networkId, long dueTick, long sequence, boolean lowPriority) {
             this.key = key;
             this.networkId = networkId;
             this.dueTick = dueTick;
             this.sequence = sequence;
+            this.lowPriority = lowPriority;
+        }
+    }
+
+    private static final class Ready<K> {
+        private final LinkedHashSet<Entry<K>> ordinary = new LinkedHashSet<>();
+        private final LinkedHashSet<Entry<K>> recovery = new LinkedHashSet<>();
+
+        private void add(Entry<K> entry) {
+            (entry.lowPriority ? recovery : ordinary).add(entry);
+        }
+
+        private void remove(Entry<K> entry) {
+            (entry.lowPriority ? recovery : ordinary).remove(entry);
+        }
+
+        private Entry<K> poll() {
+            LinkedHashSet<Entry<K>> selected = ordinary.isEmpty() ? recovery : ordinary;
+            Entry<K> entry = selected.iterator().next();
+            selected.remove(entry);
+            return entry;
+        }
+
+        private boolean isEmpty() {
+            return ordinary.isEmpty() && recovery.isEmpty();
+        }
+
+        private int size() {
+            return ordinary.size() + recovery.size();
         }
     }
 }

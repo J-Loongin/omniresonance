@@ -39,6 +39,8 @@ final class NetworkTopologyNbt {
     private static final Set<String> DIRECT_V8_FIELDS = Set.of(
             "node_id", "channel_id", "direction", "resource_policy", "working_face_mask", "working_face_attached");
     private static final Set<String> DOMAIN_FIELDS = Set.of("node_id", "direction");
+    private static final Set<String> DOMAIN_V9_FIELDS = Set.of(
+            "node_id", "direction", "resource_policy", "working_face_mask", "working_face_attached", "configured");
     private static final Comparator<NetworkTunnelRecord> TUNNEL_ORDER =
             Comparator.comparingLong(NetworkTunnelRecord::tunnelNumber).thenComparing(NetworkTunnelRecord::tunnelId);
     private static final Comparator<NetworkChannelRecord> CHANNEL_ORDER = Comparator.comparing(
@@ -72,7 +74,7 @@ final class NetworkTopologyNbt {
         Map<UUID, NetworkChannelRecord> channels = decodeChannels(tag, tunnels);
         requireEveryTunnelHasChannel(tunnels, channels);
         List<DirectNodeBinding> directBindings = decodeDirectBindings(tag, nodes, channels, registeredTypes);
-        Map<UUID, DomainNodeConfiguration> domains = decodeDomains(tag, nodes);
+        Map<UUID, DomainNodeConfiguration> domains = decodeDomains(tag, nodes, registeredTypes);
         return new Decoded(lastTunnelNumber, topologyRevision, tunnels, channels, directBindings, domains);
     }
 
@@ -146,6 +148,10 @@ final class NetworkTopologyNbt {
             CompoundTag tag = new CompoundTag();
             tag.putUUID("node_id", configuration.nodeId());
             tag.putString("direction", configuration.direction().serializedName());
+            tag.put("resource_policy", ResourcePolicyNbt.encode(configuration.storedPolicy()));
+            tag.putInt("working_face_mask", configuration.workingFaces().mask());
+            tag.putBoolean("working_face_attached", configuration.workingFaces().attached());
+            tag.putBoolean("configured", configuration.configured());
             encoded.add(tag);
         }
         return encoded;
@@ -272,18 +278,32 @@ final class NetworkTopologyNbt {
     }
 
     private static Map<UUID, DomainNodeConfiguration> decodeDomains(
-            CompoundTag root, Map<UUID, NetworkNodeRecord> nodes) {
+            CompoundTag root,
+            Map<UUID, NetworkNodeRecord> nodes,
+            Set<net.minecraft.resources.ResourceLocation> registeredTypes) {
         ListTag entries = readCompoundList(root, "domain_configurations", MAXIMUM_MANAGED_ENTRIES);
         Map<UUID, DomainNodeConfiguration> domains = new HashMap<>(entries.size());
         for (int index = 0; index < entries.size(); index++) {
             CompoundTag tag = entries.getCompound(index);
-            requireExactFields(tag, DOMAIN_FIELDS, "domain configuration");
+            boolean current = ManagedDataNbt.readSchemaVersion(root) >= 9;
+            requireExactFields(tag, current ? DOMAIN_V9_FIELDS : DOMAIN_FIELDS, "domain configuration");
             UUID nodeId = ManagedDataNbt.readUuid(tag, "node_id");
             DomainNodeConfiguration configuration = new DomainNodeConfiguration(nodeId, readDirection(tag));
+            if (current) {
+                ManagedDataNbt.requireType(tag, "resource_policy", Tag.TAG_COMPOUND);
+                ManagedDataNbt.requireType(tag, "working_face_mask", Tag.TAG_INT);
+                configuration = new DomainNodeConfiguration(
+                        nodeId,
+                        ResourcePolicyNbt.decode(
+                                tag.getCompound("resource_policy"), readDirection(tag), registeredTypes),
+                        new WorkingFaces(tag.getInt("working_face_mask"), readBoolean(tag, "working_face_attached")),
+                        readBoolean(tag, "configured"));
+            }
             NetworkNodeRecord node = nodes.get(nodeId);
             if (node == null || node.mode() != NodeMode.DOMAIN || domains.putIfAbsent(nodeId, configuration) != null) {
                 throw new IllegalArgumentException("Invalid domain-node configuration relationship");
             }
+            configuration.workingFaces().validate(node.form());
         }
         return domains;
     }

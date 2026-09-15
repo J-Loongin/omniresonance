@@ -16,6 +16,12 @@ final class NodeResourceTypeSelection {
     private final ClientSearchState search = new ClientSearchState();
     private List<ResourceLocation> results = List.of();
     private int scroll;
+    private @Nullable ResourceLocation chosen;
+
+    @Nullable
+    ResourceLocation chosen() {
+        return chosen;
+    }
 
     private NodeResourceTypeSelection(
             NodeResourcePolicyDraft draft,
@@ -80,6 +86,7 @@ final class NodeResourceTypeSelection {
     }
 
     void choose(ResourceLocation id) {
+        chosen = id;
         if (scope != null) scope.toggle(id);
         else {
             draft.addType(id);

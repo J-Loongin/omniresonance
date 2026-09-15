@@ -39,8 +39,34 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
     private final NetworkNodeDirectory nodes;
     private final ResourceEndpointCache endpoints;
     private final ResourceDirectScheduler scheduler;
+    private final DomainInputScheduler domainInputs;
+    private final DomainOutputScheduler domainOutputs;
+
+    private record OutputPublication(
+            DomainOutputScheduler.Configuration configuration,
+            io.github.loongin.omniresonance.network.DomainNodeConfiguration binding,
+            @Nullable ResourceFilterCache.Key filter) {}
+
+    private final Map<UUID, OutputPublication> outputPublications = new HashMap<>();
+
+    private record DomainPublication(
+            DomainInputScheduler.Configuration configuration,
+            io.github.loongin.omniresonance.network.DomainNodeConfiguration binding,
+            @Nullable ResourceFilterCache.Key filter) {}
+
+    private record SourceKey(net.minecraft.core.GlobalPos position, net.minecraft.resources.ResourceLocation type) {}
+
+    private record SourceRegistration(SourceKey source, ResourceDirectScheduler.Key configuration) {}
+
+    private final Map<UUID, DomainPublication> domainPublications = new HashMap<>();
+    private final Map<UUID, List<UUID>> domainNetworks = new HashMap<>();
+    private final Map<SourceKey, Set<ResourceDirectScheduler.Key>> directSources = new HashMap<>();
+    private final Map<UUID, List<SourceRegistration>> networkSources = new HashMap<>();
     private final java.util.function.LongSupplier clock;
     private final Set<UUID> changedNetworks = new LinkedHashSet<>(), changedNodes = new LinkedHashSet<>();
+    private final Set<UUID> changedRecovery = new LinkedHashSet<>();
+    private final Map<UUID, RecoveryBuffer> recoveryDestinations = new HashMap<>();
+    private ServerSettings currentSettings;
     private final Map<UUID, Set<UUID>> networkNodes = new HashMap<>(), ownerNetworks = new HashMap<>();
     private final Map<UUID, UUID> networkOwners = new HashMap<>();
     private final ResourceAdapterDirectory adapters;
@@ -83,6 +109,7 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             ServerSettings settings,
             java.util.function.LongSupplier clock) {
         this.clock = java.util.Objects.requireNonNull(clock);
+        currentSettings = settings;
         configuration = new io.github.loongin.omniresonance.config.ServerConfig.State(0, 0, true, settings);
         this.server = server;
         this.repository = repository;
@@ -93,6 +120,139 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         // admission ceiling is inferred from per-network authority limits, and nothing is preallocated.
         endpoints = new ResourceEndpointCache(server, adapters, Integer.MAX_VALUE);
         filters = new ResourceFilterCache(this::readOwner, this::openTag);
+        domainInputs = new DomainInputScheduler(new DomainInputScheduler.Environment() {
+            public List<net.minecraft.resources.ResourceLocation> types() {
+                return adapters.types();
+            }
+
+            public boolean active(DomainInputScheduler.Configuration c) {
+                return domainActive(c);
+            }
+
+            public int faces(DomainInputScheduler.Configuration c) {
+                var data = repository.findLoadedNetwork(c.networkId()).orElse(null);
+                var node = data == null ? null : data.findNode(c.nodeId()).orElse(null);
+                return node == null ? 0 : c.faces().effectiveMask(node.facing());
+            }
+
+            public ResourceTransferEngine.Handle resolve(
+                    DomainInputScheduler.Configuration c,
+                    net.minecraft.resources.ResourceLocation type,
+                    Direction face,
+                    TransferWorkBudget budget) {
+                if (!domainActive(c)) return null;
+                return endpoints.resolve(
+                        repository
+                                .findLoadedNetwork(c.networkId())
+                                .orElseThrow()
+                                .findNode(c.nodeId())
+                                .orElseThrow(),
+                        face,
+                        type,
+                        budget);
+            }
+
+            public io.github.loongin.omniresonance.storage.DomainLedger ledger(UUID networkId) {
+                return repository.domainStorage(networkId).activate().orElse(null);
+            }
+
+            public RecoveryBuffer recovery(UUID networkId) {
+                return ResourceDirectRuntime.this.recovery(networkId);
+            }
+
+            public long directFirst(
+                    DomainInputScheduler.Configuration c,
+                    net.minecraft.resources.ResourceLocation type,
+                    Direction face,
+                    long tick,
+                    TransferWorkBudget budget) {
+                return directSourceTurn(c, type, face, tick, budget);
+            }
+
+            public ResourceDirectScheduler.FilterView filter(DomainInputScheduler.Configuration c) {
+                var publication = domainPublications.get(c.nodeId());
+                return publication == null || publication.filter() == null
+                        ? new ResourceDirectScheduler.FilterView(unfilteredToken, null)
+                        : filters.view(publication.filter());
+            }
+
+            public Object filterToken(DomainInputScheduler.Configuration c) {
+                var publication = domainPublications.get(c.nodeId());
+                return publication == null || publication.filter() == null
+                        ? unfilteredToken
+                        : filters.token(publication.filter());
+            }
+
+            public int advanceFilter(DomainInputScheduler.Configuration c, int units) {
+                var publication = domainPublications.get(c.nodeId());
+                return publication == null || publication.filter() == null
+                        ? 0
+                        : filters.advance(publication.filter(), units);
+            }
+        });
+        domainOutputs = new DomainOutputScheduler(new DomainOutputScheduler.Environment() {
+            public List<net.minecraft.resources.ResourceLocation> types() {
+                return adapters.types();
+            }
+
+            public boolean active(DomainOutputScheduler.Configuration c) {
+                return outputActive(c);
+            }
+
+            public int faces(DomainOutputScheduler.Configuration c) {
+                var data = repository.findLoadedNetwork(c.networkId()).orElse(null);
+                var node = data == null ? null : data.findNode(c.nodeId()).orElse(null);
+                return node == null ? 0 : c.faces().effectiveMask(node.facing());
+            }
+
+            public ResourceTransferEngine.Handle resolve(
+                    DomainOutputScheduler.Configuration c,
+                    net.minecraft.resources.ResourceLocation type,
+                    Direction face,
+                    TransferWorkBudget budget) {
+                if (!outputActive(c)) return null;
+                return endpoints.resolve(
+                        repository
+                                .findLoadedNetwork(c.networkId())
+                                .orElseThrow()
+                                .findNode(c.nodeId())
+                                .orElseThrow(),
+                        face,
+                        type,
+                        budget);
+            }
+
+            public io.github.loongin.omniresonance.storage.DomainLedger ledger(UUID networkId) {
+                return repository.domainStorage(networkId).activate().orElse(null);
+            }
+
+            public ResourceVariant decode(ResourceVariantKey key) {
+                return adapters.decode(key, server.registryAccess()).orElse(null);
+            }
+
+            public RecoveryBuffer recovery(UUID networkId) {
+                return ResourceDirectRuntime.this.recovery(networkId);
+            }
+
+            public ResourceDirectScheduler.FilterView filter(DomainOutputScheduler.Configuration c) {
+                var p = outputPublications.get(c.nodeId());
+                return p == null || p.filter() == null
+                        ? new ResourceDirectScheduler.FilterView(unfilteredToken, null)
+                        : filters.view(p.filter());
+            }
+
+            public Object filterToken(DomainOutputScheduler.Configuration c) {
+                var publication = outputPublications.get(c.nodeId());
+                return publication == null || publication.filter() == null
+                        ? unfilteredToken
+                        : filters.token(publication.filter());
+            }
+
+            public int advanceFilter(DomainOutputScheduler.Configuration c, int units) {
+                var p = outputPublications.get(c.nodeId());
+                return p == null || p.filter() == null ? 0 : filters.advance(p.filter(), units);
+            }
+        });
         scheduler = new ResourceDirectScheduler(this);
         repository.onRuntimeChanged(new SavedNetworkRepository.RuntimeListener() {
             public void networkChanged(UUID id) {
@@ -102,8 +262,13 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             public void ownerCreated(UUID id) {
                 ownerLibraryChanged(id);
             }
+
+            public void recoveryChanged(UUID id) {
+                if (!closed) changedRecovery.add(id);
+            }
         });
         changedNetworks.addAll(repository.loadedNetworkIds());
+        changedRecovery.addAll(repository.loadedNetworkIds());
     }
 
     public ResourceDirectRuntime(
@@ -128,16 +293,29 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         requireThread();
         if (closed) return;
         this.currentTick = currentTick;
+        currentSettings = settings;
         while (!changedNetworks.isEmpty()) {
             UUID id = changedNetworks.iterator().next();
             changedNetworks.remove(id);
             refresh(id);
         }
         for (UUID id : endpoints.drainInvalidatedNodes()) enqueueNode(id);
+        while (!changedRecovery.isEmpty()) {
+            UUID id = changedRecovery.iterator().next();
+            changedRecovery.remove(id);
+            scheduler.wakeRecovery(id, currentTick);
+        }
         while (!changedNodes.isEmpty()) {
             UUID id = changedNodes.iterator().next();
             changedNodes.remove(id);
             scheduler.wakeNode(id, currentTick);
+            var domain = domainInputs.configuration(id);
+            if (domain != null) scheduler.scheduleDomain(id, domain.networkId(), domainInputs.wake(id, currentTick));
+            else {
+                var output = domainOutputs.configuration(id);
+                if (output != null)
+                    scheduler.scheduleDomain(id, output.networkId(), domainOutputs.wake(id, currentTick));
+            }
         }
         ServerSettings.Scheduler cfg = settings.scheduler();
         TransferWorkBudget budget = new TransferWorkBudget(
@@ -153,8 +331,10 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
     /** Enqueues only; authoritative multi-object commits must finish before routing is read on the next tick. */
     public void networkChanged(UUID networkId) {
         requireThread();
-        if (!closed && (repository.findLoadedNetwork(networkId).isPresent() || networkNodes.containsKey(networkId)))
-            changedNetworks.add(networkId);
+        if (!closed
+                && (repository.findLoadedNetwork(networkId).isPresent()
+                        || networkNodes.containsKey(networkId)
+                        || recoveryDestinations.containsKey(networkId))) changedNetworks.add(networkId);
     }
     /** Reads owner authority once after an explicit library edit, then wakes only its referencing networks. */
     public void ownerLibraryChanged(UUID ownerId) {
@@ -190,6 +370,40 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         return scheduler.status(nodeId, channelId);
     }
 
+    /** Read-only player summary; does not activate buckets, discover capabilities or advance work. */
+    public io.github.loongin.omniresonance.networking.NodeDomainStatus domainStatus(UUID networkId, UUID nodeId) {
+        requireThread();
+        var data = repository.findLoadedNetwork(networkId).orElse(null);
+        var node = data == null ? null : data.findNode(nodeId).orElse(null);
+        var binding = data == null ? null : data.domainConfiguration(nodeId).orElse(null);
+        if (binding == null) return io.github.loongin.omniresonance.networking.NodeDomainStatus.UNCONFIGURED;
+        if (!binding.configured()) return io.github.loongin.omniresonance.networking.NodeDomainStatus.PENDING;
+        if (node == null || !node.enabled()) return io.github.loongin.omniresonance.networking.NodeDomainStatus.BLOCKED;
+        if (binding.workingFaces().effectiveMask(node.facing()) == 0)
+            return io.github.loongin.omniresonance.networking.NodeDomainStatus.NO_FACES;
+        if (repository.domainStorage(networkId).state()
+                == io.github.loongin.omniresonance.persistence.DomainStorage.State.UNAVAILABLE)
+            return io.github.loongin.omniresonance.networking.NodeDomainStatus.STORAGE_UNAVAILABLE;
+        if (binding.policy() instanceof ResourceTransferPolicy.Output
+                && binding.policy().filterPresetId() == null)
+            return io.github.loongin.omniresonance.networking.NodeDomainStatus.NO_PRESET;
+        var input = domainPublications.get(nodeId);
+        var output = outputPublications.get(nodeId);
+        ResourceFilterCache.Key filter = input != null ? input.filter() : output != null ? output.filter() : null;
+        if (filter != null) {
+            var compiled = filters.view(filter).compiled();
+            if (compiled == null || !compiled.valid())
+                return io.github.loongin.omniresonance.networking.NodeDomainStatus.FILTER_BLOCKED;
+            if (binding.policy() instanceof ResourceTransferPolicy.Output
+                    && binding.policy().filterMode() == io.github.loongin.omniresonance.filter.FilterMode.BLACKLIST
+                    && compiled.ruleCount() == 0)
+                return io.github.loongin.omniresonance.networking.NodeDomainStatus.EMPTY_BLACKLIST;
+        }
+        return binding.policy() instanceof ResourceTransferPolicy.Input
+                ? domainInputs.status(nodeId, currentTick)
+                : domainOutputs.status(nodeId, currentTick);
+    }
+
     public int cachedEndpoints() {
         return endpoints.size();
     }
@@ -201,7 +415,17 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         repository.onRuntimeChanged(null);
         endpoints.close();
         scheduler.close();
+        domainInputs.close();
+        domainOutputs.close();
+        outputPublications.clear();
+        domainPublications.clear();
+        domainNetworks.clear();
+        directSources.clear();
+        networkSources.clear();
         changedNetworks.clear();
+        changedRecovery.clear();
+        for (RecoveryBuffer buffer : recoveryDestinations.values()) buffer.onDomainReturn(null);
+        recoveryDestinations.clear();
         changedNodes.clear();
         networkNodes.clear();
         ownerNetworks.clear();
@@ -235,6 +459,94 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         return c.policy().redstoneCondition() == RedstoneCondition.IGNORE
                 || level.hasNeighborSignal(node.position().pos())
                         == (c.policy().redstoneCondition() == RedstoneCondition.SIGNAL);
+    }
+
+    @Override
+    public @Nullable UUID domainNetwork(UUID nodeId) {
+        var config = domainInputs.configuration(nodeId);
+        if (config != null) return config.networkId();
+        var output = domainOutputs.configuration(nodeId);
+        return output == null ? null : output.networkId();
+    }
+
+    @Override
+    public long advanceDomain(UUID nodeId, long tick, ServerSettings settings, TransferWorkBudget budget) {
+        return domainInputs.contains(nodeId)
+                ? domainInputs.step(nodeId, tick, settings, budget)
+                : domainOutputs.step(nodeId, tick, settings, budget);
+    }
+
+    private boolean outputActive(DomainOutputScheduler.Configuration c) {
+        var data = repository.findLoadedNetwork(c.networkId()).orElse(null);
+        var node = data == null ? null : data.findNode(c.nodeId()).orElse(null);
+        var publication = outputPublications.get(c.nodeId());
+        if (node == null
+                || !node.enabled()
+                || node.mode() != NodeMode.DOMAIN
+                || node.revision() != c.revision()
+                || publication == null
+                || publication.configuration() != c
+                || data.domainConfiguration(c.nodeId()).orElse(null) != publication.binding()
+                || !publication.binding().configured()) return false;
+        var directory = nodes.byId(c.nodeId()).entry().orElse(null);
+        if (directory == null
+                || !directory.networkId().equals(c.networkId())
+                || !directory.record().equals(node)
+                || !endpoints.physical(node)
+                || repository.domainStorage(c.networkId()).state()
+                        == io.github.loongin.omniresonance.persistence.DomainStorage.State.UNAVAILABLE) return false;
+        var level = server.getLevel(node.position().dimension());
+        return c.policy().redstoneCondition() == RedstoneCondition.IGNORE
+                || level.hasNeighborSignal(node.position().pos())
+                        == (c.policy().redstoneCondition() == RedstoneCondition.SIGNAL);
+    }
+
+    private boolean domainActive(DomainInputScheduler.Configuration c) {
+        var data = repository.findLoadedNetwork(c.networkId()).orElse(null);
+        var node = data == null ? null : data.findNode(c.nodeId()).orElse(null);
+        var publication = domainPublications.get(c.nodeId());
+        if (node == null
+                || !node.enabled()
+                || node.mode() != NodeMode.DOMAIN
+                || node.revision() != c.revision()
+                || publication == null
+                || publication.configuration() != c
+                || data.domainConfiguration(c.nodeId()).orElse(null) != publication.binding()
+                || !publication.binding().configured()) return false;
+        var directory = nodes.byId(c.nodeId()).entry().orElse(null);
+        if (directory == null
+                || !directory.networkId().equals(c.networkId())
+                || !directory.record().equals(node)
+                || !endpoints.physical(node)
+                || repository.domainStorage(c.networkId()).state()
+                        == io.github.loongin.omniresonance.persistence.DomainStorage.State.UNAVAILABLE) return false;
+        var level = server.getLevel(node.position().dimension());
+        return c.policy().redstoneCondition() == RedstoneCondition.IGNORE
+                || level.hasNeighborSignal(node.position().pos())
+                        == (c.policy().redstoneCondition() == RedstoneCondition.SIGNAL);
+    }
+
+    private long directSourceTurn(
+            DomainInputScheduler.Configuration c,
+            net.minecraft.resources.ResourceLocation type,
+            Direction face,
+            long tick,
+            TransferWorkBudget budget) {
+        var data = repository.findLoadedNetwork(c.networkId()).orElse(null);
+        var node = data == null ? null : data.findNode(c.nodeId()).orElse(null);
+        if (node == null) return Math.addExact(tick, 1);
+        var key = new SourceKey(
+                net.minecraft.core.GlobalPos.of(
+                        node.position().dimension(), node.position().pos().relative(face)),
+                type);
+        Set<ResourceDirectScheduler.Key> contenders = directSources.get(key);
+        if (contenders == null) return -1;
+        long next = -1;
+        for (var contender : contenders) {
+            if (!budget.canStart()) return Math.addExact(tick, 1);
+            next = Math.max(next, scheduler.directInputTurn(contender, type, tick));
+        }
+        return next;
     }
 
     @Override
@@ -272,7 +584,49 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         return repository.findLoadedNetwork(networkId).orElseThrow().recovery();
     }
 
+    @Override
+    public boolean hasRecoveryWork(UUID networkId) {
+        NetworkSavedData data = repository.findLoadedNetwork(networkId).orElse(null);
+        return data != null
+                && !data.recovery().isEmpty()
+                && repository.domainStorage(networkId).state()
+                        != io.github.loongin.omniresonance.persistence.DomainStorage.State.UNAVAILABLE;
+    }
+
+    @Override
+    public void advanceRecovery(UUID networkId, ServerSettings settings) {
+        var domain = repository.domainStorage(networkId);
+        var ledger = domain.activate().orElse(null);
+        if (ledger == null) return;
+        try {
+            recovery(networkId).drainOne(ledger, settings.storageVariantLimitPerNetwork());
+        } catch (RuntimeException failure) {
+            if (domain.state() != io.github.loongin.omniresonance.persistence.DomainStorage.State.UNAVAILABLE)
+                throw failure;
+        }
+    }
+
     private void refresh(UUID networkId) {
+        changedRecovery.add(networkId);
+        List<SourceRegistration> oldSources = networkSources.remove(networkId);
+        if (oldSources != null)
+            for (var entry : oldSources) {
+                var group = directSources.get(entry.source());
+                if (group != null) {
+                    group.remove(entry.configuration());
+                    if (group.isEmpty()) directSources.remove(entry.source());
+                }
+            }
+        List<UUID> oldDomains = domainNetworks.remove(networkId);
+        List<DomainPublication> retiredDomains = new ArrayList<>();
+        List<OutputPublication> retiredOutputs = new ArrayList<>();
+        if (oldDomains != null)
+            for (UUID id : oldDomains) {
+                var old = domainPublications.remove(id);
+                if (old != null) retiredDomains.add(old);
+                var oldOutput = outputPublications.remove(id);
+                if (oldOutput != null) retiredOutputs.add(oldOutput);
+            }
         Set<UUID> previous = networkNodes.remove(networkId);
         if (previous != null)
             for (UUID id : previous) {
@@ -290,18 +644,85 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         List<Publication> previousPublications = networkPublications.remove(networkId);
         NetworkSavedData data = repository.findLoadedNetwork(networkId).orElse(null);
         if (data == null) {
+            domainOutputs.replaceNetwork(networkId, List.of(), currentTick);
+            for (var old : retiredOutputs) if (old.filter() != null) filters.release(old.filter());
+            if (oldDomains != null)
+                for (UUID id : oldDomains) {
+                    domainInputs.remove(id);
+                    scheduler.scheduleDomain(id, null, Long.MAX_VALUE);
+                }
+            for (var old : retiredDomains) if (old.filter() != null) filters.release(old.filter());
+            RecoveryBuffer previousBuffer = recoveryDestinations.remove(networkId);
+            if (previousBuffer != null) previousBuffer.onDomainReturn(null);
             retire(previousPublications);
             scheduler.replaceNetwork(networkId, List.of(), currentTick);
             return;
         }
+        if (!recoveryDestinations.containsKey(networkId)) {
+            RecoveryBuffer buffer = data.recovery();
+            buffer.onDomainReturn((key, amount) -> returnToDomain(networkId, key, amount));
+            recoveryDestinations.put(networkId, buffer);
+        }
         List<ResourceDirectScheduler.Configuration> configs = new ArrayList<>();
         List<Publication> nextPublications = new ArrayList<>();
+        List<UUID> nextDomains = new ArrayList<>();
+        List<DomainOutputScheduler.Configuration> outputConfigs = new ArrayList<>();
+        Set<UUID> nextDomainIds = new HashSet<>();
+        List<SourceRegistration> sourceRegistrations = new ArrayList<>();
         Set<UUID> ids = new HashSet<>();
         for (NetworkNodeRecord node : data.nodes()) {
+            if (node.mode() == NodeMode.DOMAIN) {
+                var binding = data.domainConfiguration(node.nodeId()).orElse(null);
+                if (binding == null || !binding.configured()) continue;
+                if (binding.policy() instanceof ResourceTransferPolicy.Output output) {
+                    var config = new DomainOutputScheduler.Configuration(
+                            networkId, node.nodeId(), node.revision(), output, binding.workingFaces());
+                    var filter = output.filterPresetId() == null
+                            ? null
+                            : filters.acquire(data.metadata().ownerId(), output.filterPresetId());
+                    outputPublications.put(node.nodeId(), new OutputPublication(config, binding, filter));
+                    outputConfigs.add(config);
+                    domainInputs.remove(node.nodeId());
+                    nextDomains.add(node.nodeId());
+                    nextDomainIds.add(node.nodeId());
+                    ids.add(node.nodeId());
+                    continue;
+                }
+                ResourceTransferPolicy.Input input = (ResourceTransferPolicy.Input) binding.policy();
+                var config = new DomainInputScheduler.Configuration(
+                        networkId, node.nodeId(), node.revision(), input, binding.workingFaces());
+                var filter = input.filterPresetId() == null
+                        ? null
+                        : filters.acquire(data.metadata().ownerId(), input.filterPresetId());
+                domainPublications.put(node.nodeId(), new DomainPublication(config, binding, filter));
+                domainInputs.replace(config, currentTick);
+                scheduler.scheduleDomain(node.nodeId(), networkId, domainInputs.wake(node.nodeId(), currentTick));
+                nextDomains.add(node.nodeId());
+                nextDomainIds.add(node.nodeId());
+                ids.add(node.nodeId());
+                continue;
+            }
             if (node.mode() != NodeMode.DIRECT) continue;
             for (DirectNodeBinding binding : data.directBindings(node.nodeId())) {
                 ResourceDirectScheduler.Configuration config = publishPolicy(networkId, node, binding);
                 configs.add(config);
+                if (config.policy() instanceof ResourceTransferPolicy.Input) {
+                    int mask = binding.workingFaces().effectiveMask(node.facing());
+                    for (Direction face : Direction.values())
+                        if ((mask & (1 << face.get3DDataValue())) != 0)
+                            for (var type : adapters.types())
+                                if (config.policy().scope().includes(type)) {
+                                    var key = new SourceKey(
+                                            net.minecraft.core.GlobalPos.of(
+                                                    node.position().dimension(),
+                                                    node.position().pos().relative(face)),
+                                            type);
+                                    directSources
+                                            .computeIfAbsent(key, ignored -> new HashSet<>())
+                                            .add(config.key());
+                                    sourceRegistrations.add(new SourceRegistration(key, config.key()));
+                                }
+                }
                 UUID preset = config.policy().filterPresetId();
                 var key =
                         preset == null ? null : filters.acquire(data.metadata().ownerId(), preset);
@@ -317,6 +738,19 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             ownerNetworks.computeIfAbsent(owner, ignored -> new HashSet<>()).add(networkId);
         }
         retire(previousPublications);
+        domainOutputs.replaceNetwork(networkId, outputConfigs, currentTick);
+        for (var config : outputConfigs)
+            scheduler.scheduleDomain(config.nodeId(), networkId, domainOutputs.wake(config.nodeId(), currentTick));
+        for (var old : retiredOutputs) if (old.filter() != null) filters.release(old.filter());
+        if (oldDomains != null)
+            for (UUID id : oldDomains)
+                if (!nextDomainIds.contains(id)) {
+                    domainInputs.remove(id);
+                    scheduler.scheduleDomain(id, null, Long.MAX_VALUE);
+                }
+        for (var old : retiredDomains) if (old.filter() != null) filters.release(old.filter());
+        if (!nextDomains.isEmpty()) domainNetworks.put(networkId, nextDomains);
+        if (!sourceRegistrations.isEmpty()) networkSources.put(networkId, sourceRegistrations);
         for (Publication publication : nextPublications)
             publications.put(publication.configuration().key(), publication);
         if (!nextPublications.isEmpty()) networkPublications.put(networkId, nextPublications);
@@ -329,6 +763,27 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             publications.remove(publication.configuration().key(), publication);
             if (publication.filter() != null) filters.release(publication.filter());
         }
+    }
+
+    private long returnToDomain(UUID networkId, ResourceVariantKey key, long amount) {
+        var domain = repository.domainStorage(networkId);
+        var ledger = domain.activate().orElse(null);
+        if (ledger == null) return 0;
+        long accepted = Math.min(amount, ledger.insertCapacity(key, currentSettings.storageVariantLimitPerNetwork()));
+        if (accepted == 0) return 0;
+        io.github.loongin.omniresonance.storage.DomainLedger.Deposit deposit;
+        try {
+            deposit = ledger.reserveDeposit(key, accepted, currentSettings.storageVariantLimitPerNetwork())
+                    .orElse(null);
+        } catch (RuntimeException failure) {
+            // Deposit reservation never credits inventory, including failed native bucket registration.
+            return 0;
+        }
+        if (deposit == null) return 0;
+        try (deposit) {
+            deposit.commit(accepted);
+        }
+        return accepted;
     }
 
     /** First 5c replacement point: read-only M2 policy publication; never projects resources back to items. */

@@ -14,7 +14,8 @@ public record ServerSettings(
         int administratorsPerNetwork,
         Scheduler scheduler,
         FilterLimits filterLimits,
-        RecoveryLimits recoveryLimits) {
+        RecoveryLimits recoveryLimits,
+        long storageVariantLimitPerNetwork) {
     public ServerSettings {
         ServerConfig.validateNetworksPerOwner(networksPerOwner);
         ServerConfig.validateTunnelsPerNetwork(tunnelsPerNetwork);
@@ -24,6 +25,29 @@ public record ServerSettings(
         java.util.Objects.requireNonNull(scheduler, "scheduler");
         java.util.Objects.requireNonNull(filterLimits, "filterLimits");
         java.util.Objects.requireNonNull(recoveryLimits, "recoveryLimits");
+        ServerConfig.validateM2("storage.variant_limit_per_network", storageVariantLimitPerNetwork);
+    }
+
+    /** Preserves existing construction contracts while storage uses the registered default quota. */
+    public ServerSettings(
+            int networksPerOwner,
+            int tunnelsPerNetwork,
+            int channelsPerTunnel,
+            int channelBindingsPerDirectNode,
+            int administratorsPerNetwork,
+            Scheduler scheduler,
+            FilterLimits filterLimits,
+            RecoveryLimits recoveryLimits) {
+        this(
+                networksPerOwner,
+                tunnelsPerNetwork,
+                channelsPerTunnel,
+                channelBindingsPerDirectNode,
+                administratorsPerNetwork,
+                scheduler,
+                filterLimits,
+                recoveryLimits,
+                (Long) ServerConfig.defaultM2("storage.variant_limit_per_network"));
     }
 
     public ServerSettings(

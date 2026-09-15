@@ -714,9 +714,7 @@ final class NetworkSetupScreen extends Screen {
 
     private void buildCreateOverlay() {
         TerminalLayout.Rect content = layout.content();
-        int modalWidth = Math.min(320, Math.max(0, content.width() - 8));
-        int modalHeight = Math.min(firstPrompt ? 132 : 120, Math.max(0, content.height() - 4));
-        modalBounds = centered(content, modalWidth, modalHeight);
+        modalBounds = TerminalDialogLayout.editor(content);
         int fieldX = modalBounds.x() + 8;
         int fieldY = modalBounds.y() + 48;
         int fieldWidth = Math.max(0, modalBounds.width() - 16);
@@ -735,11 +733,11 @@ final class NetworkSetupScreen extends Screen {
         field.setEditable(!draftState.createPending());
         nameField = addRenderableWidget(field);
 
-        int actionY = modalBounds.bottom() - CONTROL_HEIGHT - 8;
-        int available = Math.max(0, modalBounds.width() - 16);
-        int secondaryWidth = Math.max(0, (available - TerminalLayout.GAP) / 2);
+        var footer = TerminalActionLayout.of(modalBounds);
+        int actionY = footer.primary().y();
+        int secondaryWidth = footer.primary().width();
         TerminalButton secondary = new TerminalButton(
-                modalBounds.x() + 8,
+                footer.secondary().x(),
                 actionY,
                 secondaryWidth,
                 CONTROL_HEIGHT,
@@ -762,7 +760,7 @@ final class NetworkSetupScreen extends Screen {
         addRenderableWidget(secondary);
 
         TerminalButton submit = new TerminalButton(
-                modalBounds.x() + 8 + secondaryWidth + TerminalLayout.GAP,
+                footer.primary().x(),
                 actionY,
                 secondaryWidth,
                 CONTROL_HEIGHT,
@@ -786,14 +784,12 @@ final class NetworkSetupScreen extends Screen {
 
     private void buildConfirmation() {
         TerminalLayout.Rect content = layout.content();
-        int modalWidth = Math.min(320, Math.max(0, content.width() - 8));
-        int modalHeight = Math.min(102, Math.max(0, content.height() - 4));
-        modalBounds = centered(content, modalWidth, modalHeight);
+        modalBounds = TerminalDialogLayout.confirmation(
+                content, font, Component.translatable("omniresonance.terminal.confirm.message"));
         int actionY = modalBounds.bottom() - CONTROL_HEIGHT - 8;
-        int available = Math.max(0, modalBounds.width() - 16 - TerminalLayout.GAP * 2);
-        int buttonWidth = available / 3;
+        int buttonWidth = TerminalActionLayout.button(modalBounds, 3, 0).width();
         TerminalButton create = new TerminalButton(
-                modalBounds.x() + 8,
+                TerminalActionLayout.button(modalBounds, 3, 2).x(),
                 actionY,
                 buttonWidth,
                 CONTROL_HEIGHT,
@@ -803,18 +799,16 @@ final class NetworkSetupScreen extends Screen {
                     submitCreate();
                 },
                 true);
-        addRenderableWidget(create);
         TerminalButton discard = new TerminalButton(
-                modalBounds.x() + 8 + buttonWidth + TerminalLayout.GAP,
+                TerminalActionLayout.button(modalBounds, 3, 1).x(),
                 actionY,
                 buttonWidth,
                 CONTROL_HEIGHT,
                 Component.translatable("omniresonance.terminal.confirm.discard"),
                 button -> discardDraft(),
                 false);
-        addRenderableWidget(discard);
         TerminalButton keepEditing = new TerminalButton(
-                modalBounds.x() + 8 + (buttonWidth + TerminalLayout.GAP) * 2,
+                TerminalActionLayout.button(modalBounds, 3, 0).x(),
                 actionY,
                 buttonWidth,
                 CONTROL_HEIGHT,
@@ -826,6 +820,8 @@ final class NetworkSetupScreen extends Screen {
                 },
                 false);
         addRenderableWidget(keepEditing);
+        addRenderableWidget(discard);
+        addRenderableWidget(create);
     }
 
     private void buildTopologyWidgets() {
@@ -862,21 +858,26 @@ final class NetworkSetupScreen extends Screen {
         String[] modules = {"nodes", "tunnels", "domain", "filters", "loading", "admins", "status", "settings"};
         for (int index = 0; index < modules.length; index++) {
             String module = modules[index];
+            boolean domainUnavailable = index == 2
+                    && topologyState instanceof NetworkTerminalState.NetworkRoot root
+                    && root.domainUnavailable();
             boolean implemented = index == 1 || index == 3 || index == 5 || index == 7;
             TerminalCardButton card = new TerminalCardButton(
                     cards.get(index),
                     Component.translatable("omniresonance.terminal.home." + module + ".mark"),
                     Component.translatable("omniresonance.terminal.home." + module),
                     Component.translatable(
-                            index == 3
-                                    ? "omniresonance.terminal.filters.home_meta"
-                                    : index == 1
-                                            ? "omniresonance.terminal.home.tunnels.meta"
-                                            : index == 5
-                                                    ? "omniresonance.terminal.home.admins.meta"
-                                                    : index == 7
-                                                            ? "omniresonance.terminal.home.settings.meta"
-                                                            : "omniresonance.terminal.home.unavailable"),
+                            domainUnavailable
+                                    ? "omniresonance.terminal.home.domain.unavailable"
+                                    : index == 3
+                                            ? "omniresonance.terminal.filters.home_meta"
+                                            : index == 1
+                                                    ? "omniresonance.terminal.home.tunnels.meta"
+                                                    : index == 5
+                                                            ? "omniresonance.terminal.home.admins.meta"
+                                                            : index == 7
+                                                                    ? "omniresonance.terminal.home.settings.meta"
+                                                                    : "omniresonance.terminal.home.unavailable"),
                     ignored -> {
                         if (implemented) {
                             sendTopology(sequence -> module.equals("admins")
@@ -893,8 +894,10 @@ final class NetworkSetupScreen extends Screen {
                     });
             card.active = implemented && pendingOperation == PendingOperation.NONE;
             if (!implemented) {
-                card.setTooltip(Tooltip.create(
-                        TerminalText.body(Component.translatable("omniresonance.terminal.home.unavailable"))));
+                card.setTooltip(Tooltip.create(TerminalText.body(Component.translatable(
+                        domainUnavailable
+                                ? "omniresonance.domain_status.storage_unavailable"
+                                : "omniresonance.terminal.home.unavailable"))));
             }
             addRenderableWidget(card);
         }
@@ -1264,9 +1267,10 @@ final class NetworkSetupScreen extends Screen {
         if (topologyDraft.isEmpty() && !topologyDraftDirty) {
             topologyDraft = initial;
         }
-        int width = Math.min(420, layout.content().width() - 24);
-        int x = layout.content().x() + (layout.content().width() - width) / 2;
-        int y = layout.content().y() + 52;
+        var dialog = TerminalDialogLayout.editor(layout.content());
+        int width = dialog.width() - 24;
+        int x = dialog.x() + 12;
+        int y = dialog.y() + 52;
         EditBox field = new TerminalEditBox(
                 font, x, y, width, CONTROL_HEIGHT, Component.translatable("omniresonance.terminal.object_name"));
         field.setMaxLength(EDIT_BOX_MAXIMUM_UTF16_UNITS);
@@ -1282,11 +1286,19 @@ final class NetworkSetupScreen extends Screen {
         });
         field.active = pendingOperation == PendingOperation.NONE;
         nameField = addRenderableWidget(field);
-        int half = Math.min(80, Math.max(0, (width - TerminalLayout.GAP) / 2));
-        addTopologyButton(x, y + 30, half, "omniresonance.terminal.cancel", this::navigateTopologyBack, false, true);
+        var footer = TerminalActionLayout.of(dialog);
+        int half = footer.primary().width();
         addTopologyButton(
-                x + half + TerminalLayout.GAP,
-                y + 30,
+                footer.secondary().x(),
+                footer.secondary().y(),
+                half,
+                "omniresonance.terminal.cancel",
+                this::navigateTopologyBack,
+                false,
+                true);
+        addTopologyButton(
+                footer.primary().x(),
+                footer.primary().y(),
                 half,
                 creating ? "omniresonance.terminal.create" : "omniresonance.terminal.save",
                 this::submitTopologyName,
@@ -1295,14 +1307,19 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void buildTopologyDeleteConfirmation() {
-        int width = Math.min(360, layout.content().width() - 16);
-        modalBounds = centered(layout.content(), width, 110);
-        int half = Math.max(0, (width - 16 - TerminalLayout.GAP) / 2);
+        var summary = ((NetworkTerminalState.DeleteConfirmation) topologyState).summary();
+        modalBounds = TerminalDialogLayout.confirmation(
+                layout.content(),
+                font,
+                Component.translatable(
+                        "omniresonance.terminal.delete.impact", summary.channelCount(), summary.bindingCount()));
+        var footer = TerminalActionLayout.of(modalBounds);
+        int half = footer.primary().width();
         int y = modalBounds.bottom() - CONTROL_HEIGHT - 8;
         addTopologyButton(
-                modalBounds.x() + 8, y, half, "omniresonance.terminal.cancel", this::sendTopologyBack, false, true);
+                footer.secondary().x(), y, half, "omniresonance.terminal.cancel", this::sendTopologyBack, false, true);
         addTopologyButton(
-                modalBounds.x() + 8 + half + TerminalLayout.GAP,
+                footer.primary().x(),
                 y,
                 half,
                 "omniresonance.terminal.delete.confirm",
@@ -1314,12 +1331,19 @@ final class NetworkSetupScreen extends Screen {
 
     private void buildTopologyDiscardConfirmation() {
         if (pendingFilterSave != null) {
-            int width = Math.min(360, layout.content().width() - 16);
-            modalBounds = centered(layout.content(), width, 100);
-            int half = Math.max(0, (width - 16 - TerminalLayout.GAP) / 2),
-                    y = modalBounds.bottom() - CONTROL_HEIGHT - 8;
+            var edit = (NetworkTerminalState.PresetEdit) topologyState;
+            modalBounds = TerminalDialogLayout.confirmation(
+                    layout.content(),
+                    font,
+                    Component.translatable(
+                            "omniresonance.terminal.filters.impact",
+                            edit.impact().networkCount(),
+                            edit.impact().nodeCount(),
+                            edit.impact().bindingCount()));
+            var footer = TerminalActionLayout.of(modalBounds);
+            int half = footer.primary().width(), y = modalBounds.bottom() - CONTROL_HEIGHT - 8;
             addTopologyButton(
-                    modalBounds.x() + 8,
+                    footer.secondary().x(),
                     y,
                     half,
                     "omniresonance.terminal.cancel",
@@ -1331,7 +1355,7 @@ final class NetworkSetupScreen extends Screen {
                     false,
                     true);
             addTopologyButton(
-                    modalBounds.x() + 8 + half + TerminalLayout.GAP,
+                    footer.primary().x(),
                     y,
                     half,
                     "omniresonance.terminal.filters.save",
@@ -1345,12 +1369,13 @@ final class NetworkSetupScreen extends Screen {
                     true);
             return;
         }
-        int width = Math.min(360, layout.content().width() - 16);
-        modalBounds = centered(layout.content(), width, 100);
-        int half = Math.max(0, (width - 16 - TerminalLayout.GAP) / 2);
+        modalBounds = TerminalDialogLayout.confirmation(
+                layout.content(), font, Component.translatable("omniresonance.terminal.topology.discard.message"));
+        var footer = TerminalActionLayout.of(modalBounds);
+        int half = footer.primary().width();
         int y = modalBounds.bottom() - CONTROL_HEIGHT - 8;
         addTopologyButton(
-                        modalBounds.x() + 8,
+                        footer.secondary().x(),
                         y,
                         half,
                         "omniresonance.terminal.confirm.continue",
@@ -1363,7 +1388,7 @@ final class NetworkSetupScreen extends Screen {
                         true)
                 .active = true;
         addTopologyButton(
-                        modalBounds.x() + 8 + half + TerminalLayout.GAP,
+                        footer.primary().x(),
                         y,
                         half,
                         "omniresonance.terminal.confirm.discard",
@@ -2219,21 +2244,23 @@ final class NetworkSetupScreen extends Screen {
                     TerminalTheme.ACCENT,
                     false);
         } else if (state instanceof NetworkTerminalState.TunnelEdit edit) {
+            var dialog = TerminalDialogLayout.editor(content);
+            TerminalDialogLayout.render(graphics, content, dialog);
             graphics.drawString(
                     font,
                     Component.translatable(
                             edit.existing() == null
                                     ? "omniresonance.terminal.tunnel.create"
                                     : "omniresonance.terminal.tunnel.rename"),
-                    content.x() + 12,
-                    content.y() + 18,
+                    dialog.x() + 12,
+                    dialog.y() + 18,
                     TerminalTheme.TEXT,
                     false);
             graphics.drawString(
                     font,
                     Component.translatable("omniresonance.terminal.object_name"),
-                    content.x() + 12,
-                    content.y() + 40,
+                    dialog.x() + 12,
+                    dialog.y() + 40,
                     TerminalTheme.MUTED,
                     false);
         } else if (state instanceof NetworkTerminalState.DeleteConfirmation confirmationState) {

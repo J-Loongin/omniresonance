@@ -55,8 +55,8 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         final long sequence;
         final long deadline;
         final NetworkTopologyService.Edit edit;
-        final UUID channel;
-        final UUID tunnel;
+        final @Nullable UUID channel;
+        final @Nullable UUID tunnel;
         final int length;
         final @Nullable NodeMenuRequest.BeginPolicyUpload upload;
         int offset;
@@ -728,6 +728,15 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     }
 
     private NodeMenuResponse pageItemPresets(ServerPlayer player, NodeMenuRequest.PageItemPresets request) {
+        if (editKind == EditKind.DOMAIN
+                && topologyEdit != null
+                && linkedNetworkId != null
+                && state instanceof NodeMenuState.DomainEdit) {
+            service.topology().validateDomainEdit(player, topologyEdit);
+            state = service.domainEdit(
+                    player, linkedNetworkId, nodeId, request.offset(), request.query(), request.libraryRevision());
+            return response(player, request);
+        }
         if (editKind != EditKind.BINDING
                 || topologyEdit == null
                 || linkedNetworkId == null
@@ -745,6 +754,10 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     }
 
     private NodeMenuResponse pollItemStatus(ServerPlayer player, NodeMenuRequest.PollItemStatus request) {
+        if (linkedNetworkId != null && editKind == EditKind.NONE && state instanceof NodeMenuState.DomainRoot) {
+            state = service.domainRoot(player, linkedNetworkId, nodeId);
+            return response(player, request);
+        }
         if (linkedNetworkId == null
                 || editKind != EditKind.NONE
                 || !(state instanceof NodeMenuState.DirectChannelRoot root)) return invalid(request);
@@ -757,13 +770,34 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         return response(player, request);
     }
 
+    private boolean resourceEditing() {
+        return editKind == EditKind.BINDING || editKind == EditKind.DOMAIN;
+    }
+
+    private static @Nullable UUID resourceChannel(NodeMenuState.ResourceEdit edit) {
+        return edit instanceof NodeMenuState.DirectBindingEdit direct
+                ? direct.channel().channelId()
+                : null;
+    }
+
+    private static @Nullable UUID resourceTunnel(NodeMenuState.ResourceEdit edit) {
+        return edit instanceof NodeMenuState.DirectBindingEdit direct
+                ? direct.tunnel().tunnelId()
+                : null;
+    }
+
+    private void validateResourceEdit(
+            ServerPlayer player, NetworkTopologyService.Edit edit, NodeMenuState.ResourceEdit metadata) {
+        if (metadata instanceof NodeMenuState.DomainEdit) service.topology().validateDomainEdit(player, edit);
+        else service.topology().validateBindingEdit(player, edit, resourceChannel(metadata));
+    }
+
     private NodeMenuResponse beginPolicyUpload(ServerPlayer player, NodeMenuRequest.BeginPolicyUpload request) {
         if (transfer != null
-                || editKind != EditKind.BINDING
-                || !(state instanceof NodeMenuState.DirectBindingEdit edit)
+                || !resourceEditing()
+                || !(state instanceof NodeMenuState.ResourceEdit edit)
                 || topologyEdit == null) return invalid(request);
-        service.topology()
-                .validateBindingEdit(player, topologyEdit, edit.channel().channelId());
+        validateResourceEdit(player, topologyEdit, edit);
         request.faces().validate(edit.node().form());
         long now = service.currentTick();
         service.transfers().beginUpload(playerId, sessionId, request.transfer(), request.length(), now);
@@ -772,8 +806,8 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 request.sequence(),
                 now + 200,
                 topologyEdit,
-                edit.channel().channelId(),
-                edit.tunnel().tunnelId(),
+                resourceChannel(edit),
+                resourceTunnel(edit),
                 request.length(),
                 request);
         return new NodeMenuResponse.UploadReady(containerId, sessionId, request.sequence(), request.transfer());
@@ -791,7 +825,17 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 || !canTransfer(player)
                 || topologyEdit != active.edit
                 || now >= active.deadline) throw new IllegalStateException("Expired policy context");
-        service.topology().validateBindingEdit(player, active.edit, active.channel);
+        if (active.channel == null) {
+            if (editKind != EditKind.DOMAIN || !(state instanceof NodeMenuState.DomainEdit))
+                throw new IllegalStateException("Wrong domain policy context");
+            service.topology().validateDomainEdit(player, active.edit);
+        } else {
+            if (editKind != EditKind.BINDING
+                    || !(state instanceof NodeMenuState.DirectBindingEdit current)
+                    || !current.channel().channelId().equals(active.channel))
+                throw new IllegalStateException("Wrong direct policy context");
+            service.topology().validateBindingEdit(player, active.edit, active.channel);
+        }
     }
 
     private boolean canTransfer(ServerPlayer player) {
@@ -832,8 +876,11 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                             view -> {
                                 decoded[0] =
                                         io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.decode(view);
-                                service.topology()
-                                        .validatePolicyIntent(player, active.edit, active.channel, decoded[0]);
+                                if (active.channel == null)
+                                    service.topology().validateDomainPolicyIntent(player, active.edit, decoded[0]);
+                                else
+                                    service.topology()
+                                            .validatePolicyIntent(player, active.edit, active.channel, decoded[0]);
                             },
                             () -> {
                                 authorizeTransfer(player, active, service.currentTick());
@@ -841,18 +888,29 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                             },
                             view -> {
                                 committing[0] = true;
-                                service.topology()
-                                        .saveDirectBinding(
-                                                player,
-                                                active.edit,
-                                                active.channel,
-                                                decoded[0],
-                                                active.upload.faces(),
-                                                active.upload.confirmedReset());
+                                if (active.channel == null)
+                                    service.topology()
+                                            .saveDomainConfiguration(
+                                                    player,
+                                                    active.edit,
+                                                    decoded[0],
+                                                    active.upload.faces(),
+                                                    active.upload.confirmedReset());
+                                else
+                                    service.topology()
+                                            .saveDirectBinding(
+                                                    player,
+                                                    active.edit,
+                                                    active.channel,
+                                                    decoded[0],
+                                                    active.upload.faces(),
+                                                    active.upload.confirmedReset());
                             });
             transfer = null;
             clearEdit();
-            state = service.channelRoot(player, linkedNetworkId, nodeId, active.tunnel, active.channel);
+            state = active.channel == null
+                    ? service.domainRoot(player, linkedNetworkId, nodeId)
+                    : service.channelRoot(player, linkedNetworkId, nodeId, active.tunnel, active.channel);
             return new NodeMenuResponse.State(containerId, sessionId, active.sequence, state);
         } catch (RuntimeException failure) {
             cancelTransfer();
@@ -868,7 +926,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                     sessionId,
                     active.sequence,
                     NodeMenuResponse.Reason.INVALID_REQUEST,
-                    state instanceof NodeMenuState.DirectBindingEdit edit ? edit.withPolicy(null) : state);
+                    state instanceof NodeMenuState.ResourceEdit edit ? edit.withPolicy(null) : state);
         }
     }
 
@@ -904,11 +962,9 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     }
 
     private NodeMenuResponse resourceCatalog(ServerPlayer player, NodeMenuRequest.ResourceCatalog request) {
-        if (editKind != EditKind.BINDING
-                || !(state instanceof NodeMenuState.DirectBindingEdit edit)
-                || topologyEdit == null) return invalid(request);
-        service.topology()
-                .validateBindingEdit(player, topologyEdit, edit.channel().channelId());
+        if (!resourceEditing() || !(state instanceof NodeMenuState.ResourceEdit edit) || topologyEdit == null)
+            return invalid(request);
+        validateResourceEdit(player, topologyEdit, edit);
         var page = io.github.loongin.omniresonance.networking.ResourceTypeCatalogPage.from(
                 service.topology().resourceAdapters(),
                 sessionId,
@@ -919,6 +975,17 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     }
 
     private NodeMenuResponse saveResourcePolicy(ServerPlayer player, NodeMenuRequest.SaveResourcePolicy request) {
+        if (editKind == EditKind.DOMAIN
+                && state instanceof NodeMenuState.DomainEdit
+                && topologyEdit != null
+                && linkedNetworkId != null) {
+            service.topology()
+                    .saveDomainConfiguration(
+                            player, topologyEdit, request.policy(), request.workingFaces(), request.confirmedReset());
+            clearEdit();
+            state = service.domainRoot(player, linkedNetworkId, nodeId);
+            return response(player, request);
+        }
         if (editKind != EditKind.BINDING
                 || !(state instanceof NodeMenuState.DirectBindingEdit editState)
                 || topologyEdit == null
@@ -1338,12 +1405,11 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
 
     private NodeMenuResponse response(ServerPlayer player, NodeMenuRequest request) {
         var response = new NodeMenuResponse.State(containerId, sessionId, request.sequence(), state);
-        if (state instanceof NodeMenuState.DirectBindingEdit edit
+        if (state instanceof NodeMenuState.ResourceEdit edit
                 && edit.policy() != null
                 && io.github.loongin.omniresonance.networking.NodePolicyFrames.responseSize(response) > 262144) {
             if (transfer != null) throw new IllegalStateException("Transfer already active");
-            service.topology()
-                    .validateBindingEdit(player, topologyEdit, edit.channel().channelId());
+            validateResourceEdit(player, topologyEdit, edit);
             UUID id = UUID.randomUUID();
             int length = io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encodedSize(edit.policy());
             long now = service.currentTick();
@@ -1361,8 +1427,8 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                     request.sequence(),
                     now + 200,
                     topologyEdit,
-                    edit.channel().channelId(),
-                    edit.tunnel().tunnelId(),
+                    resourceChannel(edit),
+                    resourceTunnel(edit),
                     length,
                     null);
             return new NodeMenuResponse.Download(
@@ -1382,7 +1448,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 request.sessionId(),
                 request.sequence(),
                 reason,
-                latestState instanceof NodeMenuState.DirectBindingEdit edit ? edit.withPolicy(null) : latestState);
+                latestState instanceof NodeMenuState.ResourceEdit edit ? edit.withPolicy(null) : latestState);
     }
 
     private enum EditKind {

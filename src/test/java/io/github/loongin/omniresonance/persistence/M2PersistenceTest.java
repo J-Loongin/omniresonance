@@ -22,11 +22,12 @@ class M2PersistenceTest {
                         new NetworkMetadata(NETWORK, OWNER, new ManagedName("Network"), 0, Set.of()))
                 .save(new CompoundTag(), RegistryAccess.EMPTY);
         tag.putInt("schema_version", 5);
+        tag.remove("bucket_created_mask");
         tag.remove("recovery");
         CompoundTag before = tag.copy();
         NetworkSavedData loaded = NetworkSavedData.load(NETWORK, tag);
         CompoundTag saved = loaded.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(8, saved.getInt("schema_version"));
+        assertEquals(9, saved.getInt("schema_version"));
         assertEquals(new ListTag(), saved.get("recovery"));
         assertFalse(loaded.isDirty());
         assertEquals(before, tag);
@@ -75,6 +76,7 @@ class M2PersistenceTest {
                         new NetworkMetadata(NETWORK, OWNER, new ManagedName("Network"), 0, Set.of()))
                 .save(new CompoundTag(), RegistryAccess.EMPTY);
         valid.putInt("schema_version", 6);
+        valid.remove("bucket_created_mask");
         CompoundTag entry = new CompoundTag();
         entry.putString("type_id", "unknown:raw");
         entry.putByteArray("canonical_bytes", new byte[0]);

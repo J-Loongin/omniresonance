@@ -26,6 +26,7 @@ import org.jetbrains.annotations.Nullable;
 final class NodeResourcePolicyDraft {
     final ResourcePolicyEdit original;
     final NodeResourceTypeCatalog.Snapshot catalog;
+    final boolean domain;
     TransferDirection direction;
     String interval;
     String quantity;
@@ -38,7 +39,6 @@ final class NodeResourcePolicyDraft {
     @Nullable
     String presetName;
 
-    boolean expanded;
     private ResourcePolicyEdit.Scope scope;
     private Set<ResourceLocation> scopeIds;
     private final ResourceScope.Kind originalScopeKind;
@@ -52,6 +52,15 @@ final class NodeResourcePolicyDraft {
 
     NodeResourcePolicyDraft(
             ResourcePolicyEdit original, @Nullable String presetName, NodeResourceTypeCatalog.Snapshot catalog) {
+        this(original, presetName, catalog, false);
+    }
+
+    NodeResourcePolicyDraft(
+            ResourcePolicyEdit original,
+            @Nullable String presetName,
+            NodeResourceTypeCatalog.Snapshot catalog,
+            boolean domain) {
+        this.domain = domain;
         this.original = Objects.requireNonNull(original, "original");
         originalMissing = Set.copyOf(original.retainedMissingIds());
         this.catalog = Objects.requireNonNull(catalog, "catalog");

@@ -73,7 +73,11 @@ public sealed interface NetworkTerminalState {
         }
     }
 
-    record NetworkRoot(NetworkSummary network) implements NetworkTerminalState {
+    record NetworkRoot(NetworkSummary network, boolean domainUnavailable) implements NetworkTerminalState {
+        public NetworkRoot(NetworkSummary network) {
+            this(network, false);
+        }
+
         public NetworkRoot {
             Objects.requireNonNull(network, "network");
         }
@@ -171,7 +175,7 @@ public sealed interface NetworkTerminalState {
 
     static NetworkTerminalState read(FriendlyByteBuf buffer) {
         return switch (buffer.readUnsignedByte()) {
-            case 0 -> new NetworkRoot(NetworkSummary.read(buffer));
+            case 0 -> new NetworkRoot(NetworkSummary.read(buffer), buffer.readBoolean());
             case 1 -> new TunnelList(NetworkSummary.read(buffer), TunnelPage.read(buffer));
             case 2 ->
                 new TunnelEdit(
@@ -262,6 +266,7 @@ public sealed interface NetworkTerminalState {
             case NetworkRoot root -> {
                 buffer.writeByte(0);
                 root.network().write(buffer);
+                buffer.writeBoolean(root.domainUnavailable());
             }
             case TunnelList list -> {
                 buffer.writeByte(1);

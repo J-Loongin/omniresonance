@@ -32,7 +32,7 @@ public final class NodePolicyFrames {
     }
 
     public static int responseSize(NodeMenuResponse.State response) {
-        if (!(response.state() instanceof NodeMenuState.DirectBindingEdit edit) || edit.policy() == null)
+        if (!(response.state() instanceof NodeMenuState.ResourceEdit edit) || edit.policy() == null)
             throw new IllegalArgumentException("Expected complete policy edit");
         FriendlyByteBuf metadata = new FriendlyByteBuf(Unpooled.buffer());
         try {

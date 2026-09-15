@@ -195,7 +195,16 @@ public final class ServerConfig {
                     268435456,
                     "bytes / 字节",
                     "Encoded recovery bytes and short reservations per network.",
-                    "单网络恢复编码和短期预留字节上限。"));
+                    "单网络恢复编码和短期预留字节上限。"),
+            new M2Definition(
+                    "storage.variant_limit_per_network",
+                    Kind.LONG_QUOTA,
+                    -1L,
+                    0,
+                    Long.MAX_VALUE,
+                    "variants / 变体",
+                    "Distinct domain variants; existing keys may still grow or shrink. Memory capacity is not unlimited.",
+                    "共鸣域变体数量，既有键仍可增减，内存承载能力并非无限。"));
     private final Map<String, ModConfigSpec.ConfigValue<Object>> m2Values = new HashMap<>();
 
     private final ModConfigSpec spec;
@@ -353,7 +362,8 @@ public final class ServerConfig {
                             intValue("network_limits.rules_per_filter_preset")),
                     new ServerSettings.RecoveryLimits(
                             intValue("recovery.max_variants_per_network"),
-                            longValue("recovery.max_encoded_bytes_per_network")));
+                            longValue("recovery.max_encoded_bytes_per_network")),
+                    longValue("storage.variant_limit_per_network"));
             candidate = new State(fallback.epoch(), Math.incrementExact(fallback.revision()), true, settings);
         } catch (RuntimeException failure) {
             LOGGER.warn("Rejected server configuration candidate; retaining validated lifecycle settings");
@@ -408,6 +418,7 @@ public final class ServerConfig {
     private enum Kind {
         INT,
         LONG,
+        LONG_QUOTA,
         DOUBLE,
         TICKS,
         QUOTA
@@ -423,6 +434,8 @@ public final class ServerConfig {
             String purposeEn,
             String purposeZh) {
         boolean accepts(Object value) {
+            if (kind == Kind.LONG_QUOTA)
+                return (value instanceof Long || value instanceof Integer) && ((Number) value).longValue() >= -1;
             if (kind == Kind.TICKS) {
                 if (!(value instanceof List<?> list) || list.isEmpty() || list.size() > 8) return false;
                 int previous = 0;
@@ -451,15 +464,17 @@ public final class ServerConfig {
             String type =
                     switch (kind) {
                         case INT, QUOTA -> "int";
-                        case LONG -> "long";
+                        case LONG, LONG_QUOTA -> "long";
                         case DOUBLE -> "double";
                         case TICKS -> "int[]";
                     };
-            String range = minimum + ".." + maximum
-                    + (kind == Kind.QUOTA
-                            ? " or -1 / 或-1"
-                            : kind == Kind.TICKS ? "; 1..8 nondecreasing entries / 1..8项非递减" : "");
-            boolean quota = kind == Kind.QUOTA;
+            String range = kind == Kind.LONG_QUOTA
+                    ? "0..9223372036854775807 or -1 / 或-1"
+                    : minimum + ".." + maximum
+                            + (kind == Kind.QUOTA
+                                    ? " or -1 / 或-1"
+                                    : kind == Kind.TICKS ? "; 1..8 nondecreasing entries / 1..8项非递减" : "");
+            boolean quota = kind == Kind.QUOTA || kind == Kind.LONG_QUOTA;
             boolean buffer = key.startsWith("recovery.");
             return String.join(
                     "\n",

@@ -150,7 +150,7 @@ final class NodeMenuInteractionPolicy {
         }
 
         Model resourceDraftDirty(boolean value) {
-            if (editKind != EditKind.BINDING) return this;
+            if (editKind != EditKind.BINDING && editKind != EditKind.DOMAIN) return this;
             return copy(
                     authoritative,
                     editKind,
@@ -226,7 +226,8 @@ final class NodeMenuInteractionPolicy {
                     || sequence != lastIssuedSequence + 1
                     || (kind == PendingKind.STATUS
                             && (expectedBackgroundSequence != 0
-                                    || !(authoritative instanceof NodeMenuState.DirectChannelRoot)))) {
+                                    || !(authoritative instanceof NodeMenuState.DirectChannelRoot
+                                            || authoritative instanceof NodeMenuState.DomainRoot)))) {
                 throw new IllegalStateException("Node mutation request is not eligible");
             }
             return copy(
@@ -322,13 +323,12 @@ final class NodeMenuInteractionPolicy {
                 latest = success.state();
                 preserveDraft = pending != null
                         && pending.kind() == PendingKind.NAVIGATE
-                        && authoritative instanceof NodeMenuState.DirectBindingEdit previous
-                        && latest instanceof NodeMenuState.DirectBindingEdit refreshed
+                        && authoritative instanceof NodeMenuState.ResourceEdit previous
+                        && latest instanceof NodeMenuState.ResourceEdit refreshed
                         && previous.node().networkId().equals(refreshed.node().networkId())
                         && previous.node().nodeId().equals(refreshed.node().nodeId())
-                        && previous.channel()
-                                .channelId()
-                                .equals(refreshed.channel().channelId());
+                        && previous.getClass() == refreshed.getClass()
+                        && previous.policyContextId().equals(refreshed.policyContextId());
             } else {
                 NodeMenuResponse.Failure failure = (NodeMenuResponse.Failure) response;
                 latest = failure.state() == null ? new NodeMenuState.Unavailable() : failure.state();

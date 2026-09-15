@@ -19,6 +19,27 @@ import org.junit.jupiter.api.Test;
 
 class NodeResourcePolicyViewTest {
     @Test
+    void adaptiveRowsExposeEveryCommonFieldExactlyOnceAndReserveTwoColumnsForPreset() {
+        for (boolean wide : new boolean[] {false, true}) {
+            var fields = new java.util.HashSet<NodeResourcePolicyView.Field>();
+            var row = new TerminalLayout.Rect(20, 40, wide ? 344 : 264, 32);
+            for (int index = 0; index < (wide ? 3 : 4); index++) {
+                int previousRight = row.x() - 6;
+                for (var cell : NodeResourcePolicyView.commonCells(row, index, wide)) {
+                    assertTrue(fields.add(cell.field()));
+                    assertTrue(cell.bounds().x() >= previousRight + 6);
+                    assertTrue(cell.bounds().right() <= row.right());
+                    assertEquals(20, cell.bounds().height());
+                    previousRight = cell.bounds().right();
+                    if (wide && cell.field() == NodeResourcePolicyView.Field.PRESET)
+                        assertTrue(cell.bounds().width() > row.width() / 2);
+                }
+            }
+            assertEquals(java.util.Set.of(NodeResourcePolicyView.Field.values()), fields);
+        }
+    }
+
+    @Test
     void actualOverlayWidgetsKeepSelectionLocalUntilApplyAndCollapsedSearchBuildsNoField() {
         var draft = new NodeResourcePolicyDraft(
                 NodeResourcePolicyDraftTest.input(), null, NodeResourcePolicyDraftTest.catalog());
@@ -52,11 +73,19 @@ class NodeResourcePolicyViewTest {
         var edit = ResourcePolicyEdit.fromStored(
                 new StoredResourcePolicy(ResourceTransferPolicy.defaults(TransferDirection.INPUT), missing));
         var draft = new NodeResourcePolicyDraft(edit, null, NodeResourcePolicyDraftTest.catalog());
-        draft.expanded = true;
         var order = draft.settingIds();
         var body = TerminalLayout.calculate(320, 240).content();
         var last = NodeResourcePolicyView.layout(body, Integer.MAX_VALUE, draft);
-        assertEquals(4103, last.totalRows());
+        assertEquals(5, last.totalRows());
+        var settings = new ArrayList<net.minecraft.client.gui.components.AbstractWidget>();
+        NodeResourceSettingsView.buildList(body, draft, Integer.MAX_VALUE, true, settings::add, id -> {});
+        assertTrue(settings.size() <= 8);
+        assertTrue(settings.stream().allMatch(widget -> widget.getBottom() <= body.bottom()));
+        var unavailable =
+                new NodeResourceSettingEditor(draft, draft.settingIds().getFirst());
+        assertTrue(unavailable.unavailable);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, unavailable::apply);
+
         assertTrue(last.visibleRows() <= 6);
         assertSame(order, draft.settingIds());
         var picker = NodeResourceTypeSelection.scope(draft, draft.openScope(), Object::toString);
@@ -71,7 +100,8 @@ class NodeResourcePolicyViewTest {
         assertTrue(widgets.size() <= 4);
         for (var widget : widgets) {
             assertTrue(widget.getY() >= layout.body().y());
-            assertTrue(widget.getBottom() <= layout.actions().y());
+            assertTrue(widget.getBottom()
+                    <= TerminalActionLayout.of(layout.actions()).primary().y());
         }
         assertEquals(4096, picker.results().size());
     }
@@ -84,9 +114,8 @@ class NodeResourcePolicyViewTest {
             var body = TerminalLayout.calculate(size[0], size[1]).content();
             var first = NodeResourcePolicyView.layout(body, -1, draft);
             assertEquals(0, first.firstRow());
-            assertEquals(6, first.totalRows());
+            assertEquals(body.width() >= 340 ? 4 : 5, first.totalRows());
             assertEquals(NodeResourcePolicyView.RowKind.TYPE_HEADER, NodeResourcePolicyView.rowKind(draft, 4));
-            assertEquals(NodeResourcePolicyView.RowKind.SAVE, NodeResourcePolicyView.rowKind(draft, 5));
             var last = NodeResourcePolicyView.layout(body, Integer.MAX_VALUE, draft);
             assertEquals(last.totalRows(), last.firstRow() + last.visibleRows());
             for (int row = last.firstRow(); row < last.firstRow() + last.visibleRows(); row++) {
@@ -103,7 +132,6 @@ class NodeResourcePolicyViewTest {
         var draft = new NodeResourcePolicyDraft(
                 NodeResourcePolicyDraftTest.input(), null, NodeResourcePolicyDraftTest.catalog());
         draft.addType(ResourceTypes.FLUID);
-        draft.expanded = true;
         var body = TerminalLayout.calculate(427, 240).content();
         var greedy = NodeResourcePolicyView.typeControls(
                 new TerminalLayout.Rect(body.x(), body.y(), body.width(), 32), draft, ResourceTypes.FLUID);

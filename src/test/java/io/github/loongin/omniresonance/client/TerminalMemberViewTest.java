@@ -128,6 +128,18 @@ class TerminalMemberViewTest {
                             },
                             false) {
                         @Override
+                        public java.util.List<net.minecraft.util.FormattedCharSequence> split(
+                                net.minecraft.network.chat.FormattedText text, int width) {
+                            var result = new java.util.ArrayList<net.minecraft.util.FormattedCharSequence>();
+                            String value = text.getString();
+                            for (int i = 0; i < value.length(); i += Math.max(1, width))
+                                result.add(net.minecraft.util.FormattedCharSequence.forward(
+                                        value.substring(i, Math.min(value.length(), i + Math.max(1, width))),
+                                        net.minecraft.network.chat.Style.EMPTY));
+                            return result;
+                        }
+
+                        @Override
                         public int width(String text) {
                             return text.length();
                         }

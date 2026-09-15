@@ -596,7 +596,7 @@ class TerminalFilterViewTest {
     }
 
     @Test
-    void presetEditorUsesCompactActionsWithoutAReservedBottomBar() {
+    void presetEditorUsesFixedCompactBottomActions() {
         for (int[] size : new int[][] {{320, 240}, {427, 240}, {960, 540}}) {
             var layout = TerminalLayout.calculate(size[0], size[1]);
             var widgets = new java.util.ArrayList<net.minecraft.client.gui.components.AbstractWidget>();
@@ -620,7 +620,11 @@ class TerminalFilterViewTest {
                         && widget.getRight() <= layout.content().right());
                 if (widget instanceof net.minecraft.client.gui.components.Button button) {
                     assertTrue(button.getWidth() <= 80);
-                    assertTrue(button.getY() < layout.content().y() + 28);
+                    assertEquals(
+                            TerminalFilterView.editorBounds(layout.content(), state)
+                                            .bottom()
+                                    - 8,
+                            button.getBottom());
                     button.onPress();
                 }
             }

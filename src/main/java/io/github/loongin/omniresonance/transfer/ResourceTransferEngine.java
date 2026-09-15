@@ -32,6 +32,12 @@ public final class ResourceTransferEngine {
         Object physicalIdentity();
 
         boolean valid();
+
+        /** Returns the same owned port and identity for known remainders. Native ports keep normal validity;
+         * internal ledgers can restore withdrawn ownership after authorization for new work has ended. */
+        default Handle remainderTarget() {
+            return this;
+        }
     }
 
     public enum Failure {
@@ -54,7 +60,7 @@ public final class ResourceTransferEngine {
 
     /**
      * Immutable known evidence. extracted excludes unknown extraction results; moved/returned contain only
-     * validated native acceptances. For known outcomes extracted = moved + returned + buffered. Unknown
+     * validated acceptances. For known outcomes extracted = moved + returned + buffered + stored. Unknown
      * requested quantity is uncertain, never an invented loss or compensation. completeBatch is true only
      * for an exact commit that fully extracted and inserted its rounded request. Caller debits output by
      * moved and must stop the current transaction on UNKNOWN_MUTATION. Proven pre-invocation request failures
@@ -66,6 +72,7 @@ public final class ResourceTransferEngine {
             long moved,
             long returned,
             long buffered,
+            long stored,
             Failure failure,
             boolean completeBatch,
             Stage unknownStage,
@@ -286,7 +293,7 @@ public final class ResourceTransferEngine {
             if (requested == 0) return empty(Failure.REFUSED);
             trim(inputs, requested);
             trim(outputs, requested);
-            if (!budget.canFit(maximumModificationCalls(inputs.size(), outputs.size())))
+            if (!budget.canFit(maximumModificationCalls(source, inputs.size(), target, outputs.size())))
                 return empty(Failure.WAITING_BUDGET);
         } catch (RuntimeException failure) {
             return exception(failure);
@@ -303,6 +310,11 @@ public final class ResourceTransferEngine {
     public static long maximumModificationCalls(int sourceSteps, int targetSteps) {
         if (sourceSteps < 0 || targetSteps < 0) throw new IllegalArgumentException("Negative plan size");
         return 4L * sourceSteps + 2L * targetSteps;
+    }
+
+    private static long maximumModificationCalls(Handle source, int sourceSteps, Handle target, int targetSteps) {
+        return (source.port().usesNativeCalls() ? 4L * sourceSteps : 0)
+                + (target.port().usesNativeCalls() ? 2L * targetSteps : 0);
     }
 
     private static Result execute(
@@ -322,82 +334,99 @@ public final class ResourceTransferEngine {
         if (reservation == null) return empty(Failure.RECOVERY_FULL);
         Commit state = new Commit();
         long segmentStartCalls = budget.calls();
-        long segmentBound = maximumModificationCalls(inputs.size(), outputs.size());
+        long segmentBound = maximumModificationCalls(source, inputs.size(), target, outputs.size());
         try (reservation) {
-            for (Step step : inputs) {
-                if (!state.current(source, step.view(), true, budget) || !state.valid(target)) break;
-                if (exact
-                        && state.extracted == 0
-                        && !budget.canFit(Math.max(0, segmentBound - (budget.calls() - segmentStartCalls)))) {
-                    state.failure = Failure.WAITING_BUDGET;
-                    break;
-                }
-                int actual;
-                long beforeExtractCalls = budget.calls();
+            try {
                 try {
-                    actual = checked(
-                            source.port().extract(step.view(), variant, step.amount(), false, budget), step.amount());
-                } catch (RuntimeException failure) {
-                    if (budget.calls() != beforeExtractCalls)
-                        return state.unknown(reservation, Stage.SOURCE_EXTRACT, step.amount(), failure);
-                    state.preInvocationFailure(failure);
-                    break;
+                    if (!target.port().reserveInsertion(variant, requested)) return empty(Failure.REFUSED);
+                } catch (RuntimeException admissionFailure) {
+                    return exception(admissionFailure);
                 }
-                state.extracted += actual;
-                state.held += actual;
-                if (actual != step.amount()) {
-                    state.failure = Failure.INCONSISTENT;
-                    break;
-                }
-            }
-            if (state.held > 0 && (!exact || state.extracted == requested && state.failure == Failure.NONE)) {
-                for (Step step : outputs) {
-                    if (state.held == 0 || !state.current(target, step.view(), false, budget)) break;
-                    int offered = (int) Math.min(state.held, step.amount());
-                    state.held -= offered;
-                    int accepted;
-                    long beforeInsertCalls = budget.calls();
+                for (Step step : inputs) {
+                    if (!state.current(source, step.view(), true, budget) || !state.valid(target)) break;
+                    if (exact
+                            && state.extracted == 0
+                            && !budget.canFit(Math.max(0, segmentBound - (budget.calls() - segmentStartCalls)))) {
+                        state.failure = Failure.WAITING_BUDGET;
+                        break;
+                    }
+                    int actual;
+                    long beforeExtractCalls = budget.calls();
                     try {
-                        accepted = checked(target.port().insert(step.view(), variant, offered, false, budget), offered);
+                        actual = checked(
+                                source.port().extract(step.view(), variant, step.amount(), false, budget),
+                                step.amount());
                     } catch (RuntimeException failure) {
-                        if (budget.calls() != beforeInsertCalls)
-                            return state.unknown(reservation, Stage.TARGET_INSERT, offered, failure);
-                        state.held += offered;
+                        if (budget.calls() != beforeExtractCalls)
+                            return state.unknown(reservation, Stage.SOURCE_EXTRACT, step.amount(), failure);
                         state.preInvocationFailure(failure);
                         break;
                     }
-                    state.moved += accepted;
-                    state.held += offered - accepted;
-                    if (accepted != offered) {
+                    state.extracted += actual;
+                    state.held += actual;
+                    if (actual != step.amount()) {
                         state.failure = Failure.INCONSISTENT;
                         break;
                     }
                 }
-            }
-            for (Step step : inputs) {
-                if (state.held == 0) break;
-                int returnView =
-                        source.port().extractionScope() == ResourcePort.ExtractionScope.HANDLER ? 0 : step.view();
-                if (!state.current(source, returnView, false, budget)) break;
-                int offered = (int) Math.min(state.held, step.amount());
-                state.held -= offered;
-                int accepted;
-                long beforeReturnCalls = budget.calls();
-                try {
-                    accepted = checked(source.port().insert(returnView, variant, offered, false, budget), offered);
-                } catch (RuntimeException failure) {
-                    if (budget.calls() != beforeReturnCalls)
-                        return state.unknown(reservation, Stage.SOURCE_RETURN, offered, failure);
-                    state.held += offered;
-                    state.preInvocationFailure(failure);
-                    break;
+                if (state.held > 0 && (!exact || state.extracted == requested && state.failure == Failure.NONE)) {
+                    for (Step step : outputs) {
+                        if (state.held == 0 || !state.current(target, step.view(), false, budget)) break;
+                        int offered = (int) Math.min(state.held, step.amount());
+                        state.held -= offered;
+                        int accepted;
+                        long beforeInsertCalls = budget.calls();
+                        try {
+                            accepted = checked(
+                                    target.port().insert(step.view(), variant, offered, false, budget), offered);
+                        } catch (RuntimeException failure) {
+                            if (budget.calls() != beforeInsertCalls)
+                                return state.unknown(reservation, Stage.TARGET_INSERT, offered, failure);
+                            state.held += offered;
+                            state.preInvocationFailure(failure);
+                            break;
+                        }
+                        state.moved += accepted;
+                        state.held += offered - accepted;
+                        if (accepted != offered) {
+                            state.failure = Failure.INCONSISTENT;
+                            break;
+                        }
+                    }
                 }
-                state.returned += accepted;
-                state.held += offered - accepted;
+                Handle returnSource = state.held == 0 ? source : source.remainderTarget();
+                for (Step step : inputs) {
+                    if (state.held == 0) break;
+                    int returnView =
+                            source.port().extractionScope() == ResourcePort.ExtractionScope.HANDLER ? 0 : step.view();
+                    if (!state.current(returnSource, returnView, false, budget)) break;
+                    int offered = (int) Math.min(state.held, step.amount());
+                    state.held -= offered;
+                    int accepted;
+                    long beforeReturnCalls = budget.calls();
+                    try {
+                        accepted = checked(
+                                returnSource.port().insert(returnView, variant, offered, false, budget), offered);
+                    } catch (RuntimeException failure) {
+                        if (budget.calls() != beforeReturnCalls)
+                            return state.unknown(reservation, Stage.SOURCE_RETURN, offered, failure);
+                        state.held += offered;
+                        state.preInvocationFailure(failure);
+                        break;
+                    }
+                    state.returned += accepted;
+                    state.held += offered - accepted;
+                }
+                RecoveryBuffer.Placement placement = reservation.placeKnownRemainder(state.held);
+                return state.result(
+                        placement.buffered(),
+                        placement.stored(),
+                        exact && state.failure == Failure.NONE && state.moved == requested,
+                        Stage.NONE,
+                        0);
+            } finally {
+                target.port().releaseInsertion();
             }
-            reservation.commit(state.held);
-            return state.result(
-                    state.held, exact && state.failure == Failure.NONE && state.moved == requested, Stage.NONE, 0);
         }
     }
 
@@ -440,11 +469,11 @@ public final class ResourceTransferEngine {
     }
 
     private static Result empty(Failure failure) {
-        return new Result(0, 0, 0, 0, failure, false, Stage.NONE, 0, null);
+        return new Result(0, 0, 0, 0, 0, failure, false, Stage.NONE, 0, null);
     }
 
     private static Result exception(RuntimeException cause) {
-        return new Result(0, 0, 0, 0, Failure.EXCEPTION, false, Stage.NONE, 0, cause);
+        return new Result(0, 0, 0, 0, 0, Failure.EXCEPTION, false, Stage.NONE, 0, cause);
     }
 
     private static int[] uniqueHints(int[] hints, Set<Integer> seen) {
@@ -497,12 +526,13 @@ public final class ResourceTransferEngine {
         Result unknown(RecoveryBuffer.Reservation reservation, Stage stage, int requested, RuntimeException exception) {
             failure = Failure.UNKNOWN_MUTATION;
             cause = exception;
-            reservation.commit(held);
-            return result(held, false, stage, requested);
+            RecoveryBuffer.Placement placement = reservation.placeKnownRemainder(held);
+            return result(placement.buffered(), placement.stored(), false, stage, requested);
         }
 
-        Result result(long buffered, boolean completeBatch, Stage stage, int requested) {
-            return new Result(extracted, moved, returned, buffered, failure, completeBatch, stage, requested, cause);
+        Result result(long buffered, long stored, boolean completeBatch, Stage stage, int requested) {
+            return new Result(
+                    extracted, moved, returned, buffered, stored, failure, completeBatch, stage, requested, cause);
         }
     }
 }

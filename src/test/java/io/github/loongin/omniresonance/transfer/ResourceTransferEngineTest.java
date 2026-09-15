@@ -87,7 +87,7 @@ final class ResourceTransferEngineTest {
     }
 
     private static void conserved(ResourceTransferEngine.Result result) {
-        assertEquals(result.extracted(), result.moved() + result.returned() + result.buffered());
+        assertEquals(result.extracted(), result.moved() + result.returned() + result.buffered() + result.stored());
     }
 
     @Test

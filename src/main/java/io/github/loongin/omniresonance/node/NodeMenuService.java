@@ -63,6 +63,14 @@ public final class NodeMenuService implements AutoCloseable {
     private @Nullable Supplier<UUID> sessionIds;
     private @Nullable ItemFilterService filters;
     private @Nullable BiFunction<UUID, UUID, ResourceDirectScheduler.Status> directStatus;
+    private @Nullable BiFunction<UUID, UUID, io.github.loongin.omniresonance.networking.NodeDomainStatus> domainStatus;
+
+    /** Installs the owning-server read-only domain status provider; it must not activate storage or call capabilities. */
+    public void installDomainStatus(
+            BiFunction<UUID, UUID, io.github.loongin.omniresonance.networking.NodeDomainStatus> provider) {
+        requireServerThread();
+        domainStatus = Objects.requireNonNull(provider);
+    }
 
     /** Retains one server lifecycle and already-composed collaborators without reading world state. */
     public NodeMenuService(
@@ -222,6 +230,7 @@ public final class NodeMenuService implements AutoCloseable {
         sessionIds = null;
         filters = null;
         directStatus = null;
+        domainStatus = null;
     }
 
     Initial initial(ServerPlayer player, BlockPos position) {
@@ -500,15 +509,52 @@ public final class NodeMenuService implements AutoCloseable {
     }
 
     NodeMenuState.DomainRoot domainRoot(ServerPlayer player, UUID networkId, UUID nodeId) {
+        var existing =
+                topology().inspectDomainConfiguration(player, networkId, nodeId).orElse(null);
+        var status = existing == null
+                ? io.github.loongin.omniresonance.networking.NodeDomainStatus.UNCONFIGURED
+                : !existing.configured()
+                        ? io.github.loongin.omniresonance.networking.NodeDomainStatus.PENDING
+                        : domainStatus == null
+                                ? io.github.loongin.omniresonance.networking.NodeDomainStatus.IDLE
+                                : domainStatus.apply(networkId, nodeId);
         return new NodeMenuState.DomainRoot(
-                linkedSummary(player, networkId, nodeId),
-                topology().inspectDomainDirection(player, networkId, nodeId).orElse(null));
+                linkedSummary(player, networkId, nodeId), existing == null ? null : existing.direction(), status);
     }
 
     NodeMenuState.DomainEdit domainEdit(ServerPlayer player, UUID networkId, UUID nodeId) {
+        return domainEdit(player, networkId, nodeId, 0, "", -1);
+    }
+
+    NodeMenuState.DomainEdit domainEdit(
+            ServerPlayer player, UUID networkId, UUID nodeId, int offset, String query, long libraryRevision) {
+        var existing =
+                topology().inspectDomainConfiguration(player, networkId, nodeId).orElse(null);
+        NodeMenuNodeSummary node = linkedSummary(player, networkId, nodeId);
+        var stored = existing == null
+                ? new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                        ResourceTransferPolicy.defaults(
+                                io.github.loongin.omniresonance.network.TransferDirection.INPUT),
+                        java.util.Map.of())
+                : existing.storedPolicy();
+        FilterPresetPage page = filters == null
+                ? new FilterPresetPage(List.of(), 0, 0, 0)
+                : filters.page(player, networkId, offset, query, libraryRevision);
+        var selectedId = stored.effectivePolicy().filterPresetId();
+        FilterPresetSummary selected =
+                filters == null || selectedId == null ? null : filters.summary(player, networkId, selectedId);
         return new NodeMenuState.DomainEdit(
-                linkedSummary(player, networkId, nodeId),
-                topology().inspectDomainDirection(player, networkId, nodeId).orElse(null));
+                node,
+                existing == null ? null : existing.direction(),
+                ResourcePolicyEdit.fromStored(stored),
+                page,
+                selected == null ? null : selected.name(),
+                existing == null
+                        ? node.form() == io.github.loongin.omniresonance.node.NodeForm.PANEL
+                                ? io.github.loongin.omniresonance.network.WorkingFaces.attachedFace()
+                                : io.github.loongin.omniresonance.network.WorkingFaces.explicit(0)
+                        : existing.workingFaces(),
+                facePreviews(node));
     }
 
     NodeMenuState.LinkedRename linkedRename(ServerPlayer player, UUID networkId, UUID nodeId) {

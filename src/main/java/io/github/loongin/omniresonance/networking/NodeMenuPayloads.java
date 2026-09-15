@@ -26,7 +26,7 @@ public final class NodeMenuPayloads {
      * Invalid active-menu envelopes receive one privacy-safe failure and never reach business state.
      */
     public static void register(RegisterPayloadHandlersEvent event) {
-        PayloadRegistrar registrar = event.registrar("6").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("7").executesOn(HandlerThread.MAIN);
         registrar.playToServer(NodeMenuRequest.TYPE, NodeMenuRequest.STREAM_CODEC, (request, context) -> {
             if (!(context.player() instanceof ServerPlayer sender)) {
                 throw new IllegalStateException("Node Menu request requires a server player");

@@ -35,12 +35,12 @@ import net.minecraft.world.level.saveddata.SavedData;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Server-thread-owned v5 network shard containing immutable metadata, node records and normalized topology.
+ * Server-thread-owned v9 network shard containing immutable metadata, node records and normalized topology.
  *
  * <p>Create/load and every accessor or mutation run on the constructing server thread. Tags and caller collections
  * are never retained. Mutations validate their full intent before changing indexes and mark dirty only on a real
  * change. No method simulates, performs disk I/O, accesses a world, authorizes a player or exposes mutable state.
- * Known v3/v4/v5/v6/v7 schemas migrate in memory; malformed or unsupported input is rejected, never repaired or replaced.
+ * Known v3/v4/v5/v6/v7/v8 schemas migrate in memory; malformed or unsupported input is rejected, never repaired or replaced.
  */
 public final class NetworkSavedData extends SavedData {
     /** Owner-bound, nonmutating rename preflight; immutable snapshots may be inspected on the server thread. */
@@ -183,6 +183,7 @@ public final class NetworkSavedData extends SavedData {
     private long lastTunnelNumber;
     private long topologyRevision;
     private long managementRevision;
+    private long bucketCreatedMask;
     private final io.github.loongin.omniresonance.recovery.RecoveryBuffer recovery =
             new io.github.loongin.omniresonance.recovery.RecoveryBuffer(this::recoveryChanged);
 
@@ -208,7 +209,7 @@ public final class NetworkSavedData extends SavedData {
                 topology.domainConfigurations().values());
     }
 
-    /** Creates an empty dirty v8 shard without simulation, I/O, world access or caller mutation. */
+    /** Creates an empty dirty v9 shard without simulation, I/O, world access or caller mutation. */
     public static NetworkSavedData create(NetworkMetadata metadata) {
         NetworkSavedData data = new NetworkSavedData(metadata, 0, Map.of(), NetworkTopologyNbt.empty());
         data.setDirty();
@@ -216,7 +217,7 @@ public final class NetworkSavedData extends SavedData {
     }
 
     /**
-     * Strictly decodes a clean v3/v4/v5/v6/v7/v8 shard; v3 gains empty topology, v3/v4 gain management revision zero, and legacy direct bindings gain default policies and empty recovery.
+     * Strictly decodes a clean v3/v4/v5/v6/v7/v8/v9 shard; v3 gains empty topology, v3/v4 gain management revision zero, and legacy direct bindings gain default policies and empty recovery.
      * Migration is in memory and does not retain, dirty or modify the caller's tag or files.
      * Missing inputs throw {@link NullPointerException}; malformed/unsupported data throws {@link IllegalArgumentException}.
      */
@@ -236,7 +237,8 @@ public final class NetworkSavedData extends SavedData {
                     case 3 -> ManagedDataNbt.NETWORK_V3_FIELDS;
                     case 4 -> ManagedDataNbt.NETWORK_V4_FIELDS;
                     case 5 -> ManagedDataNbt.NETWORK_V5_FIELDS;
-                    case 6, 7, ManagedDataNbt.NETWORK_SCHEMA_VERSION -> ManagedDataNbt.NETWORK_FIELDS;
+                    case 6, 7, 8 -> ManagedDataNbt.NETWORK_V8_FIELDS;
+                    case ManagedDataNbt.NETWORK_SCHEMA_VERSION -> ManagedDataNbt.NETWORK_FIELDS;
                     default -> throw new IllegalArgumentException("Unsupported network schema");
                 };
         ManagedDataNbt.validateSchemaAndFields(tag, schemaVersion, fields);
@@ -254,8 +256,28 @@ public final class NetworkSavedData extends SavedData {
         long managementRevision = schemaVersion < 5 ? 0 : ManagedDataNbt.readManagementRevision(tag);
         NetworkSavedData data = new NetworkSavedData(metadata, decoded.lastNodeNumber(), decoded.nodes(), topology);
         data.managementRevision = managementRevision;
+        if (schemaVersion >= 9) {
+            ManagedDataNbt.requireType(tag, "bucket_created_mask", net.minecraft.nbt.Tag.TAG_LONG);
+            data.bucketCreatedMask = tag.getLong("bucket_created_mask");
+        }
         if (schemaVersion >= 6) data.recovery.restore(RecoveryNbt.decode(tag));
         return data;
+    }
+
+    /** Owner-thread immutable bitmap query; all 64 bits are identities, not a signed quantity. */
+    public long bucketCreatedMask() {
+        requireOwningThread();
+        return bucketCreatedMask;
+    }
+
+    /** Adds known bucket identities on the owner thread; clearing historical bits rejects without mutation. */
+    public void markStorageBuckets(long mask) {
+        requireOwningThread();
+        if ((mask & bucketCreatedMask) != bucketCreatedMask)
+            throw new IllegalArgumentException("Cannot clear created storage buckets");
+        if (mask == bucketCreatedMask) return;
+        bucketCreatedMask = mask;
+        super.setDirty(true);
     }
 
     /** Returns this shard's owned server-thread buffer; positive committed remainder marks this shard dirty. */
@@ -932,9 +954,58 @@ public final class NetworkSavedData extends SavedData {
         }
         NetworkNodeRecord updated = node.withConfigurationChanged();
         long nextTopologyRevision = nextTopologyRevision();
-        topology.putDomain(new DomainNodeConfiguration(nodeId, direction));
+        DomainNodeConfiguration previous = existing.orElse(null);
+        topology.putDomain(
+                previous == null
+                        ? new DomainNodeConfiguration(
+                                nodeId,
+                                new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(
+                                        io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.defaults(
+                                                direction),
+                                        Map.of()),
+                                node.form() == NodeForm.PANEL ? WorkingFaces.attachedFace() : WorkingFaces.explicit(0),
+                                false)
+                        : new DomainNodeConfiguration(
+                                nodeId,
+                                previous.storedPolicy().switchDirection(direction),
+                                previous.workingFaces(),
+                                previous.configured()));
         nodes.put(nodeId, updated);
         topologyRevision = nextTopologyRevision;
+        setDirty();
+        return updated;
+    }
+
+    /**
+     * Saves a complete domain configuration on the owner thread, clearing the legacy pending state only here.
+     * Validates policy encoding, node revision/mode, faces and direction confirmation before mutation. No
+     * simulation, permission checks, world access or disk I/O; no-op saves do not dirty or increment revisions.
+     */
+    public NetworkNodeRecord saveDomainConfiguration(
+            UUID nodeId,
+            long expectedNodeRevision,
+            io.github.loongin.omniresonance.transfer.StoredResourcePolicy policy,
+            WorkingFaces faces,
+            boolean confirmedReset) {
+        requireOwningThread();
+        Objects.requireNonNull(policy, "policy");
+        Objects.requireNonNull(faces, "faces");
+        ResourcePolicyNbt.encode(policy);
+        NetworkNodeRecord node = currentAtRevision(Objects.requireNonNull(nodeId), expectedNodeRevision)
+                .orElseThrow(() -> new IllegalStateException("Missing or stale node"));
+        if (node.mode() != NodeMode.DOMAIN)
+            throw new IllegalStateException("Domain configuration requires a domain node");
+        faces.validate(node.form());
+        DomainNodeConfiguration previous = topology.domain(nodeId).orElse(null);
+        DomainNodeConfiguration next = new DomainNodeConfiguration(nodeId, policy, faces, true);
+        if (next.equals(previous)) return node;
+        if (previous != null && previous.direction() != next.direction() && !confirmedReset)
+            throw new IllegalStateException("Changing direction requires reset confirmation");
+        NetworkNodeRecord updated = node.withConfigurationChanged();
+        long nextRevision = nextTopologyRevision();
+        topology.putDomain(next);
+        nodes.put(nodeId, updated);
+        topologyRevision = nextRevision;
         setDirty();
         return updated;
     }
@@ -1287,6 +1358,7 @@ public final class NetworkSavedData extends SavedData {
         requireOwningThread();
         Objects.requireNonNull(tag, "tag");
         tag.putInt("schema_version", ManagedDataNbt.NETWORK_SCHEMA_VERSION);
+        tag.putLong("bucket_created_mask", bucketCreatedMask);
         tag.putUUID("network_id", metadata.id());
         tag.putUUID("owner_id", metadata.ownerId());
         tag.putString("name", metadata.name().value());
@@ -1312,10 +1384,18 @@ public final class NetworkSavedData extends SavedData {
     }
 
     private @Nullable Runnable runtimeListener;
+    private @Nullable Runnable recoveryListener;
+
+    /** Installs an owner-thread recovery-only wake observer; it must enqueue without reentering resources. */
+    public void onRecoveryChanged(@Nullable Runnable listener) {
+        requireOwningThread();
+        recoveryListener = listener;
+    }
 
     private void recoveryChanged() {
         requireOwningThread();
         super.setDirty(true);
+        if (recoveryListener != null) recoveryListener.run();
     }
 
     /** Sets owned dirty state without simulation; rejects wrong-thread access before mutation. */

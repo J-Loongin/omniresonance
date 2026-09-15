@@ -313,6 +313,7 @@ final class TerminalFilterView {
                         || resourceDraft != null && state instanceof NetworkTerminalState.PresetEdit))
             return buildFull(font, body, add, changed, actions);
         if (state instanceof NetworkTerminalState.PresetEdit edit) {
+            body = editorBounds(body, edit);
             int width = Math.min(420, body.width() - 24);
             int x = body.x() + (body.width() - width) / 2;
             int y = body.y() + 54;
@@ -334,9 +335,10 @@ final class TerminalFilterView {
                 field.active = !pending;
                 add.accept(field);
             }
-            int buttonWidth = 64;
-            int buttonY = body.y() + 4;
-            int actionX = body.right() - 12 - buttonWidth * 2 - TerminalLayout.GAP;
+            var footer = TerminalActionLayout.of(body);
+            int buttonWidth = footer.primary().width();
+            int buttonY = footer.primary().y();
+            int actionX = footer.secondary().x();
             button(
                     add,
                     actionX,
@@ -486,6 +488,11 @@ final class TerminalFilterView {
             renderFull(graphics, font);
             return;
         }
+        if (state instanceof NetworkTerminalState.PresetEdit edit) {
+            var dialog = editorBounds(body, edit);
+            TerminalDialogLayout.render(graphics, body, dialog);
+            body = dialog;
+        }
         Component heading = state instanceof NetworkTerminalState.Filters
                 ? label("title")
                 : state instanceof NetworkTerminalState.Preset preset
@@ -500,10 +507,8 @@ final class TerminalFilterView {
                                 .toLowerCase(java.util.Locale.ROOT));
         graphics.drawString(
                 font,
-                TerminalText.body(Component.literal(TerminalText.ellipsize(
-                        font,
-                        heading.getString(),
-                        body.width() - (state instanceof NetworkTerminalState.PresetEdit ? 164 : 16)))),
+                TerminalText.body(
+                        Component.literal(TerminalText.ellipsize(font, heading.getString(), body.width() - 24))),
                 body.x() + 8,
                 body.y() + 7,
                 TerminalTheme.TEXT,
@@ -648,12 +653,18 @@ final class TerminalFilterView {
         return true;
     }
 
+    static TerminalLayout.Rect editorBounds(TerminalLayout.Rect body, NetworkTerminalState.PresetEdit edit) {
+        return TerminalDialogLayout.centered(body, 300, edit.impact().complete() ? 148 : 168);
+    }
+
     private @Nullable EditBox buildFull(
             Font font,
             TerminalLayout.Rect body,
             Consumer<AbstractWidget> add,
             Consumer<String> changed,
             Consumer<Action> actions) {
+        var footer = TerminalActionLayout.of(body);
+        if (resourceDraft != null) body = footer.content();
         int first = Math.max(70, body.width() / 4), second = Math.max(80, body.width() / 3);
         int searchInset = librarySearch.expanded() ? 24 : 0;
         buildLibrarySearch(font, new TerminalLayout.Rect(body.x() + 4, body.y() + 2, first - 8, 20), add);
@@ -782,18 +793,18 @@ final class TerminalFilterView {
         TerminalResourceRuleDraft draft = resourceDraft;
         button(
                 add,
-                detailBounds.x(),
-                body.y() + 2,
-                half,
+                footer.secondary().x(),
+                footer.secondary().y(),
+                footer.secondary().width(),
                 "cancel",
                 () -> actions.accept(new Action.Cancel()),
                 !pending,
                 false);
         button(
                 add,
-                detailBounds.x() + half + 4,
-                body.y() + 2,
-                half,
+                footer.primary().x(),
+                footer.primary().y(),
+                footer.primary().width(),
                 "save",
                 () -> {
                     try {

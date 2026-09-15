@@ -60,6 +60,23 @@ public final class SavedNetworkRepository {
     private final Set<net.minecraft.resources.ResourceLocation> registeredTypes;
     private final Set<String> reservedNames = new HashSet<>();
     private final Map<UUID, NetworkSavedData> loadedNetworks = new HashMap<>();
+    /** One lazy lifecycle per accessed loaded network; removed with its network or this server repository. */
+    private final Map<UUID, DomainStorage> domains = new HashMap<>();
+
+    /** Returns a lazy domain lifecycle on the server thread; this does not read bucket contents or simulate. */
+    public DomainStorage domainStorage(UUID networkId) {
+        requireOwningThread();
+        NetworkSavedData network = loadedNetworks.get(Objects.requireNonNull(networkId));
+        if (network == null) throw new IllegalArgumentException("Domain requires a loaded network");
+        DomainStorage domain = domains.get(networkId);
+        if (domain == null) {
+            domain = new DomainStorage(
+                    networkId, storage, dataDirectory, network::bucketCreatedMask, network::markStorageBuckets);
+            domains.put(networkId, domain);
+        }
+        return domain;
+    }
+
     private boolean unreadableNetworkShards;
     private @Nullable RuntimeListener runtimeListener;
     /** One server-session observer. Callbacks enqueue keys only and never read partially published authority. */
@@ -67,6 +84,8 @@ public final class SavedNetworkRepository {
         void networkChanged(UUID id);
 
         void ownerCreated(UUID id);
+
+        default void recoveryChanged(UUID id) {}
     }
     /** Installs or releases the single runtime observer without disk I/O or SavedData mutation. */
     public void onRuntimeChanged(@Nullable RuntimeListener listener) {
@@ -81,6 +100,13 @@ public final class SavedNetworkRepository {
     }
 
     private void attachRuntimeListener(NetworkSavedData data) {
+        data.onRecoveryChanged(
+                runtimeListener == null
+                        ? null
+                        : () -> {
+                            if (runtimeListener != null)
+                                runtimeListener.recoveryChanged(data.metadata().id());
+                        });
         data.onRuntimeChanged(
                 runtimeListener == null
                         ? null
@@ -285,19 +311,35 @@ public final class SavedNetworkRepository {
         }
         String name = ManagedSavedDataNames.network(id);
         Path file = dataDirectory.resolve(name + ".dat");
+        requireEmptyNetworkStorage(id);
+        long bucketMask = removed.bucketCreatedMask();
+        for (int bucket = 0; bucket < 64; bucket++) {
+            if ((bucketMask & (1L << bucket)) != 0) storage.set(ManagedSavedDataNames.networkBucket(id, bucket), null);
+        }
         storage.set(name, null);
         if (!loadedNetworks.remove(id, removed)) {
             throw new IllegalStateException("Network authority changed during removal");
         }
         removed.onRuntimeChanged(null);
+        removed.onRecoveryChanged(null);
+        DomainStorage domain = domains.remove(id);
+        if (domain != null) domain.close();
         if (runtimeListener != null) runtimeListener.networkChanged(id);
-        IOUtilities.withIOWorker(() -> deleteNetworkFile(file, id));
+        IOUtilities.withIOWorker(() -> {
+            for (int bucket = 0; bucket < 64; bucket++) {
+                if ((bucketMask & (1L << bucket)) != 0) {
+                    deleteNetworkFile(
+                            dataDirectory.resolve(ManagedSavedDataNames.networkBucket(id, bucket) + ".dat"), id);
+                }
+            }
+            deleteNetworkFile(file, id);
+        });
     }
 
     /**
-     * Verifies that one loaded healthy network has no current bucket path and only an absent/regular main path.
-     * Exactly 64 canonical bucket paths are inspected with no link following; no files are parsed, listed, changed
-     * or retained. Occupied, nonregular and unreadable paths fail closed with {@link IllegalStateException}.
+     * Verifies the main file kind and activates all declared domain buckets before proving inventory empty.
+     * Missing/corrupt/unmarked storage and in-flight reservations fail closed. Reads and activation never
+     * rewrite files; only a separately authorized removeNetwork call detaches and deletes verified-empty shards.
      */
     public void requireEmptyNetworkStorage(UUID id) {
         requireOwningThread();
@@ -310,11 +352,11 @@ public final class SavedNetworkRepository {
         if (main != null && !main.isRegularFile()) {
             throw new IllegalStateException("Network shard path is not a regular file");
         }
-        for (int bucket = 0; bucket < 64; bucket++) {
-            Path path = dataDirectory.resolve(ManagedSavedDataNames.networkBucket(id, bucket) + ".dat");
-            if (attributes(path) != null) {
-                throw new IllegalStateException("Network storage bucket prevents deletion");
-            }
+        var ledger = domainStorage(id)
+                .activate()
+                .orElseThrow(() -> new IllegalStateException("Unverifiable domain prevents deletion"));
+        if (ledger.variantCount() != 0 || ledger.hasReservations()) {
+            throw new IllegalStateException("Domain inventory or reservations prevent deletion");
         }
     }
 

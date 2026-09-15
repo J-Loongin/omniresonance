@@ -430,15 +430,17 @@ public final class NetworkTerminalService {
         return view(request, session, tunnelList(player, networkId, null, false));
     }
 
+    private NetworkTerminalState.NetworkRoot networkRoot(ServerPlayer actor, NetworkMetadata network) {
+        return new NetworkTerminalState.NetworkRoot(
+                summary(network), topology().domainStorageUnavailable(actor, network.id()));
+    }
+
     private NetworkTerminalResponse navigateBack(
             NetworkTerminalRequest request, ServerPlayer player, Session session, UUID networkId) {
         return switch (session.layer) {
             case FILTERS -> {
                 session.layer = Layer.NETWORK;
-                yield view(
-                        request,
-                        session,
-                        new NetworkTerminalState.NetworkRoot(summary(topology().inspectNetwork(player, networkId))));
+                yield view(request, session, networkRoot(player, topology().inspectNetwork(player, networkId)));
             }
             case PRESET -> {
                 session.layer = Layer.FILTERS;
@@ -455,18 +457,16 @@ public final class NetworkTerminalService {
             case MEMBERS -> {
                 session.layer = Layer.NETWORK;
                 yield view(
-                        request,
-                        session,
-                        new NetworkTerminalState.NetworkRoot(
-                                summary(administration().inspectNetwork(player, networkId))));
+                        request, session, networkRoot(player, administration().inspectNetwork(player, networkId)));
             }
             case NETWORK_SETTINGS -> {
                 session.layer = Layer.NETWORK;
                 yield view(
                         request,
                         session,
-                        new NetworkTerminalState.NetworkRoot(summary(
-                                networkSettings().inspect(player, networkId).metadata())));
+                        networkRoot(
+                                player,
+                                networkSettings().inspect(player, networkId).metadata()));
             }
             case NETWORK_RENAME, NETWORK_DELETE -> {
                 session.layer = Layer.NETWORK_SETTINGS;
@@ -484,10 +484,7 @@ public final class NetworkTerminalService {
             }
             case TUNNELS -> {
                 session.layer = Layer.NETWORK;
-                yield view(
-                        request,
-                        session,
-                        new NetworkTerminalState.NetworkRoot(summary(topology().inspectNetwork(player, networkId))));
+                yield view(request, session, networkRoot(player, topology().inspectNetwork(player, networkId)));
             }
             case TUNNEL_SETTINGS -> {
                 UUID tunnelId = requireSelectedTunnel(session);
@@ -619,7 +616,7 @@ public final class NetworkTerminalService {
             session.networkId = network.id();
             session.tunnelId = null;
             session.layer = Layer.NETWORK;
-            return view(request, session, new NetworkTerminalState.NetworkRoot(summary(network)));
+            return view(request, session, networkRoot(sender, network));
         }
         UUID networkId = requireSelectedNetwork(session);
         if (request instanceof NetworkTerminalRequest.OpenFilters

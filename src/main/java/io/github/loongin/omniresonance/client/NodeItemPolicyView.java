@@ -12,7 +12,7 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.network.chat.Component;
 
-/** Four paired item-policy rows with an explicit compact header save action. */
+/** Four paired item-policy rows with an explicit shared bottom save action. */
 final class NodeItemPolicyView {
     private static final int ROW_HEIGHT = 32;
 
@@ -28,9 +28,10 @@ final class NodeItemPolicyView {
     }
 
     static Layout layout(TerminalLayout.Rect body, int scroll) {
-        var actions = new TerminalLayout.Rect(body.right() - 76, body.y() + 4, 64, 20);
-        var form = new TerminalLayout.Rect(body.x() + 12, body.y() + 28, body.width() - 24, 128);
-        return new Layout(form, actions, 0, 4);
+        var footer = TerminalActionLayout.of(body);
+        int visible = Math.min(4, Math.max(1, (footer.content().height() - 16) / ROW_HEIGHT));
+        var form = new TerminalLayout.Rect(body.x() + 12, body.y() + 8, body.width() - 24, visible * ROW_HEIGHT);
+        return new Layout(form, footer.primary(), Math.clamp(scroll, 0, 4 - visible), visible);
     }
 
     static void build(

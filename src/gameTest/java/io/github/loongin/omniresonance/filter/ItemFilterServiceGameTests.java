@@ -118,6 +118,65 @@ public final class ItemFilterServiceGameTests {
     private ItemFilterServiceGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void privateDomainReferencesRestrictPresetEdits(GameTestHelper helper) throws IOException {
+        for (boolean indirect : new boolean[] {false, true}) {
+            try (Fixture f = new Fixture(helper, false)) {
+                UUID selectedPreset = PRESET;
+                if (indirect) {
+                    selectedPreset = new UUID(942, 91);
+                    f.library.putPreset(
+                            new ResourceFilterPreset(
+                                    selectedPreset,
+                                    new ManagedName("Domain parent"),
+                                    0,
+                                    List.of(new ResourceFilterRule.Reference(new UUID(943, 91), PRESET))),
+                            f.library.presetLibraryRevision(),
+                            -1,
+                            -1);
+                }
+                var node = f.privateNetwork.createNode(
+                        NODE,
+                        new ManagedName("Domain"),
+                        GlobalPos.of(Level.OVERWORLD, new BlockPos(11000000, 64, 11000000)),
+                        NodeForm.BLOCK,
+                        Direction.DOWN);
+                node = f.privateNetwork
+                        .setNodeMode(NODE, node.revision(), NodeMode.DOMAIN, false)
+                        .orElseThrow();
+                var policy = new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.Output(
+                        1,
+                        io.github.loongin.omniresonance.transfer.ResourceScope.all(),
+                        RedstoneCondition.IGNORE,
+                        selectedPreset,
+                        FilterMode.WHITELIST,
+                        java.util.Map.of(),
+                        0);
+                f.privateNetwork.saveDomainConfiguration(
+                        NODE,
+                        node.revision(),
+                        new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(policy, java.util.Map.of()),
+                        io.github.loongin.omniresonance.network.WorkingFaces.explicit(0),
+                        false);
+                reject(
+                        helper,
+                        ItemFilterService.Reason.NO_ACCESS,
+                        () -> f.service.begin(f.admin, NETWORK, PresetEditOperation.RENAME, PRESET, ""));
+                var edit = f.service.begin(f.owner, NETWORK, PresetEditOperation.RENAME, PRESET, "");
+                f.service.save(f.owner, edit, "Owner edit");
+                helper.assertTrue(
+                        f.library
+                                .findPreset(PRESET)
+                                .orElseThrow()
+                                .name()
+                                .value()
+                                .equals("Owner edit"),
+                        "Owner could not edit a domain-referenced preset");
+            }
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void ruleReplacementIsOneObservableCommitAtQuotaAndMergesExistingIds(GameTestHelper helper)
             throws IOException {
         try (Fixture f = new Fixture(helper, false)) {

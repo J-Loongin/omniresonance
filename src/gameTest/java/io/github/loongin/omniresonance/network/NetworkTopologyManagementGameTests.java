@@ -55,6 +55,53 @@ public final class NetworkTopologyManagementGameTests {
     private NetworkTopologyManagementGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void fullDomainSaveUsesLeaseAndCannotSelectForeignPreset(GameTestHelper helper) throws IOException {
+        try (Fixture f = new Fixture(helper, ServerSettings.defaults())) {
+            NetworkNodeRecord previous = f.data.findNode(NODE_A).orElseThrow();
+            NetworkNodeRecord domainNode = f.data.setNodeMode(NODE_A, previous.revision(), NodeMode.DOMAIN, true)
+                    .orElseThrow();
+            f.nodes.update(
+                    new NetworkNodeDirectory.Entry(NETWORK, previous),
+                    new NetworkNodeDirectory.Entry(NETWORK, domainNode));
+            ServerPlayer owner = player(helper, OWNER);
+            var edit = f.service.acquireNode(owner, NETWORK, NODE_A);
+            var draft = f.service.validateDomainEdit(owner, edit);
+            helper.assertTrue(
+                    !draft.configured() && draft.workingFaces().equals(WorkingFaces.explicit(0)),
+                    "Fresh block domain must need a full save and explicit faces");
+            var invalid = new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.Input(
+                    1,
+                    io.github.loongin.omniresonance.transfer.ResourceScope.all(),
+                    io.github.loongin.omniresonance.transfer.RedstoneCondition.IGNORE,
+                    new UUID(555, 1),
+                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                    java.util.Map.of(),
+                    0);
+            var intent = io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(
+                    new io.github.loongin.omniresonance.transfer.StoredResourcePolicy(invalid, java.util.Map.of()));
+            f.data.setDirty(false);
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.UNAVAILABLE,
+                    () -> f.service.saveDomainConfiguration(owner, edit, intent, WorkingFaces.explicit(1), false));
+            helper.assertTrue(
+                    !f.data.isDirty() && f.data.domainConfiguration(NODE_A).isEmpty(),
+                    "Rejected domain save mutated authority");
+            var good = io.github.loongin.omniresonance.transfer.ResourcePolicyEdit.fromStored(draft.storedPolicy());
+            f.service.saveDomainConfiguration(owner, edit, good, WorkingFaces.explicit(48), false);
+            var saved = f.data.domainConfiguration(NODE_A).orElseThrow();
+            helper.assertTrue(
+                    saved.configured() && saved.workingFaces().equals(WorkingFaces.explicit(48)),
+                    "Full domain save was not published");
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.LOCK_EXPIRED,
+                    () -> f.service.saveDomainConfiguration(owner, edit, good, WorkingFaces.explicit(48), false));
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void workingFaceDraftSaveRevalidatesAuthority(GameTestHelper helper) throws IOException {
         try (Fixture f = new Fixture(helper, ServerSettings.defaults())) {
             f.seedTunnelAndChannel();

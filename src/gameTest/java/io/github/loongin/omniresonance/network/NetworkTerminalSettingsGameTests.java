@@ -52,6 +52,48 @@ public final class NetworkTerminalSettingsGameTests {
     private NetworkTerminalSettingsGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void networkHomeReportsKnownDomainFailureWithoutActivatingHealthyStorage(GameTestHelper helper)
+            throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER);
+            fixture.open(owner, OWNER_VIEW, OWNER_SESSION);
+            var domain = fixture.repository.domainStorage(NETWORK);
+            var before = domain.state();
+            var initial = state(
+                    helper,
+                    fixture.terminal.handle(
+                            owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK)),
+                    NetworkTerminalState.NetworkRoot.class);
+            helper.assertTrue(
+                    !((NetworkTerminalState.NetworkRoot) initial.state()).domainUnavailable(),
+                    "Inactive storage was reported as failed");
+            helper.assertTrue(domain.state() == before, "Opening the terminal activated resource buckets");
+            fixture.repository.findLoadedNetwork(NETWORK).orElseThrow().markStorageBuckets(1L);
+            helper.assertTrue(domain.activate().isEmpty(), "Missing bucket was accepted");
+            var failed = state(
+                    helper,
+                    fixture.terminal.handle(
+                            owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 2, NETWORK)),
+                    NetworkTerminalState.NetworkRoot.class);
+            helper.assertTrue(
+                    ((NetworkTerminalState.NetworkRoot) failed.state()).domainUnavailable(),
+                    "Terminal hid the known storage failure");
+            fixture.open(player(helper, ADMINISTRATOR), ADMIN_VIEW, ADMIN_SESSION);
+            ServerPlayer other = player(helper, OTHER_OWNER);
+            fixture.open(other, OTHER_VIEW, OTHER_SESSION);
+            var healthy = state(
+                    helper,
+                    fixture.terminal.handle(
+                            other, new NetworkTerminalRequest.OpenNetwork(OTHER_VIEW, OTHER_SESSION, 1, UNRELATED)),
+                    NetworkTerminalState.NetworkRoot.class);
+            helper.assertTrue(
+                    !((NetworkTerminalState.NetworkRoot) healthy.state()).domainUnavailable(),
+                    "One failed domain marked another network unavailable");
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
     public static void ruleEditWireRoutePinsSourceAndCommitsWholePresetOnce(GameTestHelper helper) throws IOException {
         try (Fixture fixture = new Fixture(helper)) {
             ServerPlayer owner = player(helper, OWNER);
