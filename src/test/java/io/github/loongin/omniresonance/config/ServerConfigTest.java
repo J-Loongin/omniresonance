@@ -27,6 +27,55 @@ class ServerConfigTest {
     private static final String ADMINISTRATORS_KEY = "network_limits.administrators_per_network";
 
     @Test
+    void terminalAccessReloadPublishesAtomicallyAndUnloadingRestoresReadOnly() {
+        String key = "terminal.direct_storage_access";
+        ServerConfig config = new ServerConfig();
+        CommentedConfig values = loadNative(config, 32);
+        assertEquals(
+                ServerSettings.DirectStorageAccess.READ_ONLY,
+                config.captureLoading(true).settings().directStorageAccess());
+        values.set(key, "read_write");
+        config.spec().afterReload();
+        ServerConfig.State writable = config.captureReloading(true);
+        assertEquals(
+                ServerSettings.DirectStorageAccess.READ_WRITE,
+                writable.settings().directStorageAccess());
+        values.set(key, "invalid");
+        config.spec().afterReload();
+        assertSame(writable, config.captureReloading(true));
+        values.set(key, "read_only");
+        config.spec().afterReload();
+        assertEquals(
+                ServerSettings.DirectStorageAccess.READ_ONLY,
+                config.captureReloading(true).settings().directStorageAccess());
+        assertEquals(
+                ServerSettings.DirectStorageAccess.READ_WRITE,
+                writable.settings().directStorageAccess());
+        assertEquals(
+                ServerSettings.DirectStorageAccess.READ_ONLY,
+                config.captureUnloading().settings().directStorageAccess());
+    }
+
+    @Test
+    void terminalAccessUsesNativeDefaultsAndRejectsUnknownModes() {
+        String key = "terminal.direct_storage_access";
+        ServerConfig config = new ServerConfig();
+        CommentedConfig values = CommentedConfig.inMemory();
+        config.spec().correct(values);
+        assertEquals("read_only", values.get(key));
+        for (String mode : List.of("read_only", "read_write")) {
+            values.set(key, mode);
+            config.spec().correct(values);
+            assertEquals(mode, values.get(key));
+        }
+        for (Object mode : List.of("write", "READ_WRITE", "", true, 1)) {
+            values.set(key, mode);
+            config.spec().correct(values);
+            assertEquals("read_only", values.get(key));
+        }
+    }
+
+    @Test
     void administratorQuotaUsesConfirmedDefaultsBoundsAndBilingualComments() {
         ServerConfig config = new ServerConfig();
         CommentedConfig values = CommentedConfig.inMemory();

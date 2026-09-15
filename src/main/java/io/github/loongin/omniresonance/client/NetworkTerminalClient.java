@@ -48,7 +48,14 @@ public final class NetworkTerminalClient {
         NeoForge.EVENT_BUS.addListener(this::onClientTick);
         NeoForge.EVENT_BUS.addListener(this::onLoggingIn);
         NeoForge.EVENT_BUS.addListener(this::onLoggingOut);
+        NeoForge.EVENT_BUS.addListener(this::onTagsUpdated);
         NetworkPayloads.installClientReceiver(this::receive);
+        NetworkPayloads.installStorageReceiver(response -> {
+            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveStorage(response);
+        });
+        NetworkPayloads.installInventoryReceiver(frame -> {
+            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveInventory(frame);
+        });
         io.github.loongin.omniresonance.networking.NodeMenuPayloads.installTerminalTransferReceiver(message -> {
             if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen)
                 screen.receiveFilterTransfer(message);
@@ -75,6 +82,16 @@ public final class NetworkTerminalClient {
         if (!canSend()) {
             return false;
         }
+        PacketDistributor.sendToServer(request);
+        return true;
+    }
+
+    void sendStorage(io.github.loongin.omniresonance.networking.TerminalStorageRequest request) {
+        if (canSend()) PacketDistributor.sendToServer(request);
+    }
+
+    boolean sendInventory(io.github.loongin.omniresonance.networking.DomainInventoryRequest request) {
+        if (!canSend()) return false;
         PacketDistributor.sendToServer(request);
         return true;
     }
@@ -112,6 +129,15 @@ public final class NetworkTerminalClient {
         }
     }
 
+    private void onTagsUpdated(net.neoforged.neoforge.event.TagsUpdatedEvent event) {
+        if (event.getUpdateCause() != net.neoforged.neoforge.event.TagsUpdatedEvent.UpdateCause.CLIENT_PACKET_RECEIVED)
+            return;
+        Minecraft.getInstance().execute(() -> {
+            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen)
+                screen.invalidateInventoryMetadata();
+        });
+    }
+
     private void onLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
         connected = true;
         firstPromptDismissed = false;
@@ -119,6 +145,7 @@ public final class NetworkTerminalClient {
 
     private void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         connected = false;
+        TerminalTagClipboard.clear();
         firstPromptDismissed = false;
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.screen instanceof NetworkSetupScreen screen) {

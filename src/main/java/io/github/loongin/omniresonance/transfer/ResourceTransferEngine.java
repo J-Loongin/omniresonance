@@ -13,7 +13,7 @@ import org.jetbrains.annotations.Nullable;
 
 /**
  * Server-thread-only synchronous resource commits. No resource or simulation promise survives a call.
- * Greedy commits use one selected source/target view and at most ten native calls. Exact preparation uses
+ * Greedy commits use one selected source/target view; ordinary ports use at most ten native calls, while carrier settlement uses the declared dynamic bound. Exact preparation uses
  * the caller's current tick budget, then admits the entire modification and worst-case return segment.
  * Known leftovers are disposed before returning; unknown external modifications are never retried.
  * This internal engine neither discovers capabilities nor owns scheduling allowances or receive windows.
@@ -156,7 +156,7 @@ public final class ResourceTransferEngine {
     /**
      * One selected-view soft-budget unit. Caller supplies the already keep/filter/allowance-limited amount.
      * Empty allowance and exhausted budget short-circuit. Once admitted, known remainder cleanup may overrun
-     * budget, bounded by ten native calls total. Simulations do not reserve recovery space or modify authority.
+     * budget, bounded by the declared mutation-call metadata (ten calls for ordinary ports). Simulations do not reserve recovery space or modify authority.
      */
     public Result commitGreedy(
             Handle source,
@@ -168,8 +168,23 @@ public final class ResourceTransferEngine {
             RecoveryBuffer recovery,
             ServerSettings.RecoveryLimits limits,
             TransferWorkBudget budget) {
+        return commitGreedy(source, sourceView, target, targetView, variant, amount, recovery, limits, budget, false);
+    }
+
+    /** Finishes an already admitted bounded discovery/greedy unit; only package-owned terminal discovery uses this. */
+    Result commitGreedy(
+            Handle source,
+            int sourceView,
+            Handle target,
+            int targetView,
+            ResourceVariant variant,
+            long amount,
+            RecoveryBuffer recovery,
+            ServerSettings.RecoveryLimits limits,
+            TransferWorkBudget budget,
+            boolean admitted) {
         if (amount <= 0) return empty(Failure.REFUSED);
-        if (!budget.canStart()) return empty(Failure.WAITING_BUDGET);
+        if (!admitted && !budget.canStart()) return empty(Failure.WAITING_BUDGET);
         int requested = (int) Math.min(Integer.MAX_VALUE, amount);
         try {
             if (!eligible(source, target, variant)) return empty(Failure.INVALID_ENDPOINT);
@@ -312,9 +327,26 @@ public final class ResourceTransferEngine {
         return 4L * sourceSteps + 2L * targetSteps;
     }
 
+    /** Pure bound for one greedy unit, including queries/simulations and worst-case source return. Zero means a private ledger port. */
+    public static long maximumGreedyCalls(int sourceMutationCalls, int targetMutationCalls) {
+        if (sourceMutationCalls < 0 || targetMutationCalls < 0)
+            throw new IllegalArgumentException("Negative native call bound");
+        return (sourceMutationCalls == 0 ? 0 : 4L + 2L * sourceMutationCalls)
+                + (targetMutationCalls == 0 ? 0 : 3L + targetMutationCalls);
+    }
+
+    private static int mutationCalls(ResourcePort port) {
+        int calls = port.maximumMutationCalls();
+        if (calls < 0 || (calls == 0) == port.usesNativeCalls())
+            throw new IllegalArgumentException("Invalid native mutation bound");
+        return calls;
+    }
+
     private static long maximumModificationCalls(Handle source, int sourceSteps, Handle target, int targetSteps) {
-        return (source.port().usesNativeCalls() ? 4L * sourceSteps : 0)
-                + (target.port().usesNativeCalls() ? 2L * targetSteps : 0);
+        int sourceCalls = mutationCalls(source.port()), targetCalls = mutationCalls(target.port());
+        return Math.addExact(
+                sourceCalls == 0 ? 0 : Math.multiplyExact(2L + 2L * sourceCalls, sourceSteps),
+                targetCalls == 0 ? 0 : Math.multiplyExact(1L + targetCalls, targetSteps));
     }
 
     private static Result execute(
@@ -328,13 +360,18 @@ public final class ResourceTransferEngine {
             RecoveryBuffer recovery,
             ServerSettings.RecoveryLimits limits,
             TransferWorkBudget budget) {
+        long segmentBound;
+        try {
+            segmentBound = maximumModificationCalls(source, inputs.size(), target, outputs.size());
+        } catch (RuntimeException invalidBound) {
+            return exception(invalidBound);
+        }
         RecoveryBuffer.Reservation reservation = recovery.reserve(
                         variant.key(), requested, limits.maxVariantsPerNetwork(), limits.maxEncodedBytesPerNetwork())
                 .orElse(null);
         if (reservation == null) return empty(Failure.RECOVERY_FULL);
         Commit state = new Commit();
         long segmentStartCalls = budget.calls();
-        long segmentBound = maximumModificationCalls(source, inputs.size(), target, outputs.size());
         try (reservation) {
             try {
                 try {

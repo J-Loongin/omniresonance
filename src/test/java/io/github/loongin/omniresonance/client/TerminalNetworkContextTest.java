@@ -17,6 +17,21 @@ final class TerminalNetworkContextTest {
     private static final NetworkSummary NETWORK = new NetworkSummary(new UUID(1, 1), new UUID(2, 2), "Fresh network");
 
     @Test
+    void inventorySubpageKeepsTheNetworkLabelButCannotSwitchNetworks() {
+        var context = new TerminalNetworkContext();
+        context.apply(new NetworkTerminalState.NetworkRoot(NETWORK));
+        assertTrue(context.selectable());
+        context.open = true;
+        context.readOnly(true);
+        assertFalse(context.selectable());
+        assertFalse(context.open);
+        assertEquals(NETWORK.name(), context.label().getString());
+        assertNull(context.buildSelector(new TerminalLayout.Rect(0, 0, 100, 20), "Network", true, () -> {}));
+        context.readOnly(false);
+        assertTrue(context.selectable());
+    }
+
+    @Test
     void screenEscapeRouteClosesHomeDropdownBeforeReturningOrClosingScreen() {
         var context = new TerminalNetworkContext();
         context.apply(new NetworkTerminalState.NetworkRoot(NETWORK));

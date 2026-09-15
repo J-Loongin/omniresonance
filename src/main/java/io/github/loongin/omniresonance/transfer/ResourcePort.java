@@ -12,8 +12,8 @@ import net.minecraft.resources.ResourceLocation;
  * Dynamic counts are preparation: refresh the appropriate view count for each transaction before operations.
  * Implementations retain only the latest successfully observed bound per view kind (constant capacity,
  * port-owned, replaced on refresh, discarded with the port). It is not a validity promise across native calls.
- * Native adapters perform one native query where needed; their peek/extract/insert perform one native call after
- * local request validation/reconstruction. Private ledger ports make zero native calls and must validate before any mutation;
+ * Native adapters perform one native query where needed; their peek and simulations perform one native call after
+ * local request validation/reconstruction; real mutations use maximumMutationCalls(), including required container settlement. Private ledger ports make zero native calls and must validate before any mutation;
  * a modifying RuntimeException without an advanced native marker therefore still proves no quantity moved. Every native invocation must increment the supplied budget via
  * beforeCall before entering native code, and no resource mutation may precede that marker. The budget is
  * owned exclusively by the calling server thread during an operation. Therefore an unchanged calls() count
@@ -26,6 +26,12 @@ public interface ResourcePort {
      * private ledger ports return false and promise zero native access for every operation. */
     default boolean usesNativeCalls() {
         return true;
+    }
+
+    /** Pure upper bound per real extract/insert, including required carrier settlement queries. Ordinary native
+     * ports use one call; private ledger ports use zero. The declared finite bound participates in exact admission. */
+    default int maximumMutationCalls() {
+        return usesNativeCalls() ? 1 : 0;
     }
 
     /** Internal execution admission after simulations and before extraction. Native ports require no extra state.

@@ -30,9 +30,125 @@ public final class DomainLedger {
     private final Map<ResourceVariantKey, Entry> entries = new HashMap<>();
     private final TreeMap<Long, Entry> visible = new TreeMap<>();
     private long lastSequence;
+    private long revision;
+    private long reservedRevisions;
+    private @org.jetbrains.annotations.Nullable ChangeJournal changes;
     private int reservations;
     private boolean available = true;
     private @org.jetbrains.annotations.Nullable java.util.function.Consumer<ResourceVariantKey> retired;
+
+    /** Immutable absolute inventory event; zero removes the runtime ID and revisions are monotonically increasing. */
+    public record Change(long sequence, ResourceVariantKey key, long amount, long revision) {}
+
+    /** Owner-thread nonmutating revision query. Reservations and simulations do not advance it. */
+    public long revision() {
+        checkThread();
+        return revision;
+    }
+
+    /**
+     * Opens the sole owner-thread publisher journal before a snapshot ceiling is read. The publisher fans out
+     * changes to its receivers; competing publishers reject without mutation. Closing releases all pending keys.
+     * Only 1..65536 unique unsent IDs may be retained; overflow fails the journal without affecting inventory.
+     */
+    public ChangeJournal openChanges(int maximumEntries) {
+        checkThread();
+        if (maximumEntries < 1 || maximumEntries > 65536) throw new IllegalArgumentException("Invalid journal bound");
+        if (changes != null) throw new IllegalStateException("Domain already has a change publisher");
+        changes = new ChangeJournal(maximumEntries);
+        return changes;
+    }
+
+    /** Owner-thread O(log n) live-ID lookup; retired IDs return empty and unavailable ledgers throw before lookup. */
+    public Optional<Cursor> findSequence(long sequence) {
+        checkThread();
+        if (sequence <= 0) return Optional.empty();
+        Entry entry = visible.get(sequence);
+        return entry == null ? Optional.empty() : Optional.of(new Cursor(entry.sequence, entry.key, entry.amount));
+    }
+
+    /**
+     * Owner-thread finite snapshot scan: returns the next live ID in (after, ceiling], without wrapping, copying
+     * a complete map, or changing cursors. Quantities are current reads; subscribe before fixing the ceiling.
+     */
+    public Optional<Cursor> nextWithin(long after, long ceiling) {
+        checkThread();
+        if (after < 0 || ceiling < 0 || ceiling > lastSequence)
+            throw new IllegalArgumentException("Invalid scan fence");
+        Map.Entry<Long, Entry> next = visible.higherEntry(after);
+        if (next == null || next.getKey() > ceiling) return Optional.empty();
+        Entry entry = next.getValue();
+        return Optional.of(new Cursor(entry.sequence, entry.key, entry.amount));
+    }
+
+    /**
+     * Ledger-owned bounded absolute-change queue. All methods require the owner thread. Polling consumes one
+     * event, never inventory; failed/closed journals reject polling and must be replaced by explicit resync.
+     * Repeated changes retain only the latest amount for that ID. There is no idle history or retry queue.
+     */
+    public final class ChangeJournal implements AutoCloseable {
+        private int maximumEntries;
+        private final java.util.LinkedHashMap<Long, Change> pending = new java.util.LinkedHashMap<>();
+        private boolean failed;
+        private boolean closed;
+
+        private ChangeJournal(int maximumEntries) {
+            this.maximumEntries = maximumEntries;
+        }
+
+        /** Applies a new owner-thread limit; reducing below pending IDs fails rather than dropping updates. */
+        public void limit(int maximumEntries) {
+            checkOwner();
+            if (maximumEntries < 1 || maximumEntries > 65536)
+                throw new IllegalArgumentException("Invalid journal bound");
+            this.maximumEntries = maximumEntries;
+            if (pending.size() > maximumEntries) fail();
+        }
+
+        private void record(Entry entry) {
+            if (closed || failed) return;
+            if (!pending.containsKey(entry.sequence) && pending.size() >= maximumEntries) {
+                fail();
+                return;
+            }
+            pending.put(entry.sequence, new Change(entry.sequence, entry.key, entry.amount, revision));
+        }
+
+        private void fail() {
+            failed = true;
+            pending.clear();
+        }
+
+        /** Owner-thread status read; failure is sticky until this journal is closed and a new one is opened. */
+        public boolean failed() {
+            checkOwner();
+            return failed || closed || !available;
+        }
+
+        /** Owner-thread O(1) count of retained IDs; does not consume events or inventory. */
+        public int pendingCount() {
+            checkOwner();
+            return pending.size();
+        }
+
+        /** Consumes the oldest coalesced slot on the owner thread, or rejects a failed/closed journal. */
+        public Optional<Change> poll() {
+            checkOwner();
+            if (failed()) throw new IllegalStateException("Domain changes are unavailable");
+            if (pending.isEmpty()) return Optional.empty();
+            var first = pending.pollFirstEntry();
+            return Optional.of(first.getValue());
+        }
+
+        @Override
+        public void close() {
+            checkOwner();
+            if (closed) return;
+            closed = true;
+            pending.clear();
+            if (changes == this) changes = null;
+        }
+    }
 
     /** Installs/releases the single owner-thread runtime retirement observer. It must only evict derived state.
      * Notifications follow final ownership release, never a transient zero while a return remains reserved. */
@@ -123,7 +239,9 @@ public final class DomainLedger {
     public Optional<Deposit> reserveDeposit(ResourceVariantKey key, long amount, long variantLimit) {
         checkThread();
         if (amount <= 0) throw new IllegalArgumentException("Nonpositive domain deposit");
-        if (insertCapacity(key, variantLimit) < amount || reservations == Integer.MAX_VALUE) return Optional.empty();
+        if (insertCapacity(key, variantLimit) < amount
+                || reservations == Integer.MAX_VALUE
+                || revision > Long.MAX_VALUE - reservedRevisions - 1) return Optional.empty();
         Entry entry = entries.get(key);
         if (entry == null) {
             if (lastSequence == Long.MAX_VALUE) throw new IllegalStateException("Domain runtime sequence exhausted");
@@ -138,6 +256,7 @@ public final class DomainLedger {
             entry = new Entry(key, bucket, nextSequence());
             entries.put(key, entry);
         }
+        reservedRevisions++;
         entry.incoming += amount;
         entry.reservations++;
         reservations++;
@@ -154,7 +273,11 @@ public final class DomainLedger {
         Objects.requireNonNull(key);
         if (amount <= 0) throw new IllegalArgumentException("Nonpositive domain withdrawal");
         Entry entry = entries.get(key);
-        if (entry == null || entry.amount < amount || reservations == Integer.MAX_VALUE) return Optional.empty();
+        if (entry == null
+                || entry.amount < amount
+                || reservations == Integer.MAX_VALUE
+                || revision > Long.MAX_VALUE - reservedRevisions - 2) return Optional.empty();
+        reservedRevisions++;
         setAmount(entry, entry.amount - amount);
         entry.returnable += amount;
         entry.reservations++;
@@ -177,10 +300,14 @@ public final class DomainLedger {
     }
 
     private void setAmount(Entry entry, long amount) {
+        if (entry.amount == amount) return;
+        long nextRevision = Math.incrementExact(revision);
         entry.bucket.setAmount(entry.key, amount);
         if (entry.amount == 0 && amount > 0) visible.put(entry.sequence, entry);
         else if (entry.amount > 0 && amount == 0) visible.remove(entry.sequence);
         entry.amount = amount;
+        revision = nextRevision;
+        if (changes != null) changes.record(entry);
     }
 
     private void release(Entry entry) {
@@ -219,6 +346,7 @@ public final class DomainLedger {
     public void invalidate() {
         checkOwner();
         available = false;
+        if (changes != null) changes.fail();
     }
 
     /** Owner-thread lifecycle query, usable after invalidation; does not inspect quantities or mutate state. */
@@ -278,6 +406,7 @@ public final class DomainLedger {
             checkOwner();
             if (closed) return;
             entry.incoming -= reserved;
+            reservedRevisions--;
             release(entry);
             closed = true;
         }
@@ -309,6 +438,7 @@ public final class DomainLedger {
             checkOwner();
             if (closed) return;
             entry.returnable -= taken;
+            reservedRevisions--;
             release(entry);
             closed = true;
         }

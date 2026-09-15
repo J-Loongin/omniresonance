@@ -31,8 +31,26 @@ public final class DomainTransferEngine {
             RecoveryBuffer recovery,
             ServerSettings.RecoveryLimits limits,
             TransferWorkBudget budget) {
+        return depositGreedy(
+                source, sourceView, ledger, variant, amount, variantLimit, valid, recovery, limits, budget, false);
+    }
+
+    /** Package-owned bounded terminal units may finish after their capability discovery consumes the soft budget. */
+    ResourceTransferEngine.Result depositGreedy(
+            ResourceTransferEngine.Handle source,
+            int sourceView,
+            DomainLedger ledger,
+            ResourceVariant variant,
+            long amount,
+            long variantLimit,
+            BooleanSupplier valid,
+            RecoveryBuffer recovery,
+            ServerSettings.RecoveryLimits limits,
+            TransferWorkBudget budget,
+            boolean admitted) {
         try (LedgerPort target = new LedgerPort(ledger, variant, variantLimit, valid, true)) {
-            return engine.commitGreedy(source, sourceView, target, 0, variant, amount, recovery, limits, budget);
+            return engine.commitGreedy(
+                    source, sourceView, target, 0, variant, amount, recovery, limits, budget, admitted);
         }
     }
 
@@ -74,8 +92,24 @@ public final class DomainTransferEngine {
             RecoveryBuffer recovery,
             ServerSettings.RecoveryLimits limits,
             TransferWorkBudget budget) {
+        return withdrawGreedy(ledger, target, targetView, variant, amount, valid, recovery, limits, budget, false);
+    }
+
+    /** Completes one already admitted terminal unit; no loop or external promise crosses this boundary. */
+    ResourceTransferEngine.Result withdrawGreedy(
+            DomainLedger ledger,
+            ResourceTransferEngine.Handle target,
+            int targetView,
+            ResourceVariant variant,
+            long amount,
+            BooleanSupplier valid,
+            RecoveryBuffer recovery,
+            ServerSettings.RecoveryLimits limits,
+            TransferWorkBudget budget,
+            boolean admitted) {
         try (LedgerPort source = new LedgerPort(ledger, variant, -1, valid, false)) {
-            return engine.commitGreedy(source, 0, target, targetView, variant, amount, recovery, limits, budget);
+            return engine.commitGreedy(
+                    source, 0, target, targetView, variant, amount, recovery, limits, budget, admitted);
         }
     }
 

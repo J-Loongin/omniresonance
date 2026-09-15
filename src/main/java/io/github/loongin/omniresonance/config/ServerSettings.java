@@ -15,7 +15,9 @@ public record ServerSettings(
         Scheduler scheduler,
         FilterLimits filterLimits,
         RecoveryLimits recoveryLimits,
-        long storageVariantLimitPerNetwork) {
+        long storageVariantLimitPerNetwork,
+        TerminalSync terminalSync,
+        DirectStorageAccess directStorageAccess) {
     public ServerSettings {
         ServerConfig.validateNetworksPerOwner(networksPerOwner);
         ServerConfig.validateTunnelsPerNetwork(tunnelsPerNetwork);
@@ -26,6 +28,99 @@ public record ServerSettings(
         java.util.Objects.requireNonNull(filterLimits, "filterLimits");
         java.util.Objects.requireNonNull(recoveryLimits, "recoveryLimits");
         ServerConfig.validateM2("storage.variant_limit_per_network", storageVariantLimitPerNetwork);
+        java.util.Objects.requireNonNull(terminalSync, "terminalSync");
+        java.util.Objects.requireNonNull(directStorageAccess, "directStorageAccess");
+    }
+
+    /** Immutable terminal policy; parsing is strict and never changes player or storage state. */
+    public enum DirectStorageAccess {
+        READ_ONLY("read_only"),
+        READ_WRITE("read_write");
+
+        private final String id;
+
+        DirectStorageAccess(String id) {
+            this.id = id;
+        }
+
+        public String id() {
+            return id;
+        }
+
+        public static DirectStorageAccess parse(String id) {
+            for (DirectStorageAccess mode : values()) if (mode.id.equals(id)) return mode;
+            throw new IllegalArgumentException("Unknown terminal storage access mode");
+        }
+    }
+
+    /** Existing callers retain the registered read-only terminal policy. */
+    public ServerSettings(
+            int networksPerOwner,
+            int tunnelsPerNetwork,
+            int channelsPerTunnel,
+            int channelBindingsPerDirectNode,
+            int administratorsPerNetwork,
+            Scheduler scheduler,
+            FilterLimits filterLimits,
+            RecoveryLimits recoveryLimits,
+            long storageVariantLimitPerNetwork,
+            TerminalSync terminalSync) {
+        this(
+                networksPerOwner,
+                tunnelsPerNetwork,
+                channelsPerTunnel,
+                channelBindingsPerDirectNode,
+                administratorsPerNetwork,
+                scheduler,
+                filterLimits,
+                recoveryLimits,
+                storageVariantLimitPerNetwork,
+                terminalSync,
+                DirectStorageAccess.parse((String) ServerConfig.defaultM2("terminal.direct_storage_access")));
+    }
+
+    /** Preserves prior callers while terminal synchronization uses the confirmed default limits. */
+    public ServerSettings(
+            int networksPerOwner,
+            int tunnelsPerNetwork,
+            int channelsPerTunnel,
+            int channelBindingsPerDirectNode,
+            int administratorsPerNetwork,
+            Scheduler scheduler,
+            FilterLimits filterLimits,
+            RecoveryLimits recoveryLimits,
+            long storageVariantLimitPerNetwork) {
+        this(
+                networksPerOwner,
+                tunnelsPerNetwork,
+                channelsPerTunnel,
+                channelBindingsPerDirectNode,
+                administratorsPerNetwork,
+                scheduler,
+                filterLimits,
+                recoveryLimits,
+                storageVariantLimitPerNetwork,
+                TerminalSync.defaults());
+    }
+
+    /** Immutable synchronization limits, validated atomically before server-thread publication. */
+    public record TerminalSync(long bytesPerPlayer, long bytesServer, int concurrentFull, int pendingEntries) {
+        public TerminalSync {
+            ServerConfig.validateM2("terminal_sync.bytes_per_player_per_tick", bytesPerPlayer);
+            ServerConfig.validateM2("terminal_sync.bytes_server_per_tick", bytesServer);
+            ServerConfig.validateM2("terminal_sync.max_concurrent_full_syncs", concurrentFull);
+            ServerConfig.validateM2("terminal_sync.pending_delta_entries", pendingEntries);
+            if (bytesServer < bytesPerPlayer)
+                throw new IllegalArgumentException("Server byte budget is below player budget");
+        }
+
+        public static TerminalSync defaults() {
+            return new TerminalSync(
+                    (Long) ServerConfig.defaultM2("terminal_sync.bytes_per_player_per_tick"),
+                    (Long) ServerConfig.defaultM2("terminal_sync.bytes_server_per_tick"),
+                    (Integer) ServerConfig.defaultM2("terminal_sync.max_concurrent_full_syncs"),
+                    (Integer) ServerConfig.defaultM2("terminal_sync.pending_delta_entries"));
+        }
     }
 
     /** Preserves existing construction contracts while storage uses the registered default quota. */

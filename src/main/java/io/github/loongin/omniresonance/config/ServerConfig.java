@@ -98,6 +98,15 @@ public final class ServerConfig {
 
     private static final List<M2Definition> M2_DEFINITIONS = List.of(
             new M2Definition(
+                    "terminal.direct_storage_access",
+                    Kind.ACCESS,
+                    "read_only",
+                    0,
+                    0,
+                    "mode / 模式",
+                    "Direct terminal storage access.",
+                    "终端直接存取模式。"),
+            new M2Definition(
                     "scheduler.cpu_budget_millis_per_tick",
                     Kind.DOUBLE,
                     2.0,
@@ -204,7 +213,43 @@ public final class ServerConfig {
                     Long.MAX_VALUE,
                     "variants / 变体",
                     "Distinct domain variants; existing keys may still grow or shrink. Memory capacity is not unlimited.",
-                    "共鸣域变体数量，既有键仍可增减，内存承载能力并非无限。"));
+                    "共鸣域变体数量，既有键仍可增减，内存承载能力并非无限。"),
+            new M2Definition(
+                    "terminal_sync.bytes_per_player_per_tick",
+                    Kind.LONG,
+                    262144L,
+                    16384,
+                    16777216,
+                    "bytes per gt / 字节每gt",
+                    "Per-player inventory send budget; frames fit available bytes.",
+                    "每玩家库存发送预算，数据包按本轮可用字节拆分。"),
+            new M2Definition(
+                    "terminal_sync.bytes_server_per_tick",
+                    Kind.LONG,
+                    1048576L,
+                    16384,
+                    67108864,
+                    "bytes per gt / 字节每gt",
+                    "Server inventory send budget; cannot be below the per-player budget.",
+                    "全服库存发送预算，不得低于每玩家预算。"),
+            new M2Definition(
+                    "terminal_sync.max_concurrent_full_syncs",
+                    Kind.INT,
+                    4,
+                    1,
+                    128,
+                    "sessions / 会话",
+                    "Concurrent full-sync receivers; networks share their temporary base.",
+                    "同时接收全量的会话数，同网络共用临时基础快照。"),
+            new M2Definition(
+                    "terminal_sync.pending_delta_entries",
+                    Kind.INT,
+                    8192,
+                    256,
+                    65536,
+                    "resource IDs / 资源ID",
+                    "Coalesced pending changes; overflow fails the view for manual retry.",
+                    "合并后的待发变化上限，超限终止镜像并等待手动重试。"));
     private final Map<String, ModConfigSpec.ConfigValue<Object>> m2Values = new HashMap<>();
 
     private final ModConfigSpec spec;
@@ -363,7 +408,13 @@ public final class ServerConfig {
                     new ServerSettings.RecoveryLimits(
                             intValue("recovery.max_variants_per_network"),
                             longValue("recovery.max_encoded_bytes_per_network")),
-                    longValue("storage.variant_limit_per_network"));
+                    longValue("storage.variant_limit_per_network"),
+                    new ServerSettings.TerminalSync(
+                            longValue("terminal_sync.bytes_per_player_per_tick"),
+                            longValue("terminal_sync.bytes_server_per_tick"),
+                            intValue("terminal_sync.max_concurrent_full_syncs"),
+                            intValue("terminal_sync.pending_delta_entries")),
+                    ServerSettings.DirectStorageAccess.parse((String) value("terminal.direct_storage_access")));
             candidate = new State(fallback.epoch(), Math.incrementExact(fallback.revision()), true, settings);
         } catch (RuntimeException failure) {
             LOGGER.warn("Rejected server configuration candidate; retaining validated lifecycle settings");
@@ -416,6 +467,7 @@ public final class ServerConfig {
     }
 
     private enum Kind {
+        ACCESS,
         INT,
         LONG,
         LONG_QUOTA,
@@ -434,6 +486,7 @@ public final class ServerConfig {
             String purposeEn,
             String purposeZh) {
         boolean accepts(Object value) {
+            if (kind == Kind.ACCESS) return "read_only".equals(value) || "read_write".equals(value);
             if (kind == Kind.LONG_QUOTA)
                 return (value instanceof Long || value instanceof Integer) && ((Number) value).longValue() >= -1;
             if (kind == Kind.TICKS) {
@@ -463,17 +516,20 @@ public final class ServerConfig {
         String comment() {
             String type =
                     switch (kind) {
+                        case ACCESS -> "string";
                         case INT, QUOTA -> "int";
                         case LONG, LONG_QUOTA -> "long";
                         case DOUBLE -> "double";
                         case TICKS -> "int[]";
                     };
-            String range = kind == Kind.LONG_QUOTA
-                    ? "0..9223372036854775807 or -1 / 或-1"
-                    : minimum + ".." + maximum
-                            + (kind == Kind.QUOTA
-                                    ? " or -1 / 或-1"
-                                    : kind == Kind.TICKS ? "; 1..8 nondecreasing entries / 1..8项非递减" : "");
+            String range = kind == Kind.ACCESS
+                    ? "read_only, read_write"
+                    : kind == Kind.LONG_QUOTA
+                            ? "0..9223372036854775807 or -1 / 或-1"
+                            : minimum + ".." + maximum
+                                    + (kind == Kind.QUOTA
+                                            ? " or -1 / 或-1"
+                                            : kind == Kind.TICKS ? "; 1..8 nondecreasing entries / 1..8项非递减" : "");
             boolean quota = kind == Kind.QUOTA || kind == Kind.LONG_QUOTA;
             boolean buffer = key.startsWith("recovery.");
             return String.join(
@@ -485,15 +541,23 @@ public final class ServerConfig {
                     "Default/默认值: " + defaultValue,
                     "Range/合法范围: " + range,
                     "Special values/特殊值: "
-                            + (quota
-                                    ? "-1 removes gameplay quota only; 0 rejects additions (rules: empty only). / -1仅取消玩法限额；0禁止新增（规则仅允许空预设）。"
-                                    : "None; 0/-1 invalid. / 无；0/-1无效。"),
+                            + (kind == Kind.ACCESS
+                                    ? "None. / 无。"
+                                    : quota
+                                            ? "-1 removes gameplay quota only; 0 rejects additions (rules: empty only). / -1仅取消玩法限额；0禁止新增（规则仅允许空预设）。"
+                                            : "None; 0/-1 invalid. / 无；0/-1无效。"),
                     "Reload/重载: "
-                            + (quota
-                                    ? "QUOTA - Keep existing entries; reject additions above lowered limits. / 调低保留已有条目，只阻止新增。"
-                                    : buffer
-                                            ? "BUFFER - Keep existing contents; reject positive additions when over capacity. / 调低保留已有内容，超限不得新增占用。"
-                                            : "NEXT - Next work uses the new snapshot; started backoff stages are not extended. / 后续工作使用新快照，已开始退避阶段不延长。"));
+                            + (kind == Kind.ACCESS
+                                    ? "NEXT - Revalidate before each operation; read_only rejects pending writes. / 每次操作前重新验证，切回只读拒绝待执行写入。"
+                                    : key.startsWith("terminal_sync.")
+                                            ? (key.endsWith("pending_delta_entries")
+                                                    ? "NEXT - Apply to unsent changes; overflow fails the view for manual retry. / 对待发变化应用新上限，超限失败并等待手动重试。"
+                                                    : "SYNC - New sends use updated byte limits; lower concurrency blocks new admission only. / 后续发送使用新字节预算，调低并发只阻止新准入。")
+                                            : quota
+                                                    ? "QUOTA - Keep existing entries; reject additions above lowered limits. / 调低保留已有条目，只阻止新增。"
+                                                    : buffer
+                                                            ? "BUFFER - Keep existing contents; reject positive additions when over capacity. / 调低保留已有内容，超限不得新增占用。"
+                                                            : "NEXT - Next work uses the new snapshot; started backoff stages are not extended. / 后续工作使用新快照，已开始退避阶段不延长。"));
         }
     }
 

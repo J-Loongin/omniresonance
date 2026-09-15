@@ -53,6 +53,14 @@ final class TerminalResourceRuleDraft {
         }
     }
 
+    @Nullable
+    String selectorError(@Nullable TerminalTagClipboard.Candidate copied) {
+        if (selector != 0 && selector != 1) return null;
+        if (text.startsWith("#")) return selector == 0 ? "tag_in_exact_id" : "tag_prefix";
+        var tag = TerminalTagPaste.read(copied, text);
+        return selector == 0 && tag != null ? "tag_in_exact_id" : null;
+    }
+
     ResourceRuleIntent intent() {
         if (selector == 4) return new ResourceRuleIntent.Reference(java.util.Objects.requireNonNull(reference));
         ResourceFilterRule.Selector choice =

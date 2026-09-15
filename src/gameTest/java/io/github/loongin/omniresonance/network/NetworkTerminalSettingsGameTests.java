@@ -52,6 +52,269 @@ public final class NetworkTerminalSettingsGameTests {
     private NetworkTerminalSettingsGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void terminalTagDraftSavesAppendIndependentRulesAndCanBeCancelled(GameTestHelper helper)
+            throws IOException {
+        try (Fixture f = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER);
+            var library = f.repository.createOwner(OWNER, null);
+            UUID preset = new UUID(990, 1);
+            library.putPreset(
+                    new io.github.loongin.omniresonance.filter.ItemFilterPreset(
+                            preset, new ManagedName("Tags"), 0, Set.of()),
+                    0,
+                    -1,
+                    -1);
+            f.open(owner, OWNER_VIEW, OWNER_SESSION);
+            f.terminal.handle(owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK));
+            f.terminal.handle(owner, new NetworkTerminalRequest.OpenFilters(OWNER_VIEW, OWNER_SESSION, 2));
+            f.terminal.handle(owner, new NetworkTerminalRequest.OpenPreset(OWNER_VIEW, OWNER_SESSION, 3, preset, 0, 0));
+            long sequence = 4;
+            for (String tag : List.of("c:ingots/iron", "c:ingots/gold")) {
+                var begin = f.terminal.handle(
+                        owner,
+                        new NetworkTerminalRequest.BeginResourceRule(
+                                OWNER_VIEW, OWNER_SESSION, sequence++, preset, null, false));
+                helper.assertTrue(begin instanceof NetworkTerminalResponse.ViewState, "Tag draft admission failed");
+                var intent = new io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match(
+                        io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM,
+                        io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.tag(
+                                net.minecraft.resources.ResourceLocation.parse(tag)),
+                        io.github.loongin.omniresonance.filter.ComponentCondition.Mode.ID_ONLY,
+                        Set.of(),
+                        null);
+                var saved = f.terminal.handle(
+                        owner,
+                        new NetworkTerminalRequest.SaveResourceRule(OWNER_VIEW, OWNER_SESSION, sequence++, intent));
+                helper.assertTrue(saved instanceof NetworkTerminalResponse.ViewState, "Tag rule save failed");
+            }
+            var saved = library.findPreset(preset).orElseThrow();
+            helper.assertTrue(
+                    saved.rules().size() == 2
+                            && !saved.rules()
+                                    .get(0)
+                                    .id()
+                                    .equals(saved.rules().get(1).id()),
+                    "Pasted tag overwrote a prior rule instead of appending its own OR branch");
+            f.terminal.handle(
+                    owner,
+                    new NetworkTerminalRequest.BeginResourceRule(
+                            OWNER_VIEW, OWNER_SESSION, sequence++, preset, null, false));
+            f.terminal.handle(owner, new NetworkTerminalRequest.Back(OWNER_VIEW, OWNER_SESSION, sequence));
+            helper.assertTrue(
+                    library.findPreset(preset).orElseThrow().equals(saved),
+                    "Cancelling a tag draft changed saved rules");
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void storageRouteRequiresFinishedSnapshotAndCancelsWhenLeavingThePage(GameTestHelper helper)
+            throws IOException {
+        try (Fixture f = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER);
+            var base = ServerSettings.defaults();
+            f.terminal.applyConfiguration(new ServerConfig.State(
+                    1,
+                    2,
+                    true,
+                    new ServerSettings(
+                            base.networksPerOwner(),
+                            base.tunnelsPerNetwork(),
+                            base.channelsPerTunnel(),
+                            base.channelBindingsPerDirectNode(),
+                            base.administratorsPerNetwork(),
+                            base.scheduler(),
+                            base.filterLimits(),
+                            base.recoveryLimits(),
+                            base.storageVariantLimitPerNetwork(),
+                            base.terminalSync(),
+                            ServerSettings.DirectStorageAccess.READ_WRITE)));
+            var replies = new ArrayList<io.github.loongin.omniresonance.networking.TerminalStorageResponse>();
+            f.terminal.installInventory(
+                    id -> f.repository.domainStorage(id).activate().orElseThrow(), (p, frame) -> {});
+            f.terminal.installStorageAccess(
+                    id -> f.repository.domainStorage(id).activate().orElseThrow(),
+                    id -> f.repository.findLoadedNetwork(id).orElseThrow().recovery(),
+                    (p, response) -> replies.add(response));
+            f.open(owner, OWNER_VIEW, OWNER_SESSION);
+            f.terminal.handle(owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK));
+            f.terminal.inventory(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.DomainInventoryRequest(
+                            OWNER_VIEW, OWNER_SESSION, 1, true));
+            owner.inventoryMenu.setCarried(
+                    new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT, 12));
+            f.terminal.storage(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.TerminalStorageRequest(
+                            OWNER_VIEW, OWNER_SESSION, 1, 1, 0, owner.inventoryMenu.getStateId(), -1, 0, false));
+            helper.assertTrue(
+                    replies.getLast().status()
+                            == io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.DENIED,
+                    "Storage route admitted before full sync End");
+            f.terminal.inventoryStep(
+                    new io.github.loongin.omniresonance.transfer.TransferWorkBudget(100, 1000000, 1, () -> 0));
+            f.terminal.storage(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.TerminalStorageRequest(
+                            OWNER_VIEW, OWNER_SESSION, 1, 2, 0, owner.inventoryMenu.getStateId(), -1, 0, false));
+            f.terminal.handle(owner, new NetworkTerminalRequest.Back(OWNER_VIEW, OWNER_SESSION, 2));
+            f.terminal.inventoryStep(
+                    new io.github.loongin.omniresonance.transfer.TransferWorkBudget(100, 1000000, 1, () -> 0));
+            var ledger = f.repository.domainStorage(NETWORK).activate().orElseThrow();
+            helper.assertTrue(
+                    ledger.variantCount() == 0
+                            && owner.inventoryMenu.getCarried().getCount() == 12,
+                    "Leaving the inventory page did not cancel pending storage work");
+            f.terminal.handle(owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 3, NETWORK));
+            f.terminal.inventory(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.DomainInventoryRequest(
+                            OWNER_VIEW, OWNER_SESSION, 2, true));
+            f.terminal.inventoryStep(
+                    new io.github.loongin.omniresonance.transfer.TransferWorkBudget(100, 1000000, 1, () -> 0));
+            f.terminal.storage(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.TerminalStorageRequest(
+                            OWNER_VIEW, OWNER_SESSION, 2, 1, 0, owner.inventoryMenu.getStateId(), -1, 0, false));
+            f.terminal.inventoryStep(
+                    new io.github.loongin.omniresonance.transfer.TransferWorkBudget(100, 1000000, 1, () -> 0));
+            helper.assertTrue(
+                    replies.getLast().moved() == 12
+                            && owner.inventoryMenu.getCarried().isEmpty(),
+                    "Authenticated current snapshot did not execute real storage work");
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void inventoryRevocationStopsQueuedAbsoluteDeltasBeforeAnyFurtherData(GameTestHelper helper)
+            throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER), admin = player(helper, ADMINISTRATOR);
+            fixture.open(owner, OWNER_VIEW, OWNER_SESSION);
+            fixture.open(admin, ADMIN_VIEW, ADMIN_SESSION);
+            fixture.terminal.handle(
+                    admin, new NetworkTerminalRequest.OpenNetwork(ADMIN_VIEW, ADMIN_SESSION, 1, NETWORK));
+            var frames = new ArrayList<io.github.loongin.omniresonance.networking.DomainInventoryFrame>();
+            fixture.terminal.installInventory(
+                    id -> fixture.repository.domainStorage(id).activate().orElseThrow(),
+                    (player, frame) -> frames.add(frame));
+            var buffer = new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
+            try {
+                io.github.loongin.omniresonance.networking.DomainInventoryRequest.STREAM_CODEC.encode(
+                        buffer,
+                        new io.github.loongin.omniresonance.networking.DomainInventoryRequest(
+                                ADMIN_VIEW, ADMIN_SESSION, 1, true));
+                fixture.terminal.inventory(
+                        admin,
+                        io.github.loongin.omniresonance.networking.DomainInventoryRequest.STREAM_CODEC.decode(buffer));
+            } finally {
+                buffer.release();
+            }
+            fixture.terminal.inventoryStep(
+                    new io.github.loongin.omniresonance.transfer.TransferWorkBudget(1, 1000000, 1, () -> 0));
+            helper.assertTrue(
+                    frames.getLast() instanceof io.github.loongin.omniresonance.networking.DomainInventoryFrame.End,
+                    "Authorized empty full sync did not complete");
+            frames.clear();
+            var ledger = fixture.repository.domainStorage(NETWORK).activate().orElseThrow();
+            var key = new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                    net.minecraft.resources.ResourceLocation.parse("example:opaque"), new byte[] {3});
+            try (var put = ledger.reserveDeposit(key, 7, -1).orElseThrow()) {
+                put.commit(7);
+            }
+            var data = fixture.repository.findLoadedNetwork(NETWORK).orElseThrow();
+            var change = data.prepareAdministratorChange(ADMINISTRATOR, false, data.managementRevision(), 128);
+            var replacement = fixture.directory.prepareMetadataReplacement(change.previous(), change.next());
+            data.commitAdministratorChange(change);
+            fixture.directory.commitMetadataReplacement(replacement);
+            fixture.terminal.inventoryStep(
+                    new io.github.loongin.omniresonance.transfer.TransferWorkBudget(1, 1000000, 1, () -> 0));
+            helper.assertTrue(
+                    frames.size() == 1
+                            && frames.getFirst()
+                                    instanceof io.github.loongin.omniresonance.networking.DomainInventoryFrame.Failed,
+                    "Revoked viewer received inventory data instead of an ordered failure");
+            helper.assertTrue(ledger.amount(key) == 7, "Cancelling synchronization changed inventory");
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void inventoryUsesTheRealTerminalSessionAndCancelsBeforeQueuedActivation(GameTestHelper helper)
+            throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER);
+            fixture.open(owner, OWNER_VIEW, OWNER_SESSION);
+            fixture.terminal.handle(
+                    owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK));
+            var sent = new ArrayList<io.github.loongin.omniresonance.networking.DomainInventoryFrame>();
+            int[] activations = {0};
+            fixture.terminal.installInventory(
+                    id -> {
+                        activations[0]++;
+                        helper.assertTrue(id.equals(NETWORK), "Client selected a foreign inventory network");
+                        var ledger =
+                                fixture.repository.domainStorage(id).activate().orElseThrow();
+                        var key = new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                                net.minecraft.resources.ResourceLocation.parse("example:opaque"), new byte[] {1});
+                        try (var deposit = ledger.reserveDeposit(key, 42, -1).orElseThrow()) {
+                            deposit.commit(42);
+                        }
+                        return ledger;
+                    },
+                    (player, frame) -> sent.add(frame));
+            fixture.terminal.inventory(
+                    player(helper, OTHER_OWNER),
+                    new io.github.loongin.omniresonance.networking.DomainInventoryRequest(
+                            OWNER_VIEW, OWNER_SESSION, 1, true));
+            fixture.terminal.inventory(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.DomainInventoryRequest(
+                            OWNER_VIEW, OWNER_SESSION, 1, true));
+            fixture.terminal.inventory(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.DomainInventoryRequest(
+                            OWNER_VIEW, OWNER_SESSION, 1, false));
+            fixture.terminal.inventoryStep(
+                    new io.github.loongin.omniresonance.transfer.TransferWorkBudget(1, 1000000, 1, () -> 0));
+            helper.assertTrue(
+                    activations[0] == 0 && sent.isEmpty(),
+                    "Cancelled queued view activated storage or spoofed actor received data");
+            fixture.terminal.inventory(
+                    owner,
+                    new io.github.loongin.omniresonance.networking.DomainInventoryRequest(
+                            OWNER_VIEW, OWNER_SESSION, 2, true));
+            fixture.terminal.inventoryStep(
+                    new io.github.loongin.omniresonance.transfer.TransferWorkBudget(1, 1000000, 1, () -> 0));
+            helper.assertTrue(activations[0] == 1, "Authorized inventory was not admitted exactly once");
+            helper.assertTrue(
+                    sent.getFirst() instanceof io.github.loongin.omniresonance.networking.DomainInventoryFrame.Begin,
+                    "Real session did not send Begin first");
+            helper.assertTrue(
+                    sent.getLast() instanceof io.github.loongin.omniresonance.networking.DomainInventoryFrame.End end
+                            && end.count() == 1,
+                    "Real session did not seal the correct inventory");
+            var data = (io.github.loongin.omniresonance.networking.DomainInventoryFrame.Data) sent.get(1);
+            helper.assertTrue(
+                    io.github.loongin.omniresonance.networking.DomainInventoryRecordCodec.decode(data.data())
+                                    .amount()
+                            == 42,
+                    "Inventory stream changed the exact quantity");
+            fixture.terminal.closePlayer(owner);
+            try (var journal = fixture.repository
+                    .domainStorage(NETWORK)
+                    .activate()
+                    .orElseThrow()
+                    .openChanges(1)) {
+                helper.assertTrue(journal.pendingCount() == 0, "Closed session retained the inventory publisher");
+            }
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
     public static void networkHomeReportsKnownDomainFailureWithoutActivatingHealthyStorage(GameTestHelper helper)
             throws IOException {
         try (Fixture fixture = new Fixture(helper)) {
@@ -1055,6 +1318,7 @@ public final class NetworkTerminalSettingsGameTests {
     private static final class Fixture implements AutoCloseable {
         private final Path path;
         private final SavedNetworkRepository repository;
+        private final NetworkDirectory directory;
         private final NetworkTopologyService topology;
         private final NetworkSettingsService settings;
         private final NetworkTerminalService terminal;
@@ -1078,7 +1342,7 @@ public final class NetworkTerminalSettingsGameTests {
                     new NetworkMetadata(UNRELATED, OTHER_OWNER, new ManagedName("Unrelated"), 0, Set.of());
             repository.createNetwork(network);
             repository.createNetwork(unrelated);
-            NetworkDirectory directory = new NetworkDirectory(List.of(network, unrelated));
+            directory = new NetworkDirectory(List.of(network, unrelated));
             NetworkCreationService creation = new NetworkCreationService(repository, directory, UUID::randomUUID);
             EditLockTable locks = new EditLockTable();
             ServerConfig.State config = new ServerConfig.State(1, 1, true, ServerSettings.defaults());

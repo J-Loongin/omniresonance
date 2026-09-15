@@ -44,6 +44,22 @@ public final class ClientTextSearch {
         return Objects.requireNonNull(text, "text").toLowerCase(Locale.ROOT);
     }
 
+    static boolean matchesFolded(String text, String query) {
+        try {
+            return matcher.test(text, query);
+        } catch (RuntimeException | LinkageError failure) {
+            if (matcher == PLAIN) throw failure;
+            usePlain();
+            failed = true;
+            LOGGER.warn("Optional client text search failed; falling back to ordinary matching", failure);
+            return text.contains(query);
+        }
+    }
+
+    static long matcherRevision() {
+        return revision;
+    }
+
     static <T> List<T> filter(Catalog<T> catalog, String query) {
         try {
             return catalog.filter(query, matcher, revision);

@@ -14,6 +14,13 @@ final class TerminalNetworkContext {
     private static final TerminalLayout.Rect EMPTY_BOUNDS = new TerminalLayout.Rect(0, 0, 0, 0);
     private @Nullable NetworkTerminalState state;
     boolean open;
+    private boolean readOnly;
+
+    void readOnly(boolean value) {
+        readOnly = value;
+        if (value) clearDropdown();
+    }
+
     TerminalLayout.Rect bounds = EMPTY_BOUNDS;
     final List<TerminalButton> buttons = new ArrayList<>();
 
@@ -34,7 +41,7 @@ final class TerminalNetworkContext {
     }
 
     boolean selectable() {
-        return state instanceof NetworkTerminalState.NetworkRoot;
+        return !readOnly && state instanceof NetworkTerminalState.NetworkRoot;
     }
 
     boolean intercepts() {

@@ -70,6 +70,16 @@ public final class NetworkTerminalService {
     private final boolean configurationLoaded;
     private ServerSettings settings;
     private long configurationRevision;
+    private @Nullable DomainInventorySync inventorySync;
+    private @Nullable TerminalStorageService storageAccess;
+    private final TerminalInventoryWork inventoryWork = new TerminalInventoryWork(
+            budget -> {
+                if (storageAccess != null) storageAccess.tick(budget);
+            },
+            this::syncInventory);
+    private @Nullable java.util.function.BiConsumer<
+                    ServerPlayer, io.github.loongin.omniresonance.networking.DomainInventoryFrame>
+            inventoryReplies;
     private boolean closed;
 
     /**
@@ -213,6 +223,11 @@ public final class NetworkTerminalService {
                 return failure(request, NetworkTerminalResponse.Reason.STALE_REQUEST);
             }
             session.lastSequence = request.sequence();
+            if (session.inventoryActive && !(request instanceof NetworkTerminalRequest.Heartbeat)) {
+                if (inventorySync != null) inventorySync.cancel(sender.getUUID());
+                if (storageAccess != null) storageAccess.close(sender.getUUID());
+                session.inventoryActive = false;
+            }
             if (request instanceof NetworkTerminalRequest.Page page) {
                 NetworkTerminalPage result;
                 try {
@@ -299,6 +314,136 @@ public final class NetworkTerminalService {
         if (!closed && administration != null) administration.applyConfiguration(state);
     }
 
+    /** Installs the server-owned inventory publisher; source activation happens only for authorized admitted sessions. */
+    public void installInventory(
+            java.util.function.Function<UUID, io.github.loongin.omniresonance.storage.DomainLedger> source,
+            java.util.function.BiConsumer<ServerPlayer, io.github.loongin.omniresonance.networking.DomainInventoryFrame>
+                    sender) {
+        requireServerThread();
+        if (inventorySync != null) throw new IllegalStateException("Inventory runtime already installed");
+        inventoryReplies = java.util.Objects.requireNonNull(sender);
+        inventorySync = new DomainInventorySync(source, (playerId, frame) -> {
+            Session session = sessions.get(playerId);
+            if (session != null
+                    && session.id.equals(frame.session())
+                    && session.inventoryGeneration == frame.generation()) sender.accept(session.player, frame);
+        });
+    }
+
+    /** Installs native storage work with the existing session/snapshot authority and shared scheduler budget. */
+    public void installStorageAccess(
+            java.util.function.Function<UUID, io.github.loongin.omniresonance.storage.DomainLedger> ledgers,
+            java.util.function.Function<UUID, io.github.loongin.omniresonance.recovery.RecoveryBuffer> recovery,
+            java.util.function.BiConsumer<
+                            ServerPlayer, io.github.loongin.omniresonance.networking.TerminalStorageResponse>
+                    sender) {
+        requireServerThread();
+        if (storageAccess != null || inventorySync == null)
+            throw new IllegalStateException("Invalid storage installation");
+        storageAccess = new TerminalStorageService(
+                () -> settings,
+                (player, sessionId, generation, network) -> {
+                    Session session = sessions.get(player.getUUID());
+                    if (closed
+                            || session == null
+                            || session.player != player
+                            || !session.inventoryActive
+                            || !session.id.equals(sessionId)
+                            || session.inventoryGeneration != generation
+                            || !network.equals(session.networkId)
+                            || !inventorySync.ready(player.getUUID(), sessionId, generation)) return false;
+                    try {
+                        requireLayer(session, Layer.NETWORK);
+                        topology().inspectNetwork(player, network);
+                        return true;
+                    } catch (RuntimeException denied) {
+                        return false;
+                    }
+                },
+                ledgers,
+                recovery,
+                sender);
+    }
+
+    /** Main-thread protocol entry; the storage coordinator owns replay and native inventory validation. */
+    public void storage(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.TerminalStorageRequest request) {
+        requireServerThread();
+        if (!closed && storageAccess != null && player.server == server) storageAccess.request(player, request);
+    }
+
+    /** Validates a real current terminal session and root-page role before creating or cancelling inventory work. */
+    public void inventory(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.DomainInventoryRequest request) {
+        requireServerThread();
+        Session session = sessions.get(player.getUUID());
+        if (closed
+                || inventorySync == null
+                || player.server != server
+                || session == null
+                || session.player != player
+                || !session.id.equals(request.session())
+                || !session.viewId.equals(request.view())) return;
+        if (!request.open()) {
+            if (session.inventoryGeneration == request.generation()) {
+                inventorySync.cancel(player.getUUID());
+                if (storageAccess != null) storageAccess.close(player.getUUID());
+                session.inventoryActive = false;
+            }
+            return;
+        }
+        if (request.generation() <= session.inventoryGeneration) return;
+        inventorySync.cancel(player.getUUID());
+        if (storageAccess != null) storageAccess.close(player.getUUID());
+        session.inventoryActive = false;
+        session.inventoryGeneration = request.generation();
+        try {
+            requireLayer(session, Layer.NETWORK);
+            NetworkMetadata network = topology().inspectNetwork(player, requireSelectedNetwork(session));
+            inventorySync.request(player.getUUID(), network.id(), session.id, request.generation());
+            session.inventoryActive = true;
+            if (storageAccess != null)
+                storageAccess.open(player, session.viewId, session.id, request.generation(), network.id());
+        } catch (RuntimeException denied) {
+            inventoryReplies.accept(
+                    player,
+                    new io.github.loongin.omniresonance.networking.DomainInventoryFrame.Failed(
+                            session.id,
+                            request.generation(),
+                            0,
+                            io.github.loongin.omniresonance.networking.DomainInventoryFrame.Reason.UNAVAILABLE));
+        }
+    }
+
+    /** Uses the shared tick CPU budget without charging internal serialization as native capability calls. */
+    public void inventoryStep(io.github.loongin.omniresonance.transfer.TransferWorkBudget budget) {
+        requireServerThread();
+        if (closed || inventorySync == null) return;
+        for (Session session : sessions.values())
+            if (session.inventoryActive) {
+                try {
+                    requireLayer(session, Layer.NETWORK);
+                    topology().inspectNetwork(session.player, requireSelectedNetwork(session));
+                } catch (RuntimeException denied) {
+                    session.inventoryActive = false;
+                    if (storageAccess != null) storageAccess.close(session.player.getUUID());
+                    inventorySync.fail(
+                            session.player.getUUID(),
+                            io.github.loongin.omniresonance.networking.DomainInventoryFrame.Reason.UNAVAILABLE);
+                }
+            }
+        inventoryWork.accept(budget);
+    }
+
+    private void syncInventory(io.github.loongin.omniresonance.transfer.TransferWorkBudget budget) {
+        var cfg = settings.terminalSync();
+        inventorySync.tick(
+                new DomainInventorySync.Limits(
+                        cfg.bytesPerPlayer(), cfg.bytesServer(), cfg.concurrentFull(), cfg.pendingEntries()),
+                1024,
+                () -> budget.canFit(0));
+    }
+
     /** Advances owned member/settings clocks; no per-tick roster enumeration or synchronization occurs. */
     public void tick() {
         requireServerThread();
@@ -340,6 +485,8 @@ public final class NetworkTerminalService {
             cancelSessionEdit(session.player, session);
         }
         sessions.clear();
+        if (inventorySync != null) inventorySync.close();
+        if (storageAccess != null) storageAccess.close();
         if (administration != null) administration.close();
         if (networkSettings != null) networkSettings.close();
         closed = true;
@@ -532,6 +679,9 @@ public final class NetworkTerminalService {
     }
 
     private void cancelSessionEdit(ServerPlayer player, Session session) {
+        if (inventorySync != null) inventorySync.cancel(player.getUUID());
+        if (storageAccess != null) storageAccess.close(player.getUUID());
+        session.inventoryActive = false;
         clearEdit(player, session);
         clearCandidates(session);
     }
@@ -1600,6 +1750,8 @@ public final class NetworkTerminalService {
         private final UUID viewId;
         private final UUID id;
         private long lastSequence;
+        private long inventoryGeneration;
+        private boolean inventoryActive;
         private Layer layer = Layer.DIRECTORY;
         private @Nullable UUID networkId;
         private @Nullable UUID tunnelId;

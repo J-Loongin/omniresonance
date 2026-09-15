@@ -348,6 +348,18 @@ public final class NetworkRuntimeRegistry {
      * Routes actual sender intent on its server thread; absent/unavailable runtimes return fixed failures.
      * Close remains fire-and-forget and this boundary never initializes data implicitly.
      */
+    public void handleStorage(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.TerminalStorageRequest request) {
+        requireServerThread(player.server);
+        if (server == player.server && runtime != null) runtime.terminal().storage(player, request);
+    }
+
+    public void handleInventory(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.DomainInventoryRequest request) {
+        requireServerThread(player.server);
+        if (server == player.server && runtime != null) runtime.terminal().inventory(player, request);
+    }
+
     public @Nullable NetworkTerminalResponse handle(ServerPlayer player, NetworkTerminalRequest request) {
         MinecraftServer senderServer = player.server;
         requireServerThread(senderServer);
@@ -500,7 +512,14 @@ public final class NetworkRuntimeRegistry {
                 UUID::randomUUID,
                 (player, response) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, response));
         terminal.installFilters(filters);
-        directTransfers.installSampleWork(filters::sampleStep);
+        terminal.installInventory(
+                id -> repository.domainStorage(id).activate().orElse(null),
+                (player, frame) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, frame));
+        terminal.installStorageAccess(
+                id -> repository.domainStorage(id).activate().orElse(null),
+                directTransfers::recovery,
+                (player, response) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, response));
+        directTransfers.installSampleWork(new TerminalAuxiliaryWork(filters::sampleStep, terminal::inventoryStep));
         return new RuntimeComponents(terminal, authority, nodeManagement, nodeMenus, topology, directTransfers);
     }
 

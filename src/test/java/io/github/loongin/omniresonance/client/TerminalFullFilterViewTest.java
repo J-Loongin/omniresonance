@@ -76,6 +76,125 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
+    void savingACopiedTagAsExactIdRequiresAnExplicitModeChange() {
+        TerminalTagClipboard.clear();
+        try {
+            TerminalTagClipboard.copy("minecraft:item", List.of("c:ingots"), value -> {});
+            var view = new TerminalFilterView(() -> {});
+            view.apply(new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0)));
+            view.apply(STATE);
+            var edit = new NetworkTerminalState.PresetEdit(
+                    NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+            view.apply(edit);
+            var actions = new ArrayList<TerminalFilterView.Action>();
+            var widgets = build(view, TerminalLayout.calculate(960, 540), edit, actions);
+            var field = (TerminalEditBox) widgets.stream()
+                    .filter(w -> key(w).endsWith(".selector_value"))
+                    .findFirst()
+                    .orElseThrow();
+            field.setValue("c:ingots");
+            var save = (TerminalButton) widgets.stream()
+                    .filter(w -> key(w).endsWith(".save"))
+                    .findFirst()
+                    .orElseThrow();
+            save.onPress();
+            assertTrue(actions.isEmpty());
+            ((TerminalButton) widgets.stream()
+                            .filter(w -> key(w).endsWith(".selector_0"))
+                            .findFirst()
+                            .orElseThrow())
+                    .onPress();
+            save.onPress();
+            var intent = (io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match)
+                    ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent();
+            assertEquals(ResourceFilterRule.Selector.tag(ResourceLocation.parse("c:ingots")), intent.selector());
+        } finally {
+            TerminalTagClipboard.clear();
+        }
+    }
+
+    @Test
+    void tagPasteRequiresAnEditablePresetAndDoesNotGuessTypesFromUnrelatedClipboardText() {
+        var view = new TerminalFilterView(() -> {});
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        var candidate = new TerminalTagClipboard.Candidate("minecraft:item", List.of("c:ingots"), "c:ingots");
+        assertFalse(view.pasteTag(candidate, "c:ingots"));
+        var readonly = new NetworkTerminalState.Preset(
+                NETWORK, new FilterPresetSummary(PRESET, "Preset", 0, 1, false), STATE.rules());
+        view.apply(readonly);
+        build(view, layout, readonly, actions);
+        assertFalse(view.pasteTag(candidate, "c:ingots"));
+        assertTrue(actions.isEmpty());
+        view.apply(STATE);
+        build(view, layout, STATE, actions);
+        assertTrue(view.pasteTag(candidate, "c:water"));
+        assertTrue(actions.isEmpty());
+        assertFalse(view.resourceDirty());
+    }
+
+    @Test
+    void pastedTagOpensAnIndependentDirtyDraftAndUsesTheExistingSavePayload() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0)));
+        view.apply(STATE);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        build(view, layout, STATE, actions);
+        var candidate = new TerminalTagClipboard.Candidate("minecraft:fluid", List.of("c:water"), "c:water");
+        assertTrue(view.pasteTag(candidate, "c:water"));
+        assertFalse(view.pasteTag(candidate, "c:water"));
+        var request = (NetworkTerminalRequest.BeginResourceRule)
+                NetworkSetupScreen.resourceRuleRequest(actions.getLast(), PRESET, RULE, 1);
+        assertEquals(PRESET, request.presetId());
+        assertEquals(null, request.ruleId());
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var widgets = build(view, layout, edit, actions);
+        var field = (TerminalEditBox) widgets.stream()
+                .filter(w -> key(w).endsWith(".selector_value"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("c:water", field.getValue());
+        assertTrue(view.resourceDirty());
+        ((TerminalButton) widgets.stream()
+                        .filter(w -> key(w).endsWith(".save"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        var save = (NetworkTerminalRequest.SaveResourceRule)
+                NetworkSetupScreen.resourceRuleRequest(actions.getLast(), PRESET, RULE, 2);
+        var intent = (io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match) save.intent();
+        assertEquals(ResourceTypes.FLUID, intent.typeId());
+        assertEquals(ResourceFilterRule.Selector.tag(ResourceLocation.parse("c:water")), intent.selector());
+        assertEquals(ComponentCondition.Mode.ID_ONLY, intent.mode());
+    }
+
+    @Test
+    void failedPasteAdmissionCannotPopulateTheNextManuallyCreatedRule() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0)));
+        view.apply(STATE);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        build(view, layout, STATE, actions);
+        assertTrue(view.pasteTag(
+                new TerminalTagClipboard.Candidate("minecraft:fluid", List.of("c:water"), "c:water"), "c:water"));
+        view.requestFailed(null);
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var widgets = build(view, layout, edit, actions);
+        var field = (TerminalEditBox) widgets.stream()
+                .filter(w -> key(w).endsWith(".selector_value"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("minecraft:stone", field.getValue());
+        assertFalse(view.resourceDirty());
+    }
+
+    @Test
     void actualThreePaneControlsReadAndEditPinnedRuleWithoutDisplayingUuid() {
         for (int[] size : new int[][] {{320, 240}, {640, 360}, {960, 540}}) {
             TerminalFilterView view = new TerminalFilterView(() -> {});

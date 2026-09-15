@@ -44,6 +44,31 @@ final class TerminalFilterView {
         record CopyRule(String value) implements Action {}
     }
 
+    private record PastedTag(
+            UUID network, UUID preset, io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match intent) {}
+
+    private @Nullable PastedTag pastedTag;
+    private int pasteNoticeTicks;
+
+    boolean pasteTag(@Nullable TerminalTagClipboard.Candidate candidate, String clipboard) {
+        if (!(state instanceof NetworkTerminalState.Preset preset)
+                || !fullMode
+                || management
+                || pending
+                || pastedTag != null
+                || pagePending
+                || resourceDraft != null
+                || !preset.preset().editable()) return false;
+        var intent = TerminalTagPaste.read(candidate, clipboard);
+        if (intent == null) {
+            pasteNoticeTicks = 60;
+            return true;
+        }
+        pastedTag = new PastedTag(preset.network().id(), preset.preset().id(), intent);
+        actions.accept(new Action.BeginFull(preset.preset().id(), null, false));
+        return true;
+    }
+
     private final ClientSearchState librarySearch = new ClientSearchState();
     private @Nullable TerminalSearchBox searchField;
     private boolean queryPending;
@@ -55,6 +80,12 @@ final class TerminalFilterView {
     }
 
     boolean keyPressed(int keyCode, int modifiers) {
+        if (net.minecraft.client.gui.screens.Screen.isPaste(keyCode)
+                && pasteTag(
+                        TerminalTagClipboard.recent(),
+                        net.minecraft.client.Minecraft.getInstance()
+                                .keyboardHandler
+                                .getClipboard())) return true;
         if (!librarySearch.openFromKey(keyCode, modifiers, supports(state) && !management)) return false;
         rebuild.run();
         return true;
@@ -76,6 +107,7 @@ final class TerminalFilterView {
 
     void tick(long tick, boolean busy) {
         searchTick = tick;
+        if (pasteNoticeTicks > 0) pasteNoticeTicks--;
         if (!supports(state) || busy || queryPending || !librarySearch.due(tick)) return;
         String query = ClientSearchState.normalizedQuery(librarySearch.draft());
         if (query == null) return;
@@ -235,9 +267,26 @@ final class TerminalFilterView {
                     edit.operation() == PresetEditOperation.ADD_RULE || detail == null
                             ? null
                             : detail.rules().getFirst());
+            if (pastedTag != null
+                    && edit.operation() == PresetEditOperation.ADD_RULE
+                    && edit.preset() != null
+                    && pastedTag.preset().equals(edit.preset().id())
+                    && pastedTag.network().equals(edit.network().id())) {
+                var match = pastedTag.intent();
+                resourceDraft.type = match.typeId();
+                resourceDraft.selector = 1;
+                resourceDraft.text = ((io.github.loongin.omniresonance.filter.ResourceFilterRule.TagSelector)
+                                match.selector())
+                        .tagId()
+                        .toString();
+                resourceDraft.dirty = true;
+            }
+            pastedTag = null;
             detailScroll = 0;
         }
         if (!supports(next)) {
+            pastedTag = null;
+            pasteNoticeTicks = 0;
             librarySearch.reset();
             queryPending = false;
             fullMode = false;
@@ -270,10 +319,13 @@ final class TerminalFilterView {
             actionScroll = 0;
             selectedRule = null;
         }
+        if (!(next instanceof NetworkTerminalState.PresetEdit) && !java.util.Objects.equals(state, next))
+            pastedTag = null;
         state = next;
     }
 
     void requestFailed(@Nullable NetworkTerminalState freshState) {
+        pastedTag = null;
         pending = false;
         queryPending = false;
         pagePending = false;
@@ -808,6 +860,15 @@ final class TerminalFilterView {
                 "save",
                 () -> {
                     try {
+                        boolean removing = state instanceof NetworkTerminalState.PresetEdit edit
+                                && edit.operation() == PresetEditOperation.REMOVE_RULE;
+                        String selectorError = removing ? null : draft.selectorError(TerminalTagClipboard.recent());
+                        if (selectorError != null) {
+                            sampleFailure = selectorError;
+                            rebuild.run();
+                            return;
+                        }
+                        sampleFailure = "";
                         actions.accept(new Action.SaveFull(
                                 state instanceof NetworkTerminalState.PresetEdit edit
                                                 && edit.operation() == PresetEditOperation.REMOVE_RULE
@@ -853,6 +914,7 @@ final class TerminalFilterView {
                                         : draft.text
                                 : index == 4 ? sampleSlot : sampleTank);
                 field.setResponder(value -> {
+                    sampleFailure = "";
                     if (index == 2) {
                         draft.text = value;
                         draft.dirty = true;
@@ -878,6 +940,7 @@ final class TerminalFilterView {
                                         ? "components_" + draft.mode.name().toLowerCase(java.util.Locale.ROOT)
                                         : index == 6 ? "sample" : "component";
                 net.minecraft.client.gui.components.Button.OnPress press = ignored -> {
+                    sampleFailure = "";
                     if (index == 0) {
                         draft.type = draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM)
                                 ? io.github.loongin.omniresonance.transfer.ResourceTypes.FLUID
@@ -992,6 +1055,11 @@ final class TerminalFilterView {
         return displayRule(tag.getAsString());
     }
 
+    void renderPasteNotice(GuiGraphics graphics, Font font, int mouseX, int mouseY) {
+        if (pasteNoticeTicks > 0 && supports(state))
+            graphics.renderTooltip(font, TerminalText.body(label("paste_tag_unavailable")), mouseX, mouseY);
+    }
+
     private void renderFull(GuiGraphics graphics, Font font) {
         if (!librarySearch.expanded())
             graphics.drawString(
@@ -1061,6 +1129,9 @@ final class TerminalFilterView {
             boolean primary) {
         TerminalButton button = new TerminalButton(x, y, width, 20, label(key), ignored -> action.run(), primary);
         button.active = active;
+        if (key.equals("add_rule_full"))
+            button.setTooltip(
+                    net.minecraft.client.gui.components.Tooltip.create(TerminalText.body(label("paste_tag_hint"))));
         add.accept(button);
     }
 }

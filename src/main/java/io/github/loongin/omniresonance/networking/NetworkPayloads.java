@@ -16,18 +16,46 @@ import org.jetbrains.annotations.Nullable;
  */
 public final class NetworkPayloads {
     private static volatile @Nullable Consumer<NetworkTerminalResponse> clientReceiver;
+    private static volatile @Nullable Consumer<DomainInventoryFrame> inventoryReceiver;
+
+    public static void installInventoryReceiver(Consumer<DomainInventoryFrame> receiver) {
+        inventoryReceiver = Objects.requireNonNull(receiver);
+    }
+
+    private static volatile @Nullable Consumer<TerminalStorageResponse> storageReceiver;
+
+    public static void installStorageReceiver(Consumer<TerminalStorageResponse> receiver) {
+        storageReceiver = Objects.requireNonNull(receiver);
+    }
 
     private NetworkPayloads() {}
 
     /**
-     * Registers required version-6 PLAY payloads with main-thread handlers. The framework supplies the
+     * Registers required version-11 PLAY payloads with main-thread handlers. The framework supplies the
      * real sending player and replies through its connection; server work never trusts a payload owner.
      * Missing client bootstrap fails explicitly rather than silently discarding successful responses.
      */
     public static void register(RegisterPayloadHandlersEvent event, NetworkRuntimeRegistry registry) {
         Objects.requireNonNull(registry, "registry");
         NodeMenuPayloads.installTerminalTransferHandler(registry::handleTerminalTransfer);
-        PayloadRegistrar registrar = event.registrar("7").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("11").executesOn(HandlerThread.MAIN);
+        registrar.playToServer(TerminalStorageRequest.TYPE, TerminalStorageRequest.STREAM_CODEC, (request, context) -> {
+            if (context.player() instanceof ServerPlayer player) registry.handleStorage(player, request);
+        });
+        registrar.playToClient(
+                TerminalStorageResponse.TYPE, TerminalStorageResponse.STREAM_CODEC, (response, context) -> {
+                    var receiver = storageReceiver;
+                    if (receiver == null) throw new IllegalStateException("Storage client receiver was not installed");
+                    receiver.accept(response);
+                });
+        registrar.playToServer(DomainInventoryRequest.TYPE, DomainInventoryRequest.STREAM_CODEC, (request, context) -> {
+            if (context.player() instanceof ServerPlayer player) registry.handleInventory(player, request);
+        });
+        registrar.playToClient(DomainInventoryFrame.TYPE, DomainInventoryFrame.STREAM_CODEC, (frame, context) -> {
+            var receiver = inventoryReceiver;
+            if (receiver == null) throw new IllegalStateException("Inventory client receiver was not installed");
+            receiver.accept(frame);
+        });
         registrar.playToServer(NetworkTerminalRequest.TYPE, NetworkTerminalRequest.STREAM_CODEC, (request, context) -> {
             if (!(context.player() instanceof ServerPlayer sender)) {
                 throw new IllegalStateException("Terminal request requires a server player");

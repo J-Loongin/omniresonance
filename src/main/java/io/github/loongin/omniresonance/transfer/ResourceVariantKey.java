@@ -37,6 +37,14 @@ public final class ResourceVariantKey {
         return encodedSizeBytes;
     }
 
+    /** Pure stable identity ordering, safe on any thread; compares owned immutable bytes without allocating copies. */
+    public int compareIdentity(ResourceVariantKey other) {
+        int namespace = typeId.getNamespace().compareTo(other.typeId.getNamespace());
+        if (namespace != 0) return namespace;
+        int path = typeId.getPath().compareTo(other.typeId.getPath());
+        return path != 0 ? path : Arrays.compareUnsigned(canonicalBytes, other.canonicalBytes);
+    }
+
     @Override
     public boolean equals(Object other) {
         return this == other
