@@ -27,6 +27,24 @@ class ServerConfigTest {
     private static final String ADMINISTRATORS_KEY = "network_limits.administrators_per_network";
 
     @Test
+    void chunkLoadingHasNativeDefaultsAndReloadableZeroOrUnlimitedQuotas() {
+        var config = new ServerConfig();
+        var values = loadNative(config, 32);
+        var defaults = config.captureLoading(true).settings().chunkLoading();
+        assertTrue(defaults.enabled());
+        assertEquals(25, defaults.perOwner());
+        assertEquals(500, defaults.server());
+        values.set("chunk_loading.enabled", false);
+        values.set("chunk_loading.chunks_per_owner", 0);
+        values.set("chunk_loading.chunks_server", -1);
+        config.spec().afterReload();
+        var updated = config.captureReloading(true).settings().chunkLoading();
+        assertFalse(updated.enabled());
+        assertEquals(0, updated.perOwner());
+        assertEquals(-1, updated.server());
+    }
+
+    @Test
     void terminalAccessReloadPublishesAtomicallyAndUnloadingRestoresReadOnly() {
         String key = "terminal.direct_storage_access";
         ServerConfig config = new ServerConfig();

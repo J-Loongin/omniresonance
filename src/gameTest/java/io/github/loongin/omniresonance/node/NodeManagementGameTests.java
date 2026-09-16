@@ -51,6 +51,126 @@ public final class NodeManagementGameTests {
 
     private NodeManagementGameTests() {}
 
+    @GameTest(template = "bootstrap")
+    public static void navigationIsRoleBoundedAndUsesSafeLoadedDestinations(GameTestHelper helper) throws IOException {
+        try (var f = new Fixture(helper)) {
+            var pos = helper.absolutePos(new BlockPos(3, 3, 3));
+            var entity = placeBlank(helper, pos, NODE_A, ModBlocks.RESONANCE_TRANSFER_NODE.get(), Direction.DOWN);
+            f.authority.link(NETWORK, entity, new ManagedName("Travel node"));
+            for (var ground : BlockPos.betweenClosed(pos.offset(-2, -1, -2), pos.offset(2, -1, 2)))
+                helper.getLevel()
+                        .setBlockAndUpdate(ground, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+            var owner = new TravelPlayer(helper.getLevel(), new GameProfile(OWNER, "TravelOwner"));
+            owner.setPos(pos.getX() + 0.5, pos.getY() + 4, pos.getZ() + 0.5);
+            var frames = new java.util.ArrayList<io.github.loongin.omniresonance.networking.NodeHighlightFrame>();
+            var settings = io.github.loongin.omniresonance.config.ServerSettings.Navigation.defaults();
+            try (var navigation = new NodeNavigationService(
+                    helper.getLevel().getServer(),
+                    f.management,
+                    f.authority,
+                    settings,
+                    (p, frame) -> frames.add(frame))) {
+                rejected(
+                        helper,
+                        NodeManagementService.Reason.NO_ACCESS,
+                        () -> navigation.highlight(player(helper, STRANGER, pos), NETWORK, NODE_A));
+                navigation.highlight(owner, NETWORK, NODE_A);
+                helper.assertTrue(
+                        frames.getLast().node().equals(NODE_A) && navigation.ticketCount() == 0,
+                        "Highlight loaded or selected the wrong node");
+                navigation.highlight(owner, NETWORK, NODE_A);
+                helper.assertTrue(frames.getLast().durationTicks() == 0, "Second highlight did not cancel");
+                navigation.teleport(owner, NETWORK, NODE_A);
+                helper.assertTrue(owner.moves == 0, "Travel moved before server tick validation");
+                navigation.tick(settings);
+                helper.assertTrue(
+                        owner.moves == 1 && navigation.pendingCount() == 0 && navigation.ticketCount() == 0,
+                        "Safe travel did not finish and release its task");
+                helper.assertTrue(
+                        !f.network().findNode(NODE_A).orElseThrow().chunkLoadingRequested(),
+                        "Travel enabled permanent loading");
+                helper.assertTrue(
+                        NodeNavigationService.safe(
+                                helper.getLevel(),
+                                owner,
+                                new net.minecraft.world.level.ChunkPos(pos),
+                                owner.blockPosition()),
+                        "Destination was unsafe");
+                helper.getLevel()
+                        .setBlockAndUpdate(
+                                owner.blockPosition().below(),
+                                net.minecraft.world.level.block.Blocks.MAGMA_BLOCK.defaultBlockState());
+                helper.assertTrue(
+                        !NodeNavigationService.safe(
+                                helper.getLevel(),
+                                owner,
+                                new net.minecraft.world.level.ChunkPos(pos),
+                                owner.blockPosition()),
+                        "Hazardous support accepted");
+                boolean rejected = false;
+                try {
+                    navigation.teleport(owner, NETWORK, NODE_A);
+                } catch (IllegalStateException expected) {
+                    rejected = true;
+                }
+                helper.assertTrue(rejected, "Repeated travel bypassed interval/cooldown");
+            }
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void navigationCancelsTemporaryTicketsAndRejectsGhosts(GameTestHelper helper) throws IOException {
+        try (var f = new Fixture(helper)) {
+            var pos = helper.absolutePos(new BlockPos(3, 3, 3));
+            var entity = placeBlank(helper, pos, NODE_A, ModBlocks.RESONANCE_TRANSFER_NODE.get(), Direction.DOWN);
+            f.authority.link(NETWORK, entity, new ManagedName("Ghost"));
+            var owner = new TravelPlayer(helper.getLevel(), new GameProfile(OWNER, "TravelGhost"));
+            owner.setPos(pos.getX() + 0.5, pos.getY() + 4, pos.getZ() + 0.5);
+            var settings = io.github.loongin.omniresonance.config.ServerSettings.Navigation.defaults();
+            try (var navigation = new NodeNavigationService(
+                    helper.getLevel().getServer(), f.management, f.authority, settings, (p, frame) -> {})) {
+                helper.getLevel().removeBlock(pos, false);
+                navigation.teleport(owner, NETWORK, NODE_A);
+                navigation.tick(settings);
+                helper.assertTrue(owner.moves == 0 && navigation.pendingCount() == 0, "Ghost travel moved the player");
+                navigation.disconnect(owner);
+                var distant = f.network()
+                        .createNode(
+                                NODE_B,
+                                new ManagedName("Distant"),
+                                GlobalPos.of(helper.getLevel().dimension(), pos.offset(1024, 0, 1024)),
+                                NodeForm.BLOCK,
+                                Direction.NORTH);
+                f.nodes.add(new NetworkNodeDirectory.Entry(NETWORK, distant));
+                navigation.teleport(owner, NETWORK, NODE_B);
+                helper.assertTrue(
+                        navigation.pendingCount() == 1 && navigation.ticketCount() == 1,
+                        "Unloaded travel did not acquire a bounded temporary ticket");
+                navigation.tick(new io.github.loongin.omniresonance.config.ServerSettings.Navigation(
+                        true, 200, true, true, false, 20, 100, 64));
+                helper.assertTrue(
+                        navigation.pendingCount() == 0 && navigation.ticketCount() == 0 && owner.moves == 0,
+                        "Disabling temporary loading leaked task/ticket or moved player");
+            }
+        }
+        helper.succeed();
+    }
+
+    private static final class TravelPlayer extends FakePlayer {
+        int moves;
+
+        TravelPlayer(ServerLevel level, GameProfile profile) {
+            super(level, profile);
+        }
+
+        @Override
+        public void teleportTo(ServerLevel level, double x, double y, double z, float yaw, float pitch) {
+            moves++;
+            setPos(x, y, z);
+        }
+    }
+
     /** Only current roles and exact nearby blanks enter editing; locks are per node rather than global. */
     @GameTest(template = "bootstrap")
     public static void rolesDistanceAndPerNodeLocksGateBlankEditing(GameTestHelper helper) throws IOException {
@@ -425,6 +545,8 @@ public final class NodeManagementGameTests {
             locks = new EditLockTable();
             management = new NodeManagementService(
                     helper.getLevel().getServer(), networks, repository, nodes, authority, locks);
+            management.installChunkAdmission((network, node, moving) ->
+                    io.github.loongin.omniresonance.chunkloading.ChunkLoadingReservations.Admission.ALLOWED);
         }
 
         private NetworkSavedData network() {

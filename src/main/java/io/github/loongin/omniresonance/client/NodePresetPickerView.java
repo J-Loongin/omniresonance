@@ -26,12 +26,7 @@ final class NodePresetPickerView {
             net.minecraft.client.gui.Font font, TerminalLayout.Rect body, NodePresetPicker picker, Runnable changed) {
         if (!picker.search().expanded()) return null;
         var bounds = search(body);
-        var field = new TerminalSearchBox(
-                font, bounds.x(), bounds.y(), bounds.width(), bounds.height(), NodeItemPolicyView.text("search"));
-        field.setMaxLength(256);
-        field.setHint(TerminalText.body(NodeItemPolicyView.text("search")));
-        field.setValue(picker.query());
-        field.setResponder(value -> {
+        var field = picker.search().field(font, bounds, NodeItemPolicyView.text("search"), 256, value -> {
             picker.edit(value);
             changed.run();
         });
@@ -56,6 +51,13 @@ final class NodePresetPickerView {
         int visible = layout.visibleRows();
         picker.viewport(visible);
         var page = picker.page();
+        if (picker.failed()) {
+            var retry = new TerminalRowButton(
+                    layout.row(0), Component.translatable("omniresonance.terminal.retry"), ignored -> picker.retry());
+            retry.active = enabled;
+            add.accept(retry);
+            return;
+        }
         if (page == null) return;
         for (int index = picker.scroll(); index < Math.min(picker.count(), picker.scroll() + visible); index++) {
             FilterPresetSummary preset =

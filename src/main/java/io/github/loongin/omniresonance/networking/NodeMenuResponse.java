@@ -164,7 +164,10 @@ public sealed interface NodeMenuResponse extends CustomPacketPayload {
         QUOTA_REACHED(13),
         TUNNEL_DISABLED(14),
         LAST_CHANNEL(15),
-        TUNNEL_SWITCH_REQUIRED(16);
+        TUNNEL_SWITCH_REQUIRED(16),
+        CHUNK_OWNER_LIMIT(17),
+        CHUNK_SERVER_LIMIT(18),
+        CHUNK_DISABLED(19);
 
         private final int wireCode;
 
@@ -196,6 +199,9 @@ public sealed interface NodeMenuResponse extends CustomPacketPayload {
                 case 14 -> TUNNEL_DISABLED;
                 case 15 -> LAST_CHANNEL;
                 case 16 -> TUNNEL_SWITCH_REQUIRED;
+                case 17 -> CHUNK_OWNER_LIMIT;
+                case 18 -> CHUNK_SERVER_LIMIT;
+                case 19 -> CHUNK_DISABLED;
                 default -> throw new DecoderException("Unknown node-menu failure reason");
             };
         }

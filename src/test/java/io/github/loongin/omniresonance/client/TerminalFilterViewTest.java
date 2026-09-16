@@ -245,29 +245,28 @@ class TerminalFilterViewTest {
     }
 
     @Test
-    void screenLocalSendFailureReleasesWheelWithoutApplyingSuccessOrRetrying() {
+    void catalogSendFailureOffersExplicitRetryWithoutARequestLoop() {
         var view = new TerminalFilterView(() -> {});
         var actions = new java.util.ArrayList<TerminalFilterView.Action>();
+        var state = new io.github.loongin.omniresonance.networking.NetworkTerminalState.Filters(network(), presets(0));
         var layout = TerminalLayout.calculate(960, 540);
-        var state =
-                new io.github.loongin.omniresonance.networking.NetworkTerminalState.Filters(network(), presets(128));
         view.apply(state);
         build(view, layout, state, actions);
-        view.scroll(layout.content().x() + 10, layout.content().y() + 30, 1);
-        assertTrue(NetworkSetupScreen.completeTopologySend(view, true));
-        view.scroll(layout.content().x() + 10, layout.content().y() + 30, 1);
-        assertEquals(1, actions.size(), "Successful send must await reply and suppress duplicate wheels");
+        view.tick(1, false);
+        assertEquals(1, actions.size());
         org.junit.jupiter.api.Assertions.assertFalse(NetworkSetupScreen.completeTopologySend(view, false));
-        assertEquals(1, actions.size(), "Failed send must not automatically retry");
-        var widgets = build(view, layout, state, actions);
-        ((TerminalRowButton) widgets.stream()
-                        .filter(TerminalRowButton.class::isInstance)
-                        .findFirst()
-                        .orElseThrow())
-                .onPress();
-        assertEquals(new TerminalFilterView.Action.Open(new java.util.UUID(3, 128), 0, 0), actions.getLast());
-        view.scroll(layout.content().x() + 10, layout.content().y() + 30, 1);
-        assertEquals(new TerminalFilterView.Action.Page(0), actions.getLast(), "Next explicit wheel must be allowed");
+        view.tick(2, false);
+        assertEquals(1, actions.size());
+        var retry = (TerminalButton) build(view, layout, state, actions).stream()
+                .filter(w -> w.getMessage().getContents()
+                                instanceof net.minecraft.network.chat.contents.TranslatableContents t
+                        && t.getKey().equals("omniresonance.terminal.retry"))
+                .findFirst()
+                .orElseThrow();
+        retry.onPress();
+        view.tick(3, false);
+        assertEquals(2, actions.size());
+        assertEquals(0, ((TerminalFilterView.Action.Query) actions.getLast()).offset());
     }
 
     @Test
@@ -304,58 +303,53 @@ class TerminalFilterViewTest {
     }
 
     @Test
-    void screenFailureHookAppliesSuppliedFreshPageAndDropsOldPageLanding() {
+    void screenFailureHookRestartsAnAuthoritativeCatalogAndDropsOldPartialRows() {
         var view = new TerminalFilterView(() -> {});
         var actions = new java.util.ArrayList<TerminalFilterView.Action>();
         var layout = TerminalLayout.calculate(960, 540);
-        var state =
-                new io.github.loongin.omniresonance.networking.NetworkTerminalState.Filters(network(), presets(128));
+        var state = new io.github.loongin.omniresonance.networking.NetworkTerminalState.Filters(network(), presets(0));
         view.apply(state);
         build(view, layout, state, actions);
-        view.scroll(layout.content().x() + 10, layout.content().y() + 30, 1);
-        var fresh = new io.github.loongin.omniresonance.networking.NetworkTerminalState.Filters(network(), presets(0));
-        NetworkSetupScreen.applyFilterResponse(
-                view,
-                new io.github.loongin.omniresonance.networking.NetworkTerminalResponse.Failure(
-                        new java.util.UUID(7, 1),
-                        new java.util.UUID(7, 2),
-                        1,
-                        io.github.loongin.omniresonance.networking.NetworkTerminalResponse.Reason.STALE_REVISION,
-                        fresh));
-        var widgets = build(view, layout, fresh, actions);
+        view.tick(1, false);
+        view.requestFailed(state);
+        view.tick(2, false);
+        assertEquals(2, actions.size());
+        assertEquals(128, ((TerminalFilterView.Action.Query) actions.getLast()).offset());
+        view.acceptLibrary(new io.github.loongin.omniresonance.networking.NetworkTerminalResponse.FilterLibrary(
+                network().id(), network().ownerId(), 2, "", presets(128)));
+        view.tick(3, false);
+        assertEquals(256, ((TerminalFilterView.Action.Query) actions.getLast()).offset());
+    }
+
+    @Test
+    void libraryLoadsAllBatchesBeforeLocalWheelNavigation() {
+        var view = new TerminalFilterView(() -> {});
+        var actions = new java.util.ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        var state = new io.github.loongin.omniresonance.networking.NetworkTerminalState.Filters(network(), presets(0));
+        view.apply(state);
+        build(view, layout, state, actions);
+        for (int offset : new int[] {128, 256}) {
+            view.tick(offset, false);
+            assertEquals(offset, ((TerminalFilterView.Action.Query) actions.getLast()).offset());
+            assertEquals("", ((TerminalFilterView.Action.Query) actions.getLast()).query());
+            view.acceptLibrary(new io.github.loongin.omniresonance.networking.NetworkTerminalResponse.FilterLibrary(
+                    network().id(), network().ownerId(), offset, "", presets(offset)));
+        }
+        build(view, layout, state, actions);
+        int requests = actions.size();
+        for (int i = 0; i < 200; i++)
+            view.scroll(layout.content().x() + 10, layout.content().y() + 30, -1);
+        assertEquals(requests, actions.size());
+        for (int i = 0; i < 400; i++)
+            view.scroll(layout.content().x() + 10, layout.content().y() + 30, 1);
+        var widgets = build(view, layout, state, actions);
         ((TerminalRowButton) widgets.stream()
                         .filter(TerminalRowButton.class::isInstance)
                         .findFirst()
                         .orElseThrow())
                 .onPress();
         assertEquals(new TerminalFilterView.Action.Open(new java.util.UUID(3, 0), 0, 0), actions.getLast());
-        for (int i = 0; i < 200; i++)
-            view.scroll(layout.content().x() + 10, layout.content().y() + 30, -1);
-        assertEquals(new TerminalFilterView.Action.Page(128), actions.getLast());
-    }
-
-    @Test
-    void libraryWheelLoadsAdjacentPagesOnceAndLandsAtPreviousBottom() {
-        var view = new TerminalFilterView(() -> {});
-        var actions = new java.util.ArrayList<TerminalFilterView.Action>();
-        var layout = TerminalLayout.calculate(960, 540);
-        var first = new io.github.loongin.omniresonance.networking.NetworkTerminalState.Filters(network(), presets(0));
-        view.apply(first);
-        build(view, layout, first, actions);
-        for (int i = 0; i < 200; i++)
-            view.scroll(layout.content().x() + 10, layout.content().y() + 30, -1);
-        assertEquals(java.util.List.of(new TerminalFilterView.Action.Page(128)), actions);
-        var second =
-                new io.github.loongin.omniresonance.networking.NetworkTerminalState.Filters(network(), presets(128));
-        view.apply(second);
-        build(view, layout, second, actions);
-        view.scroll(layout.content().x() + 10, layout.content().y() + 30, 1);
-        assertEquals(new TerminalFilterView.Action.Page(0), actions.getLast());
-        view.apply(first);
-        var widgets = build(view, layout, first, actions);
-        var rows = widgets.stream().filter(TerminalRowButton.class::isInstance).toList();
-        ((TerminalRowButton) rows.getLast()).onPress();
-        assertEquals(new TerminalFilterView.Action.Open(new java.util.UUID(3, 127), 0, 0), actions.getLast());
     }
 
     @Test

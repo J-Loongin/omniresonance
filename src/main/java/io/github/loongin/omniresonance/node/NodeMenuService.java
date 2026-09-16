@@ -66,6 +66,32 @@ public final class NodeMenuService implements AutoCloseable {
     private @Nullable BiFunction<UUID, UUID, io.github.loongin.omniresonance.networking.NodeDomainStatus> domainStatus;
 
     /** Installs the owning-server read-only domain status provider; it must not activate storage or call capabilities. */
+    private @Nullable java.util.function.Function<
+                    UUID, io.github.loongin.omniresonance.chunkloading.ChunkLoadingAllocator.Status>
+            chunkStatus;
+
+    public void installChunkStatus(
+            java.util.function.Function<UUID, io.github.loongin.omniresonance.chunkloading.ChunkLoadingAllocator.Status>
+                    provider) {
+        requireServerThread();
+        chunkStatus = Objects.requireNonNull(provider);
+    }
+
+    /** Reads existing scheduler diagnostics without activating storage or invoking transfer work; server thread only. */
+    public boolean directFailed(UUID node, UUID channel) {
+        requireServerThread();
+        return directStatus != null && directStatus.apply(node, channel) == ResourceDirectScheduler.Status.FAILED;
+    }
+    /** Reads existing domain diagnostics without granting access or mutating runtime state; server thread only. */
+    public boolean domainFailed(UUID network, UUID node) {
+        requireServerThread();
+        if (domainStatus == null) return false;
+        var value = domainStatus.apply(network, node);
+        return value == io.github.loongin.omniresonance.networking.NodeDomainStatus.FAILED
+                || value == io.github.loongin.omniresonance.networking.NodeDomainStatus.STORAGE_UNAVAILABLE
+                || value == io.github.loongin.omniresonance.networking.NodeDomainStatus.FILTER_BLOCKED;
+    }
+
     public void installDomainStatus(
             BiFunction<UUID, UUID, io.github.loongin.omniresonance.networking.NodeDomainStatus> provider) {
         requireServerThread();
@@ -128,6 +154,7 @@ public final class NodeMenuService implements AutoCloseable {
         OptionalInt opened = player.openMenu(provider, buffer -> {
             buffer.writeBlockPos(position);
             buffer.writeUUID(sessionId);
+            buffer.writeBoolean(false);
         });
         if (opened.isPresent()
                 && player.containerMenu instanceof ResonanceNodeMenu menu
@@ -135,6 +162,60 @@ public final class NodeMenuService implements AutoCloseable {
             PacketDistributor.sendToPlayer(player, menu.initialResponse());
         }
         return opened.isPresent();
+    }
+
+    /** Opens only an existing node configuration, reusing native policy editing and its node lease. */
+    public void openExistingConfiguration(ServerPlayer player, UUID network, UUID nodeId, @Nullable UUID channel) {
+        requirePlayer(player);
+        var node = management().inspectLinked(player, network, nodeId);
+        if (!node.enabled()) throw new IllegalStateException("Disabled node");
+        if (channel == null) {
+            if (node.mode() != io.github.loongin.omniresonance.node.NodeMode.DOMAIN
+                    || topology()
+                            .inspectDomainConfiguration(player, network, nodeId)
+                            .isEmpty()) throw new IllegalStateException("Existing domain configuration required");
+        } else {
+            var tunnel = topology().directTunnelId(player, network, nodeId).orElseThrow();
+            if (topology()
+                            .inspectNodeChannel(player, network, nodeId, tunnel, channel)
+                            .currentDirection()
+                    == null) throw new IllegalStateException("Existing binding required");
+        }
+        var edit = topology().acquireNode(player, network, nodeId);
+        boolean opened = false;
+        try {
+            NodeMenuState.ResourceEdit state = channel == null
+                    ? domainEdit(player, network, nodeId)
+                    : bindingEdit(
+                            player,
+                            network,
+                            nodeId,
+                            topology().directTunnelId(player, network, nodeId).orElseThrow(),
+                            channel);
+            UUID session = sessionIds().get();
+            var initial = new Initial(nodeId, network, state);
+            var result = player.openMenu(
+                    new SimpleMenuProvider(
+                            (id, inventory, actor) -> {
+                                if (actor != player) return null;
+                                var menu = new ResonanceNodeMenu(
+                                        id, inventory, this, node.position().pos(), session, initial);
+                                menu.configureRemote(edit, state);
+                                return menu;
+                            },
+                            net.minecraft.network.chat.Component.empty()),
+                    buffer -> {
+                        buffer.writeBlockPos(node.position().pos());
+                        buffer.writeUUID(session);
+                        buffer.writeBoolean(true);
+                    });
+            opened = result.isPresent();
+            if (!opened) throw new IllegalStateException("Configuration menu opening was cancelled");
+            if (opened && player.containerMenu instanceof ResonanceNodeMenu menu)
+                PacketDistributor.sendToPlayer(player, menu.remoteInitialResponse(player));
+        } finally {
+            if (!opened) topology().cancel(player, edit);
+        }
     }
 
     /** Creates one server Menu for real lifecycle/GameTest callers without sending a client open packet. */
@@ -169,11 +250,37 @@ public final class NodeMenuService implements AutoCloseable {
         long now = currentTick();
         transfers.expire(now);
         for (ServerPlayer player : server.getPlayerList().getPlayers())
-            if (player.containerMenu instanceof ResonanceNodeMenu menu) menu.transferTick(player, now);
+            if (player.containerMenu instanceof ResonanceNodeMenu menu) {
+                menu.transferTick(player, now);
+                if (chunkStatus != null
+                        && now % 20 == 0
+                        && menu.linkedNetworkId().isPresent()
+                        && canKeepOpen(player, menu)) {
+                    var node = management()
+                            .inspectLinked(player, menu.linkedNetworkId().orElseThrow(), menu.nodeId());
+                    net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(
+                            player,
+                            new io.github.loongin.omniresonance.networking.NodeChunkStatus(
+                                    menu.containerId,
+                                    menu.sessionId(),
+                                    node.nodeId(),
+                                    node.revision(),
+                                    chunkStatus.apply(node.nodeId())));
+                }
+            }
     }
 
     boolean canKeepOpen(ServerPlayer player, ResonanceNodeMenu menu) {
         requirePlayer(player);
+        if (menu.remoteConfiguration()) {
+            try {
+                return management()
+                        .inspectLinked(player, menu.linkedNetworkId().orElseThrow(), menu.nodeId())
+                        .enabled();
+            } catch (RuntimeException unavailable) {
+                return false;
+            }
+        }
         return management()
                 .canKeepPhysicalMenuOpen(
                         player,
@@ -231,6 +338,7 @@ public final class NodeMenuService implements AutoCloseable {
         filters = null;
         directStatus = null;
         domainStatus = null;
+        chunkStatus = null;
     }
 
     Initial initial(ServerPlayer player, BlockPos position) {
@@ -563,6 +671,37 @@ public final class NodeMenuService implements AutoCloseable {
 
     NodeMenuState.LinkedMode linkedMode(ServerPlayer player, UUID networkId, UUID nodeId) {
         return new NodeMenuState.LinkedMode(linkedSummary(player, networkId, nodeId));
+    }
+
+    /** Refreshes header authority without navigating away from a valid browse page or replacing its cursor. */
+    NodeMenuState refreshBrowseHeader(ServerPlayer player, UUID networkId, UUID nodeId, NodeMenuState previous) {
+        var node = linkedSummary(player, networkId, nodeId);
+        if (previous instanceof NodeMenuState.DomainRoot
+                && node.mode() != io.github.loongin.omniresonance.node.NodeMode.DOMAIN)
+            return linkedRoute(player, networkId, nodeId);
+        if (!(previous instanceof NodeMenuState.ModeRoot
+                        || previous instanceof NodeMenuState.LinkedRoot
+                        || previous instanceof NodeMenuState.NetworkSelection
+                        || previous instanceof NodeMenuState.DomainRoot)
+                && node.mode() != io.github.loongin.omniresonance.node.NodeMode.DIRECT)
+            return linkedRoute(player, networkId, nodeId);
+        return switch (previous) {
+            case NodeMenuState.LinkedRoot ignored -> new NodeMenuState.LinkedRoot(node);
+            case NodeMenuState.ModeRoot ignored -> new NodeMenuState.ModeRoot(node);
+            case NodeMenuState.NetworkSelection view -> new NodeMenuState.NetworkSelection(node, view.page());
+            case NodeMenuState.DirectTunnelList view ->
+                new NodeMenuState.DirectTunnelList(node, view.page(), view.revision());
+            case NodeMenuState.RestrictedTunnel view -> new NodeMenuState.RestrictedTunnel(node, view.tunnel());
+            case NodeMenuState.DirectChannelList view ->
+                new NodeMenuState.DirectChannelList(node, view.tunnel(), view.page());
+            case NodeMenuState.DirectChannelRoot view ->
+                new NodeMenuState.DirectChannelRoot(
+                        node, view.tunnel(), view.channel(), view.policy(), view.transferStatus());
+            case NodeMenuState.DirectChannelSettings view ->
+                new NodeMenuState.DirectChannelSettings(node, view.tunnel(), view.channel());
+            case NodeMenuState.DomainRoot view -> new NodeMenuState.DomainRoot(node, view.direction(), view.status());
+            default -> throw new IllegalStateException("Header refresh requires a browse page");
+        };
     }
 
     NodeMenuState linkedRoute(ServerPlayer player, UUID networkId, UUID nodeId) {

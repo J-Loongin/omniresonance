@@ -82,6 +82,26 @@ class NodeResourceScreenTest {
     }
 
     @Test
+    void resourceNamesUseTheSharedMatcherAndRecoverFromItsFailure() {
+        var selection = NodeResourceTypeSelection.overrides(draft(), id -> "物品");
+        selection.search().open();
+        selection.editSearch("wp", 1);
+        try {
+            ClientTextSearch.install((name, query) -> name.equals("物品") && query.equals("wp"));
+            selection.tick(2);
+            assertFalse(selection.results().isEmpty());
+            ClientTextSearch.usePlain();
+            selection.tick(3);
+            assertTrue(selection.results().isEmpty());
+            selection.editSearch("minecraft:", 3);
+            selection.tick(4);
+            assertFalse(selection.results().isEmpty());
+        } finally {
+            ClientTextSearch.usePlain();
+        }
+    }
+
+    @Test
     void resourceSettingsPageUsesOnlyTheSharedAddSlotAndPickerUsesSearch() {
         assertEquals(TerminalHeaderLayout.Action.NONE, ResonanceNodeScreen.topBarAction(state(), false, false));
         assertEquals(TerminalHeaderLayout.Action.CREATE, ResonanceNodeScreen.topBarAction(state(), false, true));

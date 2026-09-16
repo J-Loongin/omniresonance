@@ -7,6 +7,15 @@ import org.lwjgl.glfw.GLFW;
 
 /** Shared search-only right-click clearing; ordinary text editors keep their vanilla mouse behavior. */
 final class TerminalSearchBox extends TerminalEditBox {
+    /** Same horizontal geometry as a routing result row, including the permanent scrollbar reservation. */
+    static TerminalLayout.Rect bounds(TerminalLayout.Rect panel, int y) {
+        return new TerminalLayout.Rect(
+                Math.min(panel.right(), panel.x() + 4),
+                y,
+                TerminalLayout.reservedScrollContentWidth(panel.width(), 4),
+                20);
+    }
+
     TerminalSearchBox(Font font, int x, int y, int width, int height, Component message) {
         super(font, x, y, width, height, message);
     }

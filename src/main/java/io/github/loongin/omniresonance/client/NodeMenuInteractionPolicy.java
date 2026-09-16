@@ -29,6 +29,9 @@ final class NodeMenuInteractionPolicy {
 
     private static final long HEARTBEAT_INTERVAL_TICKS = 40;
     private static final Set<NodeMenuResponse.Reason> CORRECTABLE_FAILURES = Set.of(
+            NodeMenuResponse.Reason.CHUNK_OWNER_LIMIT,
+            NodeMenuResponse.Reason.CHUNK_SERVER_LIMIT,
+            NodeMenuResponse.Reason.CHUNK_DISABLED,
             NodeMenuResponse.Reason.INVALID_NAME,
             NodeMenuResponse.Reason.INVALID_REQUEST,
             NodeMenuResponse.Reason.NAME_CONFLICT,
@@ -105,6 +108,30 @@ final class NodeMenuInteractionPolicy {
                 throw new IllegalArgumentException("Pending node request sequence must be positive");
             }
         }
+    }
+
+    static boolean preservesChunkToggleLocation(Model before, NodeMenuResponse response) {
+        if (before.pending() != null
+                && before.pending().kind() == PendingKind.TOGGLE
+                && response instanceof NodeMenuResponse.Failure failure
+                && (failure.reason() == NodeMenuResponse.Reason.CHUNK_OWNER_LIMIT
+                        || failure.reason() == NodeMenuResponse.Reason.CHUNK_SERVER_LIMIT
+                        || failure.reason() == NodeMenuResponse.Reason.CHUNK_DISABLED))
+            return Objects.equals(before.authoritative(), failure.state());
+        if (before.pending() == null
+                || before.pending().kind() != PendingKind.TOGGLE
+                || !(response instanceof NodeMenuResponse.State success)
+                || before.authoritative() == null
+                || before.authoritative().getClass() != success.state().getClass()) return false;
+        var old = linkedNode(before.authoritative());
+        var next = linkedNode(success.state());
+        return old != null
+                && next != null
+                && old.nodeId().equals(next.nodeId())
+                && old.networkId().equals(next.networkId())
+                && old.enabled() == next.enabled()
+                && old.mode() == next.mode()
+                && old.chunkLoadingRequested() != next.chunkLoadingRequested();
     }
 
     record Transition(Model model, boolean accepted, boolean rebuild) {
@@ -281,7 +308,8 @@ final class NodeMenuInteractionPolicy {
         }
 
         BackAction exitAction() {
-            return dirty && (pending == null || pending.kind() != PendingKind.SAVE)
+            return new ClientDraftExit(dirty, pending != null && pending.kind() == PendingKind.SAVE)
+                            .requiresConfirmation()
                     ? BackAction.CONFIRM_DISCARD
                     : BackAction.CLOSE_SCREEN;
         }
@@ -306,7 +334,9 @@ final class NodeMenuInteractionPolicy {
                     default -> BackAction.CLOSE_SCREEN;
                 };
             }
-            return dirty ? BackAction.CONFIRM_DISCARD : BackAction.CANCEL_EDIT;
+            return new ClientDraftExit(dirty, false).requiresConfirmation()
+                    ? BackAction.CONFIRM_DISCARD
+                    : BackAction.CANCEL_EDIT;
         }
 
         Transition apply(NodeMenuResponse response) {

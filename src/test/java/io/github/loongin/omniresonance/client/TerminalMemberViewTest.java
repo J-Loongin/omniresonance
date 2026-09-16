@@ -87,7 +87,9 @@ class TerminalMemberViewTest {
         assertEquals(1, rows.size());
         rows.getFirst().onPress();
         assertEquals(List.of(new TerminalMemberView.Action.Add(new UUID(850, 3))), host.actions);
-        assertFalse(host.view.keyPressed(GLFW.GLFW_KEY_ENTER, 0));
+        assertTrue(host.view.keyPressed(GLFW.GLFW_KEY_ENTER, 0));
+        assertFalse(host.view.expanded());
+        assertTrue(host.view.keyPressed(GLFW.GLFW_KEY_KP_ENTER, 0));
         assertTrue(host.view.closeLocalLayer());
         assertFalse(host.view.expanded());
         assertFalse(host.view.closeLocalLayer());

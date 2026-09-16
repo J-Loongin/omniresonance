@@ -20,6 +20,7 @@ import org.jetbrains.annotations.Nullable;
  * closing the owning Screen releases it. Only complete catalogs are searchable and no world objects are retained.
  */
 final class NodeTunnelCatalog implements ClientTextSearch.Catalog<NodeTunnelSummary> {
+    private final ClientCatalogWindow window = new ClientCatalogWindow(65535, 128);
     private final List<NodeTunnelSummary> entries = new ArrayList<>();
     private final List<String> foldedNames = new ArrayList<>();
     private final Set<UUID> seen = new HashSet<>();
@@ -64,7 +65,11 @@ final class NodeTunnelCatalog implements ClientTextSearch.Catalog<NodeTunnelSumm
                 || !sameIdentity(batch)
                 || !batch.node().enabled()
                 || batch.node().mode() != NodeMode.DIRECT
-                || total != page.totalCount()
+                || !window.accept(
+                        List.of(batch.node().networkId(), batch.node().nodeId(), batch.revision()),
+                        entries.size(),
+                        page.totalCount(),
+                        page.entries().size())
                 || page.hasPrevious() != !entries.isEmpty()
                 || nextSize > total
                 || page.hasNext() != (nextSize < total)
@@ -151,6 +156,7 @@ final class NodeTunnelCatalog implements ClientTextSearch.Catalog<NodeTunnelSumm
     }
 
     void reset() {
+        window.reset();
         entries.clear();
         foldedNames.clear();
         seen.clear();

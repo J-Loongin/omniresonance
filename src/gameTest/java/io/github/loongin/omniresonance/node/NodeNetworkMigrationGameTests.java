@@ -262,6 +262,8 @@ public final class NodeNetworkMigrationGameTests {
             authority = new NodeAuthorityService(helper.getLevel().getServer(), repository, nodes, UUID::randomUUID);
             management = new NodeManagementService(
                     helper.getLevel().getServer(), networks, repository, nodes, authority, new EditLockTable());
+            management.installChunkAdmission((network, node, moving) ->
+                    io.github.loongin.omniresonance.chunkloading.ChunkLoadingReservations.Admission.ALLOWED);
         }
 
         private NetworkNodeRecord configureSource(NetworkNodeRecord linked) {

@@ -32,12 +32,19 @@ final class TerminalResultRows {
     }
 
     void clear() {
-        for (TerminalRowButton row : rows) {
-            if (owner.getFocused() == row) {
-                owner.setFocused(null);
-            }
-            removeWidget.accept(row);
+        clearWidgets(rows, removeWidget::accept, owner::setFocused, null);
+    }
+
+    /** Removes only this view's widgets; a retained input keeps its caret/focus when immediately reattached. */
+    static <T extends net.minecraft.client.gui.components.AbstractWidget> void clearWidgets(
+            java.util.Collection<T> widgets,
+            Consumer<? super T> remove,
+            Consumer<GuiEventListener> focus,
+            @org.jetbrains.annotations.Nullable GuiEventListener retainedInput) {
+        for (T widget : widgets) {
+            if (widget != retainedInput && widget.isFocused()) focus.accept(null);
+            remove.accept(widget);
         }
-        rows.clear();
+        widgets.clear();
     }
 }

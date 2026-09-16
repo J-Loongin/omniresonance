@@ -28,17 +28,56 @@ public final class NetworkPayloads {
         storageReceiver = Objects.requireNonNull(receiver);
     }
 
+    private static volatile @Nullable Consumer<ChunkOverviewPage> chunkOverviewReceiver;
+
+    public static void installChunkOverviewReceiver(Consumer<ChunkOverviewPage> receiver) {
+        chunkOverviewReceiver = Objects.requireNonNull(receiver);
+    }
+
+    private static volatile @Nullable Consumer<NodeHighlightFrame> highlightReceiver;
+
+    public static void installHighlightReceiver(Consumer<NodeHighlightFrame> receiver) {
+        highlightReceiver = Objects.requireNonNull(receiver);
+    }
+
+    private static volatile @Nullable Consumer<NodeDirectoryPage> nodeDirectoryReceiver;
+
+    public static void installNodeDirectoryReceiver(Consumer<NodeDirectoryPage> receiver) {
+        nodeDirectoryReceiver = Objects.requireNonNull(receiver);
+    }
+
     private NetworkPayloads() {}
 
     /**
-     * Registers required version-11 PLAY payloads with main-thread handlers. The framework supplies the
+     * Registers required version-18 PLAY payloads with main-thread handlers. The framework supplies the
      * real sending player and replies through its connection; server work never trusts a payload owner.
      * Missing client bootstrap fails explicitly rather than silently discarding successful responses.
      */
     public static void register(RegisterPayloadHandlersEvent event, NetworkRuntimeRegistry registry) {
         Objects.requireNonNull(registry, "registry");
         NodeMenuPayloads.installTerminalTransferHandler(registry::handleTerminalTransfer);
-        PayloadRegistrar registrar = event.registrar("11").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("19").executesOn(HandlerThread.MAIN);
+        registrar.playToClient(NodeHighlightFrame.TYPE, NodeHighlightFrame.STREAM_CODEC, (frame, context) -> {
+            var receiver = highlightReceiver;
+            if (receiver == null) throw new IllegalStateException("Highlight receiver missing");
+            receiver.accept(frame);
+        });
+        registrar.playToServer(NodeDirectoryRequest.TYPE, NodeDirectoryRequest.STREAM_CODEC, (request, context) -> {
+            if (context.player() instanceof ServerPlayer player) registry.handleNodeDirectory(player, request);
+        });
+        registrar.playToClient(NodeDirectoryPage.TYPE, NodeDirectoryPage.STREAM_CODEC, (page, context) -> {
+            var receiver = nodeDirectoryReceiver;
+            if (receiver == null) throw new IllegalStateException("Node directory receiver missing");
+            receiver.accept(page);
+        });
+        registrar.playToServer(ChunkOverviewRequest.TYPE, ChunkOverviewRequest.STREAM_CODEC, (request, context) -> {
+            if (context.player() instanceof ServerPlayer player) registry.handleChunkOverview(player, request);
+        });
+        registrar.playToClient(ChunkOverviewPage.TYPE, ChunkOverviewPage.STREAM_CODEC, (page, context) -> {
+            var receiver = chunkOverviewReceiver;
+            if (receiver == null) throw new IllegalStateException("Overview client receiver missing");
+            receiver.accept(page);
+        });
         registrar.playToServer(TerminalStorageRequest.TYPE, TerminalStorageRequest.STREAM_CODEC, (request, context) -> {
             if (context.player() instanceof ServerPlayer player) registry.handleStorage(player, request);
         });

@@ -240,12 +240,7 @@ final class TerminalMemberView {
         }
         if (search.expanded()) {
             TerminalLayout.Rect bounds = NodeRoutingView.tunnelSearchBounds(layout.content());
-            field = new TerminalSearchBox(
-                    font, bounds.x(), bounds.y(), bounds.width(), bounds.height(), text("search"));
-            field.setMaxLength(256);
-            field.setValue(search.draft());
-            field.setHint(TerminalText.body(text("search")));
-            field.setResponder(value -> {
+            field = search.field(font, bounds, text("search"), 256, value -> {
                 search.edit(value, clientTick);
                 searchError = null;
             });
@@ -338,14 +333,11 @@ final class TerminalMemberView {
     }
 
     boolean keyPressed(int keyCode, int modifiers) {
-        if (search.openFromKey(
+        return ClientSearchState.handleToggleKey(
                 keyCode,
                 modifiers,
-                state instanceof NetworkTerminalState.AdministratorCandidates && candidates.ready() && !pending)) {
-            rebuild.run();
-            return true;
-        }
-        return false;
+                state instanceof NetworkTerminalState.AdministratorCandidates && candidates.ready() && !pending,
+                this::toggleSearch);
     }
 
     boolean closeLocalLayer() {

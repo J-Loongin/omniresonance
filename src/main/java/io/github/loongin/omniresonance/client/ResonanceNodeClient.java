@@ -13,6 +13,9 @@ final class ResonanceNodeClient {
     ResonanceNodeClient(IEventBus modBus) {
         modBus.addListener(this::registerScreens);
         NodeMenuPayloads.installClientReceiver(this::receive);
+        NodeMenuPayloads.installChunkStatusReceiver(status -> {
+            if (Minecraft.getInstance().screen instanceof ResonanceNodeScreen screen) screen.applyChunkStatus(status);
+        });
         NodeMenuPayloads.installTransferReceiver(message -> {
             Minecraft minecraft = Minecraft.getInstance();
             if (minecraft.screen instanceof ResonanceNodeScreen screen) screen.applyTransfer(message);
@@ -20,7 +23,19 @@ final class ResonanceNodeClient {
     }
 
     private void registerScreens(RegisterMenuScreensEvent event) {
-        event.register(ModMenus.RESONANCE_NODE.get(), ResonanceNodeScreen::new);
+        event.register(ModMenus.RESONANCE_NODE.get(), this::createScreen);
+    }
+
+    private ResonanceNodeScreen createScreen(
+            io.github.loongin.omniresonance.node.ResonanceNodeMenu menu,
+            net.minecraft.world.entity.player.Inventory inventory,
+            net.minecraft.network.chat.Component title) {
+        var screen = new ResonanceNodeScreen(menu, inventory, title);
+        if (menu.remoteConfiguration() && Minecraft.getInstance().screen instanceof NetworkSetupScreen parent) {
+            parent.suspendForConfiguration();
+            screen.terminalParent(parent);
+        }
+        return screen;
     }
 
     private void receive(NodeMenuResponse response) {

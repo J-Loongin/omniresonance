@@ -14,11 +14,7 @@ final class NodeRoutingView {
     private NodeRoutingView() {}
 
     static TerminalLayout.Rect tunnelSearchBounds(TerminalLayout.Rect body) {
-        return new TerminalLayout.Rect(
-                body.x() + 4,
-                body.y() + SEARCH_TOP,
-                TerminalLayout.reservedScrollContentWidth(body.width(), 4),
-                SEARCH_HEIGHT);
+        return TerminalSearchBox.bounds(body, body.y() + SEARCH_TOP);
     }
 
     static RoutingListLayout tunnelList(

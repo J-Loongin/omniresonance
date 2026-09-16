@@ -15,6 +15,29 @@ import org.junit.jupiter.api.Test;
 
 class NodePresetPickerTest {
     @Test
+    void pickerUsesTheSharedMatcherForItsActualVisibleChoices() {
+        var picker = new NodePresetPicker();
+        picker.open();
+        picker.search().open();
+        assertEquals("", picker.nextRequest().query());
+        picker.complete(
+                new FilterPresetPage(List.of(new FilterPresetSummary(new UUID(204, 1), "测试预设", 0, 0, true)), 0, 1, 1));
+        try {
+            ClientTextSearch.install((name, query) -> name.equals("测试预设") && query.equals("csys"));
+            picker.edit("csys");
+            assertEquals(2, picker.count());
+            assertNull(picker.nextRequest());
+            assertEquals("测试预设", picker.page().entries().getFirst().name());
+            ClientTextSearch.usePlain();
+            picker.edit("");
+            picker.edit("csys");
+            assertEquals(1, picker.count());
+        } finally {
+            ClientTextSearch.usePlain();
+        }
+    }
+
+    @Test
     void pickerSearchStartsCollapsedAndDoesNotReserveAnInputRow() {
         var picker = new NodePresetPicker();
         picker.open();
@@ -41,60 +64,46 @@ class NodePresetPickerTest {
         host.setFocused(field);
         field.setCursorPosition(2);
         field.setHighlightPos(1);
-        picker.nextRequest();
-        host.refresh();
-        assertTrue(field.active && field.isFocused());
-        assertEquals(2, field.getCursorPosition());
-        assertEquals("r", field.getHighlighted());
-        assertTrue(field.keyPressed(org.lwjgl.glfw.GLFW.GLFW_KEY_E, 0, 0));
-        assertTrue(host.charTyped('e', 0));
-        assertEquals("ieon", field.getValue());
-        assertFalse(picker.complete(page(0, 1, 4)));
-        host.refresh();
-        assertTrue(host.getFocused() == field);
-        assertEquals("ieon", picker.nextRequest().query());
+        assertEquals("", picker.nextRequest().query());
         picker.complete(page(0, 257, 4));
         host.refresh();
-        field.setCursorPosition(2);
-        field.setHighlightPos(2);
-        for (int i = 0; i < 130; i++) picker.wheel(-1, NodePresetPickerView.visibleRows(host.body));
-        picker.nextRequest();
-        host.refresh();
+        assertEquals(2, field.getCursorPosition());
+        assertEquals("r", field.getHighlighted());
+        assertTrue(host.charTyped('e', 0));
+        assertEquals("ieon", field.getValue());
+        assertEquals(128, picker.nextRequest().offset());
         picker.complete(page(128, 257, 4));
+        picker.nextRequest();
+        picker.complete(page(256, 257, 4));
         host.refresh();
         assertTrue(host.getFocused() == field);
-        assertEquals(2, field.getCursorPosition());
-        assertTrue(field.mouseClicked(field.getX() + 1, field.getY() + 1, 1));
-        assertEquals("", field.getValue());
-        assertEquals(0, picker.nextRequest().offset());
-        field.setFocused(false);
-        assertFalse(field.ownsKey(org.lwjgl.glfw.GLFW.GLFW_KEY_E));
+        assertTrue(picker.ready());
+        assertNull(picker.nextRequest());
+        field.setValue("");
+        for (int i = 0; i < 140; i++) picker.wheel(-1, 10);
+        host.refresh();
+        assertTrue(host.getFocused() == field);
+        assertNull(picker.nextRequest());
+        assertTrue(field.ownsKey(org.lwjgl.glfw.GLFW.GLFW_KEY_E));
     }
 
     @Test
-    void collapseInvalidatesPendingFilteredRowsAndReturnsToUnfilteredPageWithoutReopening() {
+    void collapseKeepsAuthorizedCatalogDownloadAndRestoresUnfilteredResultsWithoutReopening() {
         var picker = new NodePresetPicker();
         picker.open();
         picker.search().open();
         picker.edit("iron");
-        assertEquals("iron", picker.nextRequest().query());
+        assertEquals("", picker.nextRequest().query());
         assertTrue(picker.closeSearch());
         assertFalse(picker.search().expanded());
-        assertEquals("", picker.query());
-        assertNull(picker.nextRequest());
-        assertFalse(picker.complete(page(0, 1, 4)));
-        assertNull(picker.page());
-        assertFalse(picker.ready());
-        assertEquals("", picker.nextRequest().query());
-        assertTrue(picker.complete(page(0, 257, 4)));
+        assertTrue(picker.complete(page(0, 1, 4)));
         assertTrue(picker.ready());
+        assertEquals(2, picker.count());
+        assertNull(picker.nextRequest());
         assertFalse(picker.search().expanded());
         assertFalse(picker.closeSearch());
-        picker.search().open();
-        picker.edit("gold");
         picker.close();
-        assertFalse(picker.search().expanded());
-        assertEquals("", picker.query());
+        assertNull(picker.page());
     }
 
     @Test
@@ -132,8 +141,13 @@ class NodePresetPickerTest {
                     () -> events.add("close"),
                     search,
                     true,
-                    () -> events.add("open")));
-            assertTrue(events.isEmpty(), "Focused edit box owns remapped inventory key");
+                    () -> {
+                        search.toggle(0);
+                        events.add("toggle");
+                    }));
+            assertEquals("toggle", events.removeLast());
+            assertFalse(search.expanded());
+            button.onPress();
             button.onPress();
             host.setFocused(button);
             search.finishToggleClick(true, host, null);
@@ -158,7 +172,10 @@ class NodePresetPickerTest {
                     () -> events.add("close"),
                     search,
                     true,
-                    () -> events.add("open")));
+                    () -> {
+                        search.toggle(0);
+                        events.add("toggle");
+                    }));
             assertFalse(ResonanceNodeScreen.routeSearchKey(
                     key,
                     0,
@@ -168,16 +185,28 @@ class NodePresetPickerTest {
                     () -> events.add("close"),
                     search,
                     true,
-                    () -> events.add("open")));
+                    () -> {
+                        search.toggle(0);
+                        events.add("toggle");
+                    }));
             assertFalse(ResonanceNodeScreen.routeSearchKey(
-                    key, 0, 0, null, false, () -> events.add("close"), search, false, () -> events.add("open")));
+                    key, 0, 0, null, false, () -> events.add("close"), search, false, () -> {
+                        search.toggle(0);
+                        events.add("toggle");
+                    }));
             assertTrue(ResonanceNodeScreen.routeSearchKey(
-                    key, 0, 0, null, true, () -> events.add("close"), search, true, () -> events.add("open")));
+                    key, 0, 0, null, true, () -> events.add("close"), search, true, () -> {
+                        search.toggle(0);
+                        events.add("toggle");
+                    }));
             assertEquals("close", events.removeLast());
             assertFalse(search.expanded());
             assertTrue(ResonanceNodeScreen.routeSearchKey(
-                    key, 0, 0, null, false, () -> events.add("close"), search, true, () -> events.add("open")));
-            assertEquals("open", events.removeLast());
+                    key, 0, 0, null, false, () -> events.add("close"), search, true, () -> {
+                        search.toggle(0);
+                        events.add("toggle");
+                    }));
+            assertEquals("toggle", events.removeLast());
             assertTrue(search.expanded());
             picker.closeSearch();
         }
@@ -225,43 +254,41 @@ class NodePresetPickerTest {
     }
 
     @Test
-    void coalescesEditableQueriesAndRejectsOldReplyUntilLatestCompletes() {
+    void editsSearchLocallyWhileOneCatalogBatchIsInFlight() {
         var picker = new NodePresetPicker();
         picker.open();
         picker.search().open();
         picker.edit("i");
         picker.edit("IRON");
-        var first = picker.nextRequest();
-        assertEquals("IRON", first.query());
-        picker.edit("gold");
-        assertNull(picker.nextRequest());
-        assertFalse(picker.complete(page(0, 1, 4)));
-        assertNull(picker.page());
-        assertEquals("gold", picker.nextRequest().query());
-        assertTrue(picker.complete(page(0, 1, 4)));
-        picker.edit("");
-        assertEquals(0, picker.scroll());
         assertEquals("", picker.nextRequest().query());
+        picker.edit("Preset 0");
+        assertNull(picker.nextRequest());
+        assertTrue(picker.complete(page(0, 1, 4)));
+        assertTrue(picker.ready());
+        assertEquals(2, picker.count());
+        picker.edit("missing");
+        assertEquals(1, picker.count());
+        assertNull(picker.nextRequest());
+        picker.edit("");
+        assertEquals(2, picker.count());
+        assertEquals(0, picker.scroll());
     }
 
     @Test
-    void wheelCrossesPagesBothWaysAndCannotDuplicatePendingRequests() {
+    void completeCatalogWheelCrossesLocalPagesWithoutNetworkRequests() {
         var picker = new NodePresetPicker();
         picker.open();
-        picker.search().open();
-        picker.nextRequest();
-        picker.complete(page(0, 257, 4));
-        for (int i = 0; i < 130; i++) picker.wheel(-1, 10);
-        var next = picker.nextRequest();
-        assertEquals(128, next.offset());
-        assertEquals(4, next.libraryRevision());
-        picker.wheel(-1, 10);
+        for (int offset : new int[] {0, 128, 256}) {
+            assertEquals(offset, picker.nextRequest().offset());
+            assertNull(picker.nextRequest());
+            picker.complete(page(offset, 257, 4));
+        }
+        assertTrue(picker.ready());
+        for (int i = 0; i < 120; i++) picker.wheel(-1, 10);
+        assertEquals(128, picker.page().offset());
         assertNull(picker.nextRequest());
-        picker.complete(page(128, 257, 4));
-        assertEquals(0, picker.scroll());
         picker.wheel(1, 10);
-        assertEquals(0, picker.nextRequest().offset());
-        picker.complete(page(0, 257, 4));
+        assertEquals(0, picker.page().offset());
         assertEquals(119, picker.scroll());
     }
 

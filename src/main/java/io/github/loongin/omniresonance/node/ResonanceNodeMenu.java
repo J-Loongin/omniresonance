@@ -48,6 +48,12 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     private long lastSequence;
     private EditKind editKind = EditKind.NONE;
     private boolean closed;
+    private boolean remoteConfiguration;
+
+    public boolean remoteConfiguration() {
+        return remoteConfiguration;
+    }
+
     private @Nullable PolicyTransfer transfer;
 
     private static final class PolicyTransfer {
@@ -103,10 +109,12 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         state = snapshot.state();
     }
 
-    private ResonanceNodeMenu(int containerId, Inventory inventory, BlockPos nodePosition, UUID sessionId) {
+    private ResonanceNodeMenu(
+            int containerId, Inventory inventory, BlockPos nodePosition, UUID sessionId, boolean remote) {
         super(ModMenus.RESONANCE_NODE.get(), containerId);
         playerId = Objects.requireNonNull(inventory, "inventory").player.getUUID();
         service = null;
+        remoteConfiguration = remote;
         this.nodePosition = Objects.requireNonNull(nodePosition, "nodePosition").immutable();
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
         nodeId = Util.NIL_UUID;
@@ -121,7 +129,20 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 containerId,
                 inventory,
                 Objects.requireNonNull(extraData, "extraData").readBlockPos(),
-                extraData.readUUID());
+                extraData.readUUID(),
+                extraData.isReadable() && extraData.readBoolean());
+    }
+
+    void configureRemote(NetworkTopologyService.Edit edit, NodeMenuState.ResourceEdit initial) {
+        remoteConfiguration = true;
+        state = initial;
+        topologyEdit = edit;
+        editNetworkId = linkedNetworkId;
+        editKind = initial instanceof NodeMenuState.DomainEdit ? EditKind.DOMAIN : EditKind.BINDING;
+    }
+
+    NodeMenuResponse remoteInitialResponse(ServerPlayer player) {
+        return response(player, 0);
     }
 
     public BlockPos nodePosition() {
@@ -181,6 +202,14 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         }
         lastSequence = request.sequence();
         try {
+            if (remoteConfiguration
+                    && !(request instanceof NodeMenuRequest.BeginPolicyUpload
+                            || request instanceof NodeMenuRequest.ResourceCatalog
+                            || request instanceof NodeMenuRequest.Heartbeat
+                            || request instanceof NodeMenuRequest.CancelEdit
+                            || request instanceof NodeMenuRequest.Back
+                            || request instanceof NodeMenuRequest.SaveResourcePolicy
+                            || request instanceof NodeMenuRequest.PageItemPresets)) return invalid(request);
             refreshBlankLink(player);
             return switch (request) {
                 case NodeMenuRequest.BeginPolicyUpload begin -> beginPolicyUpload(player, begin);
@@ -444,7 +473,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             NetworkNodeRecord changed = service.management()
                     .setChunkLoadingRequested(
                             player, networkId, edit.node().revision(), request.requested(), edit.token());
-            state = service.linkedRoute(player, networkId, changed.nodeId());
+            state = service.refreshBrowseHeader(player, networkId, changed.nodeId(), state);
             return response(player, request);
         } catch (RuntimeException failure) {
             safeCancel(player, edit.token());
@@ -1253,6 +1282,9 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                     case NAME_CONFLICT -> NodeMenuResponse.Reason.NAME_CONFLICT;
                     case NODE_DISABLED -> NodeMenuResponse.Reason.NODE_DISABLED;
                     case RESET_REQUIRED -> NodeMenuResponse.Reason.RESET_REQUIRED;
+                    case CHUNK_OWNER_LIMIT -> NodeMenuResponse.Reason.CHUNK_OWNER_LIMIT;
+                    case CHUNK_SERVER_LIMIT -> NodeMenuResponse.Reason.CHUNK_SERVER_LIMIT;
+                    case CHUNK_DISABLED -> NodeMenuResponse.Reason.CHUNK_DISABLED;
                 };
         return rejected(player, request, mapped);
     }
@@ -1278,7 +1310,11 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     }
 
     private NodeMenuResponse rejected(ServerPlayer player, NodeMenuRequest request, NodeMenuResponse.Reason mapped) {
-        boolean retain = (mapped == NodeMenuResponse.Reason.NAME_CONFLICT && editKind != EditKind.NONE)
+        boolean loadingFailure = mapped == NodeMenuResponse.Reason.CHUNK_OWNER_LIMIT
+                || mapped == NodeMenuResponse.Reason.CHUNK_SERVER_LIMIT
+                || mapped == NodeMenuResponse.Reason.CHUNK_DISABLED;
+        boolean retain = loadingFailure
+                || (mapped == NodeMenuResponse.Reason.NAME_CONFLICT && editKind != EditKind.NONE)
                 || (mapped == NodeMenuResponse.Reason.RESET_REQUIRED
                         && (editKind == EditKind.MODE || editKind == EditKind.BINDING || editKind == EditKind.DOMAIN))
                 || (mapped == NodeMenuResponse.Reason.QUOTA_REACHED && editKind == EditKind.BINDING)
@@ -1404,7 +1440,11 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     }
 
     private NodeMenuResponse response(ServerPlayer player, NodeMenuRequest request) {
-        var response = new NodeMenuResponse.State(containerId, sessionId, request.sequence(), state);
+        return response(player, request.sequence());
+    }
+
+    private NodeMenuResponse response(ServerPlayer player, long sequence) {
+        var response = new NodeMenuResponse.State(containerId, sessionId, sequence, state);
         if (state instanceof NodeMenuState.ResourceEdit edit
                 && edit.policy() != null
                 && io.github.loongin.omniresonance.networking.NodePolicyFrames.responseSize(response) > 262144) {
@@ -1423,16 +1463,8 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                             () -> io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encode(
                                     edit.policy()));
             transfer = new PolicyTransfer(
-                    id,
-                    request.sequence(),
-                    now + 200,
-                    topologyEdit,
-                    resourceChannel(edit),
-                    resourceTunnel(edit),
-                    length,
-                    null);
-            return new NodeMenuResponse.Download(
-                    containerId, sessionId, request.sequence(), edit.withPolicy(null), id, length);
+                    id, sequence, now + 200, topologyEdit, resourceChannel(edit), resourceTunnel(edit), length, null);
+            return new NodeMenuResponse.Download(containerId, sessionId, sequence, edit.withPolicy(null), id, length);
         }
         return response;
     }

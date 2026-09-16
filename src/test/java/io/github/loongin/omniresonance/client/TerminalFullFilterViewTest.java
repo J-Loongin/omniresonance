@@ -76,6 +76,34 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
+    void librarySearchSharesTheResultRowWidthAtBothWindowSizes() {
+        for (int width : new int[] {427, 960}) {
+            var state = new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0));
+            var view = new TerminalFilterView(() -> {});
+            view.apply(state);
+            var actions = new ArrayList<TerminalFilterView.Action>();
+            var layout = TerminalLayout.calculate(width, 240);
+            var widgets = build(view, layout, state, actions);
+            ((TerminalSearchButton) widgets.stream()
+                            .filter(TerminalSearchButton.class::isInstance)
+                            .findFirst()
+                            .orElseThrow())
+                    .onPress();
+            widgets = build(view, layout, state, actions);
+            var field = widgets.stream()
+                    .filter(TerminalSearchBox.class::isInstance)
+                    .findFirst()
+                    .orElseThrow();
+            var row = widgets.stream()
+                    .filter(TerminalRowButton.class::isInstance)
+                    .findFirst()
+                    .orElseThrow();
+            assertEquals(row.getX(), field.getX());
+            assertEquals(row.getWidth(), field.getWidth());
+        }
+    }
+
+    @Test
     void savingACopiedTagAsExactIdRequiresAnExplicitModeChange() {
         TerminalTagClipboard.clear();
         try {
@@ -298,8 +326,8 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
-    void searchIsCollapsedAndOneRequestInFlightWithStaleQueryRejection() {
-        TerminalFilterView view = new TerminalFilterView(() -> {});
+    void searchUsesCompleteCatalogLocallyAndKeepsCaretAcrossRebuilds() {
+        var view = new TerminalFilterView(() -> {});
         view.apply(new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0)));
         view.apply(STATE);
         var actions = new ArrayList<TerminalFilterView.Action>();
@@ -317,21 +345,37 @@ class TerminalFullFilterViewTest {
                 .findFirst()
                 .orElseThrow();
         field.setValue("first");
+        field.setFocused(true);
+        field.setCursorPosition(3);
+        field.setHighlightPos(1);
         view.tick(2, false);
-        view.tick(3, false);
-        assertEquals(1, actions.size());
-        field.setValue("second");
-        view.tick(4, false);
-        assertEquals(1, actions.size());
-        view.acceptLibrary(new NetworkTerminalResponse.FilterLibrary(
-                PRESET, RULE, 1, "first", new FilterPresetPage(List.of(), 0, 0, 0)));
-        view.tick(5, false);
-        assertEquals(2, actions.size());
-        assertEquals("second", ((TerminalFilterView.Action.Query) actions.getLast()).query());
+        widgets = build(view, layout, STATE, actions);
+        org.junit.jupiter.api.Assertions.assertSame(
+                field,
+                widgets.stream()
+                        .filter(TerminalSearchBox.class::isInstance)
+                        .findFirst()
+                        .orElseThrow());
+        assertEquals(3, field.getCursorPosition());
+        assertEquals("ir", field.getHighlighted());
+        assertTrue(actions.isEmpty());
+        try {
+            ClientTextSearch.install((name, query) -> query.equals("pinyin"));
+            field.setValue("pinyin");
+            view.tick(3, false);
+            var matched = build(view, layout, STATE, actions);
+            assertTrue(matched.stream()
+                    .anyMatch(widget -> widget instanceof TerminalRowButton
+                            && widget.getMessage().getString().equals(SUMMARY.name())));
+            assertTrue(actions.isEmpty(), "Local matching must not send a search query");
+        } finally {
+            ClientTextSearch.usePlain();
+        }
         assertTrue(view.closeSearch());
         assertFalse(view.searchExpanded());
         assertTrue(view.keyPressed(org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER, 0));
-        assertFalse(view.keyPressed(org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER, 0));
+        assertTrue(view.keyPressed(org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER, 0));
+        assertFalse(view.searchExpanded());
     }
 
     @Test

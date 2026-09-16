@@ -11,9 +11,32 @@ import org.lwjgl.glfw.GLFW;
 
 /** Client-thread presentation state owned by one search field; no authority or world references. */
 class ClientSearchState {
+    private @Nullable TerminalSearchBox field;
     private boolean expanded;
     private String draft = "";
     private long dueTick = -1;
+
+    /** One input instance per search lifetime; reflow preserves vanilla caret, selection and horizontal scroll. */
+    TerminalSearchBox field(
+            net.minecraft.client.gui.Font font,
+            TerminalLayout.Rect bounds,
+            net.minecraft.network.chat.Component label,
+            int maximumLength,
+            java.util.function.Consumer<String> changed) {
+        if (!expanded) throw new IllegalStateException("Collapsed search has no input");
+        if (field == null) {
+            field = new TerminalSearchBox(font, bounds.x(), bounds.y(), bounds.width(), bounds.height(), label);
+            field.setMaxLength(maximumLength);
+            field.setHint(TerminalText.body(label));
+            field.setValue(draft);
+        } else {
+            field.setX(bounds.x());
+            field.setY(bounds.y());
+            field.setWidth(bounds.width());
+        }
+        field.setResponder(changed);
+        return field;
+    }
 
     boolean expanded() {
         return expanded;
@@ -27,17 +50,19 @@ class ClientSearchState {
         expanded = true;
     }
 
-    /** Opens once for an unmodified Enter only when the caller's page is eligible. */
-    boolean openFromKey(int keyCode, int modifiers, boolean eligible) {
-        if (!eligible
-                || expanded
-                || (keyCode != GLFW.GLFW_KEY_ENTER && keyCode != GLFW.GLFW_KEY_KP_ENTER)
-                || (modifiers & (GLFW.GLFW_MOD_SHIFT | GLFW.GLFW_MOD_CONTROL | GLFW.GLFW_MOD_ALT | GLFW.GLFW_MOD_SUPER))
-                        != 0) {
-            return false;
-        }
-        open();
+    /** Dispatches both Enter keys to the exact action used by the icon; eligibility belongs to the page. */
+    static boolean handleToggleKey(int keyCode, int modifiers, boolean eligible, Runnable toggle) {
+        if (!eligible || !isToggleKey(keyCode, modifiers)) return false;
+        toggle.run();
         return true;
+    }
+
+    static boolean isToggleKey(int keyCode, int modifiers) {
+        return modifiers == 0 && (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER);
+    }
+
+    void toggle(long currentTick) {
+        if (!close(currentTick)) open();
     }
 
     /** Canonicalizes bounded local text without changing the input or querying a server. */
@@ -77,6 +102,7 @@ class ClientSearchState {
             return false;
         }
         expanded = false;
+        field = null;
         draft = "";
         dueTick = currentTick;
         return true;
@@ -92,6 +118,7 @@ class ClientSearchState {
 
     void reset() {
         expanded = false;
+        field = null;
         draft = "";
         dueTick = -1;
     }

@@ -37,7 +37,7 @@ import org.jetbrains.annotations.Nullable;
  * Server-thread owner-library management using the shared object leases. Returned pages and edit identities are
  * immutable; SavedData stays repository-owned. Reads never create data, simulation is not supported, and failed
  * validation precedes mutation. Management requests derive references from every persisted binding, independently
- * of the active transport/node index. No authority cache, world scan, external call or synchronous save is used.
+ * of the active transport/node index. No permission cache, world scan, external call or synchronous save is used.
  */
 public final class ItemFilterService {
     public enum Reason {
@@ -80,6 +80,22 @@ public final class ItemFilterService {
         public Edit {
             references = Set.copyOf(references);
         }
+    }
+
+    /** One server-thread metadata index, bounded by the owner shard limit; replaced on owner/revision change.
+     * Contains no permission decisions; each page reauthorizes and rebuilds its editable flags.
+     */
+    private @Nullable NameIndex nameIndex;
+
+    private record NameIndex(OwnerSavedData owner, long revision, List<ResourceFilterPreset> presets) {}
+
+    private List<ResourceFilterPreset> orderedPresets(OwnerSavedData owner) {
+        if (nameIndex == null || nameIndex.owner() != owner || nameIndex.revision() != owner.presetLibraryRevision()) {
+            var values = new ArrayList<>(owner.presets());
+            values.sort(Comparator.comparing(ResourceFilterPreset::id));
+            nameIndex = new NameIndex(owner, owner.presetLibraryRevision(), List.copyOf(values));
+        }
+        return nameIndex.presets();
     }
 
     private final MinecraftServer server;
@@ -125,11 +141,13 @@ public final class ItemFilterService {
             return new FilterPresetPage(List.of(), 0, 0, 0);
         }
         String folded = query.toLowerCase(java.util.Locale.ROOT);
-        List<ResourceFilterPreset> presets = new ArrayList<>();
-        for (ResourceFilterPreset preset : owner.presets()) {
-            if (preset.name().value().toLowerCase(java.util.Locale.ROOT).contains(folded)) presets.add(preset);
+        List<ResourceFilterPreset> presets = orderedPresets(owner);
+        if (!folded.isEmpty()) {
+            var filtered = new ArrayList<ResourceFilterPreset>();
+            for (var preset : presets)
+                if (preset.name().value().toLowerCase(java.util.Locale.ROOT).contains(folded)) filtered.add(preset);
+            presets = filtered;
         }
-        presets.sort(Comparator.comparing(preset -> preset.id()));
         if ((libraryRevision >= 0 && libraryRevision != owner.presetLibraryRevision()) || offset >= presets.size())
             offset = 0;
         List<FilterPresetSummary> result = new ArrayList<>();

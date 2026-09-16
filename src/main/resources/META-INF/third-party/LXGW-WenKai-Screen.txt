@@ -14,7 +14,7 @@ a glyph subset, not the original installable font.
 
 Packaged asset:
 assets/omniresonance/font/omniresonance_ui_subset.ttf
-SHA-256: a833e7c6f3039219f261855db8cc8b2290c36f2500966d4f4dd1197240b2a198
+SHA-256: 931cb6ad0293260461842f2358724a93d6152808f159de7e3a8992b18e86312a
 
 The click subtitle adds U+51FB from the same distribution's 26.woff2 chunk.
 All existing glyph outlines, advances, character mappings, names and line
@@ -181,3 +181,43 @@ Existing mappings, outlines, advances, internal names and line metrics remain un
 Added code points: U+7F00
 Source chunks and SHA-256:
 30.woff2 0b66fb907f468bbf57df30b72c98eb459b702587d927e4338f9a0b17eab93b05
+
+M5 inventory UI adds 5 translated glyphs from the same GB Screen 1.522 distribution.
+Existing mappings, outlines, advances, internal names and line metrics remain unchanged.
+Added code points: U+4EFD, U+51B3, U+7EF4, U+8BC1, U+8EAB
+Source chunks and SHA-256:
+25.woff2 76f3d89c9b88ec8ac5c99048614a43dc434c26bce00b8defab1cbfac8c17b908
+3.woff2 fc2c1190375a5abe65dbc697011c8c49e87d51e7e88077fa1b40025799e3b9d2
+4.woff2 24722504c585714a6655808634244c0b57d21db7cc0a7f8a7f2b2a2d8ba30841
+
+M5 inventory UI adds 1 translated glyphs from the same GB Screen 1.522 distribution.
+Existing mappings, outlines, advances, internal names and line metrics remain unchanged.
+Added code points: U+5360
+Source chunks and SHA-256:
+25.woff2 76f3d89c9b88ec8ac5c99048614a43dc434c26bce00b8defab1cbfac8c17b908
+
+M5 inventory UI adds 12 translated glyphs from the same GB Screen 1.522 distribution.
+Existing mappings, outlines, advances, internal names and line metrics remain unchanged.
+Added code points: U+4E16, U+4EAE, U+4FA7, U+51B7, U+5374, U+5730, U+5B89, U+6267, U+672B, U+811A, U+843D, U+8D85
+Source chunks and SHA-256:
+25.woff2 76f3d89c9b88ec8ac5c99048614a43dc434c26bce00b8defab1cbfac8c17b908
+27.woff2 c45e89db2ca60404c80c48324d4e1e1edeb70bb7b952b889ac6b1b96ab5573af
+3.woff2 fc2c1190375a5abe65dbc697011c8c49e87d51e7e88077fa1b40025799e3b9d2
+4.woff2 24722504c585714a6655808634244c0b57d21db7cc0a7f8a7f2b2a2d8ba30841
+5.woff2 ec7fc6ca46d7220add973353864754e9e90e491de44a7c522cc0fa8c49f91e10
+
+M5 inventory UI adds 6 translated glyphs from the same GB Screen 1.522 distribution.
+Existing mappings, outlines, advances, internal names and line metrics remain unchanged.
+Added code points: U+56FE, U+5750, U+5E38, U+5F02, U+89C6, U+91CA
+Source chunks and SHA-256:
+25.woff2 76f3d89c9b88ec8ac5c99048614a43dc434c26bce00b8defab1cbfac8c17b908
+26.woff2 cbb2ed6b99b0b9ac4050046b3347222c8b9cdd7bf92721479c4a7d1dc374c7f2
+27.woff2 c45e89db2ca60404c80c48324d4e1e1edeb70bb7b952b889ac6b1b96ab5573af
+3.woff2 fc2c1190375a5abe65dbc697011c8c49e87d51e7e88077fa1b40025799e3b9d2
+5.woff2 ec7fc6ca46d7220add973353864754e9e90e491de44a7c522cc0fa8c49f91e10
+
+M5 inventory UI adds 1 translated glyphs from the same GB Screen 1.522 distribution.
+Existing mappings, outlines, advances, internal names and line metrics remain unchanged.
+Added code points: U+7B5B
+Source chunks and SHA-256:
+29.woff2 d556ee4a7c9cdcac720fb5adc7af2cb40f83bb43b33fdd847952c8e388914714

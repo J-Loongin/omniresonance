@@ -27,7 +27,7 @@ final class NetworkSetupKeyRoutingTest {
                     0,
                     () -> TerminalInteractionPolicy.inventoryShortcut(inventory, null, key, 0),
                     () -> closes[0]++,
-                    () -> search.openFromKey(key, 0, true)));
+                    () -> ClientSearchState.handleToggleKey(key, 0, true, () -> search.toggle(0))));
             assertEquals(1, closes[0]);
             assertFalse(search.expanded());
         }
@@ -46,7 +46,7 @@ final class NetworkSetupKeyRoutingTest {
                     0,
                     () -> TerminalInteractionPolicy.inventoryShortcut(inventory, null, key, 0),
                     () -> closes[0]++,
-                    () -> search.openFromKey(key, 0, true)));
+                    () -> ClientSearchState.handleToggleKey(key, 0, true, () -> search.toggle(0))));
             assertEquals(0, closes[0]);
             assertTrue(search.expanded());
         }
@@ -72,9 +72,38 @@ final class NetworkSetupKeyRoutingTest {
                 0,
                 () -> TerminalInteractionPolicy.inventoryShortcut(inventory, field, GLFW.GLFW_KEY_ENTER, 0),
                 () -> closes[0]++,
-                () -> search.openFromKey(GLFW.GLFW_KEY_ENTER, 0, true)));
+                () -> ClientSearchState.handleToggleKey(GLFW.GLFW_KEY_ENTER, 0, true, () -> search.toggle(0))));
         assertEquals(0, closes[0]);
         assertFalse(search.expanded());
+    }
+
+    @Test
+    void focusedSearchConsumesEnterAsToggleWhileKeepingOtherTextKeysLocal() {
+        Font font = new Font(
+                id -> {
+                    throw new AssertionError("No rendering");
+                },
+                false);
+        var field = new TerminalSearchBox(font, 0, 0, 100, 20, Component.empty());
+        field.setFocused(true);
+        var search = new ClientSearchState();
+        search.open();
+        int[] closes = {0};
+        for (int key : new int[] {GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER}) {
+            boolean before = search.expanded();
+            assertTrue(NetworkSetupScreen.routeKey(
+                    field,
+                    key,
+                    0,
+                    0,
+                    () -> true,
+                    () -> closes[0]++,
+                    () -> ClientSearchState.handleToggleKey(key, 0, true, () -> search.toggle(0))));
+            assertEquals(!before, search.expanded());
+        }
+        assertTrue(
+                NetworkSetupScreen.routeKey(field, GLFW.GLFW_KEY_E, 0, 0, () -> true, () -> closes[0]++, () -> false));
+        assertEquals(0, closes[0]);
     }
 
     private static KeyMapping inventoryKey() {

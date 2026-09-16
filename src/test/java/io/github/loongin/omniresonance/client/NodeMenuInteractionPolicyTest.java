@@ -28,6 +28,43 @@ final class NodeMenuInteractionPolicyTest {
     private static final UUID SESSION = new UUID(200, 1);
 
     @Test
+    void deniedLoadingAdmissionPreservesTheCurrentBrowseLocation() {
+        var state = new NodeMenuState.ModeRoot(node(true));
+        var pending = loaded(state).submit(NodeMenuInteractionPolicy.PendingKind.TOGGLE, 1);
+        for (var reason : java.util.List.of(
+                NodeMenuResponse.Reason.CHUNK_OWNER_LIMIT,
+                NodeMenuResponse.Reason.CHUNK_SERVER_LIMIT,
+                NodeMenuResponse.Reason.CHUNK_DISABLED)) {
+            var response = new NodeMenuResponse.Failure(7, SESSION, 1, reason, state);
+            assertTrue(NodeMenuInteractionPolicy.preservesChunkToggleLocation(pending, response));
+            assertTrue(pending.apply(response).accepted());
+        }
+    }
+
+    @Test
+    void chunkToggleKeepsLocationWhileNodeEnableToggleUsesNormalNavigation() {
+        var old = node(true);
+        var next = new NodeMenuNodeSummary(
+                old.networkId(),
+                old.networkName(),
+                old.nodeId(),
+                old.nodeName(),
+                old.revision() + 1,
+                old.dimension(),
+                old.position(),
+                old.form(),
+                old.facing(),
+                true,
+                false,
+                old.mode());
+        var pending = loaded(new NodeMenuState.ModeRoot(old)).submit(NodeMenuInteractionPolicy.PendingKind.TOGGLE, 1);
+        assertTrue(NodeMenuInteractionPolicy.preservesChunkToggleLocation(
+                pending, new NodeMenuResponse.State(7, SESSION, 1, new NodeMenuState.ModeRoot(next))));
+        assertFalse(NodeMenuInteractionPolicy.preservesChunkToggleLocation(
+                pending, new NodeMenuResponse.State(7, SESSION, 1, new NodeMenuState.ModeRoot(node(false)))));
+    }
+
+    @Test
     void nodeProductionNetworkHeaderRendersPlainContextAcrossDescendantsAndEditStates() {
         var node = node(true);
         var tunnel = new NodeTunnelSummary(new UUID(203, 1), "Tunnel", 0, true, 1, 1, 1);

@@ -17,7 +17,9 @@ public record ServerSettings(
         RecoveryLimits recoveryLimits,
         long storageVariantLimitPerNetwork,
         TerminalSync terminalSync,
-        DirectStorageAccess directStorageAccess) {
+        DirectStorageAccess directStorageAccess,
+        ChunkLoading chunkLoading,
+        Navigation navigation) {
     public ServerSettings {
         ServerConfig.validateNetworksPerOwner(networksPerOwner);
         ServerConfig.validateTunnelsPerNetwork(tunnelsPerNetwork);
@@ -30,6 +32,112 @@ public record ServerSettings(
         ServerConfig.validateM2("storage.variant_limit_per_network", storageVariantLimitPerNetwork);
         java.util.Objects.requireNonNull(terminalSync, "terminalSync");
         java.util.Objects.requireNonNull(directStorageAccess, "directStorageAccess");
+        java.util.Objects.requireNonNull(chunkLoading, "chunkLoading");
+        java.util.Objects.requireNonNull(navigation, "navigation");
+    }
+
+    public record Navigation(
+            boolean highlightEnabled,
+            int highlightDurationTicks,
+            boolean teleportEnabled,
+            boolean crossDimension,
+            boolean temporaryLoading,
+            int cooldownTicks,
+            int ticketTtlTicks,
+            int maximumPending) {
+        public Navigation {
+            ServerConfig.validateM2("terminal.highlight_enabled", highlightEnabled);
+            ServerConfig.validateM2("terminal.highlight_duration_ticks", highlightDurationTicks);
+            ServerConfig.validateM2("terminal.teleport_enabled", teleportEnabled);
+            ServerConfig.validateM2("terminal.cross_dimension_teleport_enabled", crossDimension);
+            ServerConfig.validateM2("terminal.temporary_chunk_loading_enabled", temporaryLoading);
+            ServerConfig.validateM2("terminal.teleport_cooldown_ticks", cooldownTicks);
+            ServerConfig.validateM2("terminal.temporary_ticket_ttl_ticks", ticketTtlTicks);
+            ServerConfig.validateM2("terminal.max_pending_teleports_server", maximumPending);
+        }
+
+        public static Navigation defaults() {
+            return new Navigation(
+                    (Boolean) ServerConfig.defaultM2("terminal.highlight_enabled"),
+                    (Integer) ServerConfig.defaultM2("terminal.highlight_duration_ticks"),
+                    (Boolean) ServerConfig.defaultM2("terminal.teleport_enabled"),
+                    (Boolean) ServerConfig.defaultM2("terminal.cross_dimension_teleport_enabled"),
+                    (Boolean) ServerConfig.defaultM2("terminal.temporary_chunk_loading_enabled"),
+                    (Integer) ServerConfig.defaultM2("terminal.teleport_cooldown_ticks"),
+                    (Integer) ServerConfig.defaultM2("terminal.temporary_ticket_ttl_ticks"),
+                    (Integer) ServerConfig.defaultM2("terminal.max_pending_teleports_server"));
+        }
+    }
+
+    public ServerSettings(
+            int networksPerOwner,
+            int tunnelsPerNetwork,
+            int channelsPerTunnel,
+            int channelBindingsPerDirectNode,
+            int administratorsPerNetwork,
+            Scheduler scheduler,
+            FilterLimits filterLimits,
+            RecoveryLimits recoveryLimits,
+            long storageVariantLimitPerNetwork,
+            TerminalSync terminalSync,
+            DirectStorageAccess directStorageAccess,
+            ChunkLoading chunkLoading) {
+        this(
+                networksPerOwner,
+                tunnelsPerNetwork,
+                channelsPerTunnel,
+                channelBindingsPerDirectNode,
+                administratorsPerNetwork,
+                scheduler,
+                filterLimits,
+                recoveryLimits,
+                storageVariantLimitPerNetwork,
+                terminalSync,
+                directStorageAccess,
+                chunkLoading,
+                Navigation.defaults());
+    }
+
+    public record ChunkLoading(boolean enabled, int perOwner, int server) {
+        public ChunkLoading {
+            ServerConfig.validateM2("chunk_loading.enabled", enabled);
+            ServerConfig.validateM2("chunk_loading.chunks_per_owner", perOwner);
+            ServerConfig.validateM2("chunk_loading.chunks_server", server);
+        }
+
+        public static ChunkLoading defaults() {
+            return new ChunkLoading(
+                    (Boolean) ServerConfig.defaultM2("chunk_loading.enabled"),
+                    (Integer) ServerConfig.defaultM2("chunk_loading.chunks_per_owner"),
+                    (Integer) ServerConfig.defaultM2("chunk_loading.chunks_server"));
+        }
+    }
+
+    public ServerSettings(
+            int networksPerOwner,
+            int tunnelsPerNetwork,
+            int channelsPerTunnel,
+            int channelBindingsPerDirectNode,
+            int administratorsPerNetwork,
+            Scheduler scheduler,
+            FilterLimits filterLimits,
+            RecoveryLimits recoveryLimits,
+            long storageVariantLimitPerNetwork,
+            TerminalSync terminalSync,
+            DirectStorageAccess directStorageAccess) {
+        this(
+                networksPerOwner,
+                tunnelsPerNetwork,
+                channelsPerTunnel,
+                channelBindingsPerDirectNode,
+                administratorsPerNetwork,
+                scheduler,
+                filterLimits,
+                recoveryLimits,
+                storageVariantLimitPerNetwork,
+                terminalSync,
+                directStorageAccess,
+                ChunkLoading.defaults());
     }
 
     /** Immutable terminal policy; parsing is strict and never changes player or storage state. */

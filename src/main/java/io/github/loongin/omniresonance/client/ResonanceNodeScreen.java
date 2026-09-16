@@ -100,6 +100,47 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         titleLabelY = Integer.MIN_VALUE;
     }
 
+    private @Nullable io.github.loongin.omniresonance.networking.NodeChunkStatus chunkStatus;
+    private @Nullable NetworkSetupScreen terminalParent;
+    private boolean remoteWholeExit;
+
+    @Nullable
+    NetworkSetupScreen terminalParent() {
+        return terminalParent;
+    }
+
+    void terminalParent(NetworkSetupScreen parent) {
+        terminalParent = parent;
+    }
+
+    private @Nullable TerminalButton chunkButton;
+
+    void applyChunkStatus(io.github.loongin.omniresonance.networking.NodeChunkStatus status) {
+        var node = NodeMenuInteractionPolicy.linkedNode(interaction.authoritative());
+        if (status.containerId() != menu.containerId
+                || !status.sessionId().equals(menu.sessionId())
+                || node == null
+                || !status.nodeId().equals(node.nodeId())
+                || status.revision() != node.revision()) return;
+        chunkStatus = status;
+        updateChunkStatus(node);
+    }
+
+    private void updateChunkStatus(NodeMenuNodeSummary node) {
+        if (chunkButton == null
+                || chunkStatus == null
+                || !chunkStatus.nodeId().equals(node.nodeId())
+                || chunkStatus.revision() != node.revision()) return;
+        updateChunkTooltip(chunkButton, chunkStatus.status());
+    }
+
+    static void updateChunkTooltip(
+            TerminalButton button, io.github.loongin.omniresonance.chunkloading.ChunkLoadingAllocator.Status status) {
+        String key = status.name().toLowerCase(java.util.Locale.ROOT);
+        button.setTooltip(
+                Tooltip.create(TerminalText.body(Component.translatable("omniresonance.chunk_loading." + key))));
+    }
+
     boolean matches(NodeMenuResponse response) {
         return response.containerId() == menu.containerId
                 && response.sessionId().equals(menu.sessionId())
@@ -170,9 +211,19 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             uploadPolicy = null;
             uploadOffset = 0;
         }
+        boolean preserveChunkLocation = NodeMenuInteractionPolicy.preservesChunkToggleLocation(interaction, response);
         NodeMenuInteractionPolicy.EditKind previous = interaction.editKind();
         PagedListScroll.PageRequest completedPage = pendingPageRequest;
         NodeMenuInteractionPolicy.Transition transition = interaction.apply(response);
+        if (menu.remoteConfiguration()
+                && transition.accepted()
+                && response.sequence() > 0
+                && (transition.model().authoritative() instanceof NodeMenuState.DirectChannelRoot
+                        || transition.model().authoritative() instanceof NodeMenuState.DomainRoot)) {
+            interaction = transition.model();
+            super.onClose();
+            return;
+        }
         if (!transition.accepted()) {
             return;
         }
@@ -189,6 +240,14 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 else rebuildIfActive();
                 return;
             }
+        }
+        if (preserveChunkLocation && transition.accepted()) {
+            interaction = transition.model();
+            error = response instanceof NodeMenuResponse.Failure failure
+                    ? Component.translatable(failure.reason().translationKey())
+                    : null;
+            rebuildIfActive();
+            return;
         }
         if (!transition.rebuild()) {
             interaction = transition.model();
@@ -293,7 +352,9 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         presetResultRows.clear();
         resourceRows.clear();
         modalBackdrop.clear();
-        layout = TerminalLayout.calculate(width, height);
+        layout = terminalParent == null
+                ? TerminalLayout.calculate(width, height)
+                : terminalParent.configurationLayout(width, height);
         imageWidth = layout.window().width();
         imageHeight = layout.window().height();
         super.init();
@@ -424,7 +485,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         right = actionLayout.remaining().right();
         TerminalHeaderLayout.NodeNames names =
                 TerminalHeaderLayout.nodeNames(actionLayout.remaining(), layout.compact());
-        if (node != null) {
+        if (node != null && !menu.remoteConfiguration()) {
             int chunkWidth = layout.compact() ? 64 : 92;
             TerminalButton chunk = new TerminalButton(
                     right - chunkWidth,
@@ -449,6 +510,8 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             chunk.setTooltip(Tooltip.create(
                     TerminalText.body(Component.translatable("omniresonance.node_menu.chunk_request.note"))));
             addRenderableWidget(chunk);
+            chunkButton = chunk;
+            updateChunkStatus(node);
             right = chunk.getX() - TerminalLayout.GAP;
 
             int enabledWidth = layout.compact() ? 52 : 66;
@@ -476,7 +539,10 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 ? Component.translatable("omniresonance.node_menu.title.unconfigured")
                         .getString()
                 : node.nodeName();
-        if (node != null && node.enabled() && interaction.editKind() == NodeMenuInteractionPolicy.EditKind.NONE) {
+        if (node != null
+                && !menu.remoteConfiguration()
+                && node.enabled()
+                && interaction.editKind() == NodeMenuInteractionPolicy.EditKind.NONE) {
             int nameWidth = names.node().width();
             nodeTitleBounds = new TerminalLayout.Rect(left, y, 0, CONTROL_HEIGHT);
             networkTitleBounds = names.network();
@@ -584,13 +650,9 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                                     menu.containerId, menu.sessionId(), sequence),
                             NodeMenuInteractionPolicy.PendingKind.NAVIGATE));
         }
-        button.active = modal == Modal.NONE
-                && (!interaction.mutationPending()
-                        || (action == TerminalHeaderLayout.Action.SEARCH
-                                && (choosingItemPreset
-                                        ? presetReadPending(interaction, presetPicker.pending())
-                                        : tunnelSearch.expanded())))
-                && (action != TerminalHeaderLayout.Action.SEARCH || choosingItemPreset || tunnelCatalog.ready());
+        button.active = action == TerminalHeaderLayout.Action.SEARCH
+                ? searchEligible()
+                : modal == Modal.NONE && !interaction.mutationPending();
         addRenderableWidget(button);
     }
 
@@ -756,14 +818,8 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         if (tunnelSearch.expanded()) {
             TerminalLayout.Rect searchBounds = NodeRoutingView.tunnelSearchBounds(bodyBounds);
             Component label = Component.translatable("omniresonance.node_menu.tunnel.search");
-            searchField = new TerminalSearchBox(
-                    font, searchBounds.x(), searchBounds.y(), searchBounds.width(), searchBounds.height(), label);
-            searchField.setMaxLength(EDIT_BOX_MAXIMUM_UTF16_UNITS);
-            searchField.setHint(TerminalText.body(label));
-            settingDraft = true;
-            searchField.setValue(tunnelSearch.draft());
-            settingDraft = false;
-            searchField.setResponder(this::updateSearchDraft);
+            searchField = tunnelSearch.field(
+                    font, searchBounds, label, EDIT_BOX_MAXIMUM_UTF16_UNITS, this::updateSearchDraft);
             searchField.active = !interaction.mutationPending() && modal == Modal.NONE;
             addRenderableWidget(searchField);
         }
@@ -2059,6 +2115,14 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         presetPicker.close();
         tunnelSearch.reset();
         super.removed();
+        var parent = terminalParent;
+        if (parent != null && minecraft != null)
+            minecraft.execute(() -> {
+                if (minecraft.screen == null) {
+                    if (remoteWholeExit || closeAfterDiscard) parent.closeFromConfiguration();
+                    else parent.resumeFromConfiguration();
+                }
+            });
     }
 
     @Override
@@ -2093,7 +2157,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 activeSearch(),
                 searchEligible(),
                 () -> {
-                    rebuildIfActive();
+                    toggleSearch();
                     if (minecraft != null)
                         minecraft
                                 .getSoundManager()
@@ -2112,20 +2176,21 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             ClientSearchState search,
             boolean eligible,
             Runnable opened) {
+        if (focused instanceof TerminalSearchBox
+                && search.expanded()
+                && ClientSearchState.handleToggleKey(keyCode, modifiers, eligible, opened)) return true;
         if (focused instanceof TerminalEditBox field && field.ownsKey(keyCode))
             return field.keyPressed(keyCode, scanCode, modifiers);
         if (inventoryShortcut) {
             close.run();
             return true;
         }
-        if (search.openFromKey(keyCode, modifiers, eligible)) {
-            opened.run();
-            return true;
-        }
-        return false;
+        return ClientSearchState.handleToggleKey(keyCode, modifiers, eligible, opened);
     }
 
     private void closeFromInventory() {
+        if (terminalParent != null && interaction.exitAction() != NodeMenuInteractionPolicy.BackAction.CONFIRM_DISCARD)
+            remoteWholeExit = true;
         syncResourceDirty();
         if (interaction.exitAction() == NodeMenuInteractionPolicy.BackAction.CONFIRM_DISCARD) {
             closeAfterDiscard = true;
@@ -2272,9 +2337,12 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
 
     @Override
     public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        graphics.fill(0, 0, width, height, TerminalTheme.WORLD_DIM);
-        TerminalTheme.renderWindow(graphics, layout);
-        renderTopBarText(graphics);
+        if (terminalParent != null) terminalParent.render(graphics, -1, -1, partialTick);
+        else {
+            graphics.fill(0, 0, width, height, TerminalTheme.WORLD_DIM);
+            TerminalTheme.renderWindow(graphics, layout);
+            renderTopBarText(graphics);
+        }
         TerminalTheme.renderPanel(graphics, bodyBounds);
         renderState(graphics);
         if (modal != Modal.NONE) modalBackdrop.render(widget -> widget.render(graphics, -1, -1, partialTick));

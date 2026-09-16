@@ -48,7 +48,10 @@ public final class NodeManagementService implements AutoCloseable {
         STALE_REVISION,
         NAME_CONFLICT,
         NODE_DISABLED,
-        RESET_REQUIRED
+        RESET_REQUIRED,
+        CHUNK_OWNER_LIMIT,
+        CHUNK_SERVER_LIMIT,
+        CHUNK_DISABLED
     }
 
     /** Expected request rejection carrying no player-visible text or mutable state. */
@@ -111,6 +114,38 @@ public final class NodeManagementService implements AutoCloseable {
         public LinkedAccess {
             Objects.requireNonNull(network, "network");
             Objects.requireNonNull(node, "node");
+        }
+    }
+
+    /**
+     * Synchronous server-thread decision over an immutable node snapshot. Implementations may refresh derived
+     * indexes or load validated domain metadata, but must not save the node flag or issue native tickets. The
+     * caller commits immediately after ALLOWED; a rejection leaves authority unchanged and creates no queue.
+     */
+    @FunctionalInterface
+    public interface ChunkAdmission {
+        io.github.loongin.omniresonance.chunkloading.ChunkLoadingReservations.Admission check(
+                UUID network, NetworkNodeRecord node, boolean moving);
+    }
+
+    private @Nullable ChunkAdmission chunkAdmission;
+    /** Installs the world-owned admission boundary before exposing menus. It runs synchronously on the server thread. */
+    public void installChunkAdmission(ChunkAdmission admission) {
+        if (server == null || !server.isSameThread())
+            throw new IllegalStateException("Admission installation off server thread");
+        if (chunkAdmission != null) throw new IllegalStateException("Admission already installed");
+        chunkAdmission = Objects.requireNonNull(admission);
+    }
+
+    private void requireChunkAdmission(UUID network, NetworkNodeRecord node, boolean moving) {
+        if (chunkAdmission == null) throw rejected(Reason.UNAVAILABLE);
+        var result = chunkAdmission.check(network, node, moving);
+        switch (result) {
+            case ALLOWED -> {}
+            case OWNER_LIMIT -> throw rejected(Reason.CHUNK_OWNER_LIMIT);
+            case SERVER_LIMIT -> throw rejected(Reason.CHUNK_SERVER_LIMIT);
+            case SERVER_DISABLED -> throw rejected(Reason.CHUNK_DISABLED);
+            case UNAVAILABLE -> throw rejected(Reason.UNAVAILABLE);
         }
     }
 
@@ -318,6 +353,8 @@ public final class NodeManagementService implements AutoCloseable {
         }
         LinkedTarget source = requireLinkedSave(actor, edit.sourceNetworkId(), advisory.revision(), edit.token());
         requireNetwork(actor, edit.targetNetworkId());
+        if (source.entry().record().chunkLoadingRequested())
+            requireChunkAdmission(edit.targetNetworkId(), source.entry().record(), true);
         try {
             NetworkNodeRecord moved = authority()
                     .moveNetwork(
@@ -448,13 +485,15 @@ public final class NodeManagementService implements AutoCloseable {
         return commitLinked(actor, token, target, target.network().setNodeEnabled(token.objectId(), revision, enabled));
     }
 
-    /** Changes only the persisted request of an enabled exact-revision node; no chunk ticket is granted. */
+    /** Admits a new enabled-node loading entitlement before persistence; failure changes nothing and never queues a request. */
     public NetworkNodeRecord setChunkLoadingRequested(
             ServerPlayer actor, UUID networkId, long revision, boolean requested, EditLockTable.Token token) {
         LinkedTarget target = requireLinkedSave(actor, networkId, revision, token);
         if (!target.entry().record().enabled()) {
             throw rejected(Reason.NODE_DISABLED);
         }
+        if (requested && !target.entry().record().chunkLoadingRequested())
+            requireChunkAdmission(networkId, target.entry().record(), false);
         return commitLinked(
                 actor,
                 token,
@@ -530,6 +569,7 @@ public final class NodeManagementService implements AutoCloseable {
         }
         locks().clear();
         blankEdits.clear();
+        chunkAdmission = null;
         server = null;
         networks = null;
         repository = null;

@@ -53,6 +53,115 @@ final class NetworkSetupScreen extends Screen {
     private final TerminalNetworkContext networkContext = new TerminalNetworkContext();
     private @Nullable DomainInventoryView inventoryView;
     private long inventoryGeneration;
+    private @Nullable ChunkOverviewView chunkOverview;
+    private long chunkGeneration;
+    private @Nullable TerminalNodesView nodesView;
+    private long nodeNavigationSequence;
+    private boolean suspendedForConfiguration;
+
+    void receiveNodeDirectory(io.github.loongin.omniresonance.networking.NodeDirectoryPage page) {
+        if (nodesView != null) nodesView.accept(page);
+    }
+
+    TerminalLayout configurationLayout(int width, int height) {
+        if (this.width != width || this.height != height) resize(minecraft, width, height);
+        return new TerminalLayout(
+                layout.window(),
+                layout.titleBar(),
+                nodesView == null ? layout.content() : nodesView.editorBounds(),
+                layout.compact());
+    }
+
+    void suspendForConfiguration() {
+        suspendedForConfiguration = true;
+        if (nodesView != null) nodesView.suspendHeaderSearch();
+    }
+
+    void closeFromConfiguration() {
+        suspendedForConfiguration = false;
+        closeChunkOverview();
+        sendCloseOnce();
+    }
+
+    void resumeFromConfiguration() {
+        suspendedForConfiguration = false;
+        if (disconnected) return;
+        if (minecraft != null) {
+            minecraft.setScreen(this);
+            if (nodesView != null) nodesView.resume();
+        }
+    }
+
+    void receiveChunkOverview(io.github.loongin.omniresonance.networking.ChunkOverviewPage page) {
+        if (chunkOverview != null) chunkOverview.accept(page);
+    }
+
+    private void openChunkOverview(boolean nodes) {
+        if (!(topologyState instanceof NetworkTerminalState.NetworkRoot)
+                || sessionId == null
+                || pendingOperation != PendingOperation.NONE) return;
+        networkContext.readOnly(true);
+        chunkGeneration = Math.incrementExact(chunkGeneration);
+        if (nodes) {
+            nodeNavigationSequence = 1;
+            client.sendChunkOverview(new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                    viewId,
+                    sessionId,
+                    chunkGeneration,
+                    1,
+                    io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.OPEN_NODES,
+                    0,
+                    false));
+            nodesView = new TerminalNodesView(
+                    viewId,
+                    sessionId,
+                    chunkGeneration,
+                    client::sendNodeDirectory,
+                    (node, teleport) -> {
+                        client.sendChunkOverview(new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                viewId,
+                                sessionId,
+                                chunkGeneration,
+                                ++nodeNavigationSequence,
+                                teleport
+                                        ? io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action
+                                                .TELEPORT
+                                        : io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action
+                                                .HIGHLIGHT,
+                                0,
+                                false,
+                                node));
+                        closeRoot();
+                    },
+                    this::closeRoot);
+            nodesView.open();
+            rebuildIfActive();
+            return;
+        }
+        chunkOverview = new ChunkOverviewView(viewId, sessionId, chunkGeneration, client::sendChunkOverview, false);
+        chunkOverview.onNavigate(this::closeRoot);
+        chunkOverview.open();
+        rebuildIfActive();
+    }
+
+    private void closeChunkOverview() {
+        if (nodesView != null) {
+            client.sendChunkOverview(new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                    viewId,
+                    sessionId,
+                    chunkGeneration,
+                    ++nodeNavigationSequence,
+                    io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.CLOSE,
+                    0,
+                    false));
+            nodesView = null;
+            networkContext.readOnly(false);
+        }
+        if (chunkOverview == null) return;
+        chunkOverview.close();
+        chunkOverview = null;
+        networkContext.readOnly(false);
+    }
 
     void invalidateInventoryMetadata() {
         if (inventoryView != null) inventoryView.invalidateMetadata();
@@ -176,6 +285,7 @@ final class NetworkSetupScreen extends Screen {
     }
 
     void disconnected() {
+        closeChunkOverview();
         closeInventory();
         clearFilterTransfer();
         filterDownload.close();
@@ -557,14 +667,15 @@ final class NetworkSetupScreen extends Screen {
         crumbLeft = topBar.x();
 
         int right = topBar.right();
-        TerminalHeaderLayout.Action action = inventoryView != null || filterView.managementOpen()
-                ? TerminalHeaderLayout.Action.NONE
-                : TerminalInteractionPolicy.topBarAction(
-                        page != null,
-                        topologyState,
-                        minecraft != null && minecraft.player != null ? minecraft.player.getUUID() : null);
-        TerminalHeaderLayout.ActionLayout header =
-                TerminalHeaderLayout.atRightEdge(topBar, action != TerminalHeaderLayout.Action.NONE);
+        TerminalHeaderLayout.Action action =
+                inventoryView != null || chunkOverview != null || nodesView != null || filterView.managementOpen()
+                        ? TerminalHeaderLayout.Action.NONE
+                        : TerminalInteractionPolicy.topBarAction(
+                                page != null,
+                                topologyState,
+                                minecraft != null && minecraft.player != null ? minecraft.player.getUUID() : null);
+        TerminalHeaderLayout.ActionLayout header = TerminalHeaderLayout.atRightEdge(
+                topBar, action != TerminalHeaderLayout.Action.NONE || nodesView != null);
         if (action != TerminalHeaderLayout.Action.NONE) buildTopBarAction(action, header.action());
         right = header.remaining().right();
 
@@ -595,7 +706,8 @@ final class NetworkSetupScreen extends Screen {
                             && pendingOperation == PendingOperation.NONE
                             && !page.entries().isEmpty(),
                     this::rebuildIfActive);
-            if (selector != null && inventoryView == null) addRenderableWidget(selector);
+            if (selector != null && inventoryView == null && chunkOverview == null && nodesView == null)
+                addRenderableWidget(selector);
             right = selectorBounds.x() - TerminalLayout.GAP;
         }
         crumbRight = Math.max(crumbLeft, right);
@@ -879,6 +991,21 @@ final class NetworkSetupScreen extends Screen {
 
     private void buildTopologyWidgets() {
         TerminalLayout.Rect content = layout.content();
+        if (nodesView != null) {
+            nodesView.build(
+                    font,
+                    content,
+                    TerminalHeaderLayout.atRightEdge(TerminalHeaderLayout.topBarContent(layout.window()), true)
+                            .action(),
+                    this::addRenderableWidget,
+                    this::removeWidget,
+                    this::setFocused);
+            return;
+        }
+        if (chunkOverview != null) {
+            chunkOverview.build(font, content, this::addRenderableWidget, this::removeWidget);
+            return;
+        }
         if (inventoryView != null) {
             nameField = inventoryView.build(font, content, this::addRenderableWidget, this::removeWidget);
             return;
@@ -912,13 +1039,13 @@ final class NetworkSetupScreen extends Screen {
 
     private void buildNetworkHome() {
         List<TerminalLayout.Rect> cards = TerminalHomeLayout.cards(layout.content(), layout.compact());
-        String[] modules = {"nodes", "tunnels", "domain", "filters", "loading", "admins", "status", "settings"};
-        for (int index = 0; index < modules.length; index++) {
-            String module = modules[index];
-            boolean domainUnavailable = index == 2
+        var modules = TerminalHomeLayout.MODULES;
+        for (int index = 0; index < modules.size(); index++) {
+            String module = modules.get(index);
+            boolean domainUnavailable = module.equals("domain")
                     && topologyState instanceof NetworkTerminalState.NetworkRoot root
                     && root.domainUnavailable();
-            boolean implemented = index == 1 || index == 2 || index == 3 || index == 5 || index == 7;
+            boolean implemented = !module.equals("status");
             TerminalCardButton card = new TerminalCardButton(
                     cards.get(index),
                     Component.translatable("omniresonance.terminal.home." + module + ".mark"),
@@ -926,18 +1053,20 @@ final class NetworkSetupScreen extends Screen {
                     Component.translatable(
                             domainUnavailable
                                     ? "omniresonance.terminal.home.domain.unavailable"
-                                    : index == 2
-                                            ? "omniresonance.inventory.home_meta"
-                                            : index == 3
-                                                    ? "omniresonance.terminal.filters.home_meta"
-                                                    : index == 1
-                                                            ? "omniresonance.terminal.home.tunnels.meta"
-                                                            : index == 5
-                                                                    ? "omniresonance.terminal.home.admins.meta"
-                                                                    : index == 7
-                                                                            ? "omniresonance.terminal.home.settings.meta"
-                                                                            : "omniresonance.terminal.home.unavailable"),
+                                    : switch (module) {
+                                        case "nodes" -> "omniresonance.terminal.home.nodes.meta";
+                                        case "domain" -> "omniresonance.inventory.home_meta";
+                                        case "filters" -> "omniresonance.terminal.filters.home_meta";
+                                        case "tunnels" -> "omniresonance.terminal.home.tunnels.meta";
+                                        case "admins" -> "omniresonance.terminal.home.admins.meta";
+                                        case "settings" -> "omniresonance.terminal.home.settings.meta";
+                                        default -> "omniresonance.terminal.home.unavailable";
+                                    }),
                     ignored -> {
+                        if (module.equals("nodes")) {
+                            openChunkOverview(true);
+                            return;
+                        }
                         if (module.equals("domain")) {
                             openInventory();
                             return;
@@ -1769,6 +1898,17 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void navigateBack() {
+        if (nodesView != null) {
+            if (nodesView.back()) return;
+            closeChunkOverview();
+            rebuildIfActive();
+            return;
+        }
+        if (chunkOverview != null) {
+            closeChunkOverview();
+            rebuildIfActive();
+            return;
+        }
         if (topologyState != null) {
             navigateTopologyBack();
             return;
@@ -1882,6 +2022,7 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void requestShortcutClose() {
+        if (nodesView != null && nodesView.requestClose()) return;
         pendingFilterSave = null;
         boolean dirty = topologyState != null
                 ? topologyDraftDirty || filterView.resourceDirty()
@@ -1920,6 +2061,8 @@ final class NetworkSetupScreen extends Screen {
 
     @Override
     public void removed() {
+        if (suspendedForConfiguration) return;
+        closeChunkOverview();
         closeInventory();
         sendCloseOnce();
     }
@@ -1931,6 +2074,7 @@ final class NetworkSetupScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (nodesView != null && nodesView.keyPressed(keyCode, modifiers)) return true;
         if (inventoryView != null && inventoryView.dismissPopup(keyCode)) return true;
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
             navigateBack();
@@ -1969,6 +2113,9 @@ final class NetworkSetupScreen extends Screen {
             BooleanSupplier shortcutPressed,
             Runnable close,
             BooleanSupplier memberSearch) {
+        if (focused instanceof TerminalSearchBox
+                && ClientSearchState.isToggleKey(keyCode, modifiers)
+                && memberSearch.getAsBoolean()) return true;
         if (focused instanceof TerminalEditBox field && field.ownsKey(keyCode)) {
             return field.keyPressed(keyCode, scanCode, modifiers);
         }
@@ -1979,8 +2126,19 @@ final class NetworkSetupScreen extends Screen {
         return memberSearch.getAsBoolean();
     }
 
+    static boolean dispatchNodeClick(
+            java.util.function.Supplier<TerminalNodesView> current, java.util.function.BooleanSupplier dispatch) {
+        TerminalNodesView target = current.get();
+        boolean expanded = target.searchExpanded();
+        boolean handled = dispatch.getAsBoolean();
+        if (current.get() == target) target.finishClick(expanded);
+        return handled;
+    }
+
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (nodesView != null)
+            return dispatchNodeClick(() -> nodesView, () -> super.mouseClicked(mouseX, mouseY, button));
         networkContext.apply(topologyState);
         if (topologyDiscardConfirmation || confirmation) return super.mouseClicked(mouseX, mouseY, button);
         if (inventoryView != null && inventoryView.mouseClicked(mouseX, mouseY, button)) {
@@ -2025,6 +2183,8 @@ final class NetworkSetupScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (nodesView != null) return nodesView.wheel(mouseX, mouseY, scrollY);
+        if (chunkOverview != null) return chunkOverview.wheel(mouseX, mouseY, scrollY);
         if (inventoryView != null) return inventoryView.wheel(mouseX, mouseY, scrollY);
         networkContext.apply(topologyState);
         if (topologyDiscardConfirmation || confirmation || pendingOperation != PendingOperation.NONE) return true;
@@ -2094,6 +2254,8 @@ final class NetworkSetupScreen extends Screen {
         super.tick();
         clientTicks++;
         if (inventoryView != null) inventoryView.tick();
+        if (chunkOverview != null) chunkOverview.tick();
+        if (nodesView != null) nodesView.tick();
         tickFilterTransfer();
         memberView.tick(clientTicks);
         filterView.tick(clientTicks, pendingOperation != PendingOperation.NONE);
@@ -2151,6 +2313,7 @@ final class NetworkSetupScreen extends Screen {
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         boolean inspecting = inventoryView != null && inventoryView.popupOpen();
         super.render(graphics, inspecting ? -1 : mouseX, inspecting ? -1 : mouseY, partialTick);
+        if (nodesView != null) nodesView.renderTooltip(graphics, mouseX, mouseY);
         if (inventoryView != null) {
             inventoryView.renderTooltip(graphics, font, layout.window(), mouseX, mouseY);
             inventoryView.renderCarried(graphics, font, mouseX, mouseY);
@@ -2205,6 +2368,14 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private String topBarTitle() {
+        if (nodesView != null)
+            return Component.translatable("omniresonance.terminal.home.nodes").getString();
+        if (chunkOverview != null)
+            return Component.translatable(
+                            chunkOverview.isNodeView()
+                                    ? "omniresonance.terminal.home.nodes"
+                                    : "omniresonance.terminal.home.loading")
+                    .getString();
         if (inventoryView != null) return DomainInventoryView.text("title").getString();
         String crumb = inventoryView != null
                 ? DomainInventoryView.text("title").getString()
@@ -2221,6 +2392,14 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void renderBody(GuiGraphics graphics) {
+        if (nodesView != null) {
+            nodesView.render(graphics);
+            return;
+        }
+        if (chunkOverview != null) {
+            chunkOverview.render(graphics, font);
+            return;
+        }
         TerminalLayout.Rect content = layout.content();
         if (topologyState != null) {
             renderTopologyBody(graphics, topologyState);

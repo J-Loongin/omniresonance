@@ -18,14 +18,14 @@ import org.lwjgl.glfw.GLFW;
 final class NodeTunnelSearchTest {
     @ParameterizedTest
     @ValueSource(ints = {GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER})
-    void enterOpensOnlyOnceWithoutSchedulingOrSubmittingAQuery(int keyCode) {
+    void enterOpensAndClosesWithoutSubmittingAQuery(int keyCode) {
         NodeTunnelSearch search = new NodeTunnelSearch();
         NodeMenuInteractionPolicy.Model model = loaded(NodeTunnelCatalogTest.batch(1, 1, 1, 0));
-        assertTrue(search.openFromKey(keyCode, 0, model, false, true));
+        assertTrue(search.toggleFromKey(keyCode, 0, model, false, true));
         assertTrue(search.expanded());
         assertFalse(search.due(100));
-        assertFalse(search.openFromKey(keyCode, 0, model, false, true));
-        assertTrue(search.expanded(), "Repeated Enter must not collapse the field");
+        assertTrue(search.toggleFromKey(keyCode, 0, model, false, true));
+        assertFalse(search.expanded(), "Repeated Enter must collapse the field");
         assertFalse(model.mutationPending());
     }
 
@@ -34,11 +34,12 @@ final class NodeTunnelSearchTest {
         NodeMenuState.DirectTunnelList list = NodeTunnelCatalogTest.batch(1, 1, 1, 0);
         NodeMenuInteractionPolicy.Model model = loaded(list);
         NodeTunnelSearch search = new NodeTunnelSearch();
-        assertFalse(search.openFromKey(GLFW.GLFW_KEY_ENTER, 0, model, true, true));
-        assertFalse(search.openFromKey(GLFW.GLFW_KEY_ENTER, 0, model, false, false));
-        assertFalse(search.openFromKey(
+        assertFalse(search.toggleFromKey(GLFW.GLFW_KEY_ENTER, 0, model, true, true));
+        assertFalse(search.toggleFromKey(GLFW.GLFW_KEY_ENTER, 0, model, false, false));
+        assertFalse(search.toggleFromKey(
                 GLFW.GLFW_KEY_ENTER, 0, model.submit(NodeMenuInteractionPolicy.PendingKind.NAVIGATE, 1), false, true));
-        assertFalse(search.openFromKey(GLFW.GLFW_KEY_ENTER, 0, NodeMenuInteractionPolicy.Model.loading(), false, true));
+        assertFalse(
+                search.toggleFromKey(GLFW.GLFW_KEY_ENTER, 0, NodeMenuInteractionPolicy.Model.loading(), false, true));
         NodeMenuNodeSummary node = list.node();
         NodeMenuNodeSummary disabled = new NodeMenuNodeSummary(
                 node.networkId(),
@@ -53,7 +54,7 @@ final class NodeTunnelSearchTest {
                 false,
                 node.chunkLoadingRequested(),
                 node.mode());
-        assertFalse(search.openFromKey(
+        assertFalse(search.toggleFromKey(
                 GLFW.GLFW_KEY_ENTER,
                 0,
                 loaded(new NodeMenuState.DirectTunnelList(disabled, list.page(), 0)),
@@ -70,7 +71,7 @@ final class NodeTunnelSearchTest {
                 new NodeMenuState.ModeRoot(node),
                 new NodeMenuState.DomainRoot(node, null))) {
             NodeTunnelSearch search = new NodeTunnelSearch();
-            assertFalse(search.openFromKey(GLFW.GLFW_KEY_ENTER, 0, loaded(state), false, true));
+            assertFalse(search.toggleFromKey(GLFW.GLFW_KEY_ENTER, 0, loaded(state), false, true));
             assertFalse(search.expanded());
         }
     }
@@ -80,11 +81,11 @@ final class NodeTunnelSearchTest {
         NodeTunnelSearch search = new NodeTunnelSearch();
         NodeMenuInteractionPolicy.Model model = loaded(NodeTunnelCatalogTest.batch(1, 1, 1, 0));
         for (int key : new int[] {GLFW.GLFW_KEY_E, GLFW.GLFW_KEY_TAB, GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_SPACE}) {
-            assertFalse(search.openFromKey(key, 0, model, false, true));
+            assertFalse(search.toggleFromKey(key, 0, model, false, true));
         }
         for (int modifier :
                 new int[] {GLFW.GLFW_MOD_SHIFT, GLFW.GLFW_MOD_CONTROL, GLFW.GLFW_MOD_ALT, GLFW.GLFW_MOD_SUPER}) {
-            assertFalse(search.openFromKey(GLFW.GLFW_KEY_ENTER, modifier, model, false, true));
+            assertFalse(search.toggleFromKey(GLFW.GLFW_KEY_ENTER, modifier, model, false, true));
         }
         assertFalse(search.expanded());
     }

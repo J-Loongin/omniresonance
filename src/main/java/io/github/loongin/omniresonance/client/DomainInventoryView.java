@@ -547,19 +547,15 @@ final class DomainInventoryView implements AutoCloseable {
             tooltipId = target.id;
             tooltipAmount = entry.amount();
             tooltipWidth = width;
-            var details = new ArrayList<Component>();
-            details.add(Component.literal(target.info.name));
-            details.add(text(
-                    "quantity",
-                    target.info.fluid.isEmpty()
-                            ? Long.toString(entry.amount())
-                            : DomainFluidDisplay.exactBuckets(entry.amount()),
-                    target.info.unit));
-            if (target.info.opaque) details.add(text("opaque"));
-            else
-                for (String line : target.info.tooltipLines(false))
-                    if (!line.equals(target.info.name)) details.add(Component.literal(line));
-            if (!target.info.tags.isEmpty()) details.add(text("tags_hint", target.info.tags.size()));
+            var details = DomainInventoryTooltip.lines(
+                    target.info.name,
+                    target.info.opaque ? List.of() : target.info.tooltipLines(false),
+                    target.info.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM.toString()),
+                    target.info.icon.isBarVisible(),
+                    !target.info.fluid.isEmpty(),
+                    target.info.opaque,
+                    entry.amount(),
+                    target.info.unit);
             var wrapped = new ArrayList<net.minecraft.util.FormattedCharSequence>();
             for (Component detail : details) {
                 for (var line : font.split(TerminalText.body(detail), width)) {

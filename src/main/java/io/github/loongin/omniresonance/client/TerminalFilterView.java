@@ -72,6 +72,8 @@ final class TerminalFilterView {
     private final ClientSearchState librarySearch = new ClientSearchState();
     private @Nullable TerminalSearchBox searchField;
     private boolean queryPending;
+    private final PresetSearchCatalog catalog = new PresetSearchCatalog();
+    private long searchMatcherRevision = -1;
     private long searchTick;
 
     @Nullable
@@ -86,9 +88,22 @@ final class TerminalFilterView {
                         net.minecraft.client.Minecraft.getInstance()
                                 .keyboardHandler
                                 .getClipboard())) return true;
-        if (!librarySearch.openFromKey(keyCode, modifiers, supports(state) && !management)) return false;
+        return ClientSearchState.handleToggleKey(keyCode, modifiers, searchEligible(), this::toggleSearch);
+    }
+
+    private boolean searchEligible() {
+        return !management
+                && (!pending || queryPending)
+                && (state instanceof NetworkTerminalState.Filters
+                        || fullMode
+                                && (state instanceof NetworkTerminalState.Preset
+                                        || resourceDraft != null && state instanceof NetworkTerminalState.PresetEdit));
+    }
+
+    private void toggleSearch() {
+        if (!searchEligible()) return;
+        librarySearch.toggle(searchTick);
         rebuild.run();
-        return true;
     }
 
     boolean searchExpanded() {
@@ -108,23 +123,39 @@ final class TerminalFilterView {
     void tick(long tick, boolean busy) {
         searchTick = tick;
         if (pasteNoticeTicks > 0) pasteNoticeTicks--;
-        if (!supports(state) || busy || queryPending || !librarySearch.due(tick)) return;
-        String query = ClientSearchState.normalizedQuery(librarySearch.draft());
-        if (query == null) return;
-        librarySearch.handled();
-        queryPending = true;
-        actions.accept(new Action.Query(query, 0, -1));
+        if (!supports(state) || busy || queryPending || catalog.failed()) return;
+        if (!catalog.ready()) {
+            queryPending = true;
+            actions.accept(new Action.Query("", catalog.received(), catalog.revision()));
+        } else if (librarySearch.due(tick) || searchMatcherRevision != ClientTextSearch.matcherRevision()) {
+            librarySearch.handled();
+            updateLibrary(0);
+            rebuild.run();
+        }
+    }
+
+    private void updateLibrary(int offset) {
+        library = catalog.page(librarySearch.draft(), offset);
+        searchMatcherRevision = ClientTextSearch.matcherRevision();
+        libraryScroll = 0;
+        scroll = 0;
+        if (state instanceof NetworkTerminalState.Filters filters)
+            state = new NetworkTerminalState.Filters(filters.network(), library);
+    }
+
+    private java.util.List<io.github.loongin.omniresonance.networking.FilterPresetSummary> libraryEntries() {
+        return catalog.matches(librarySearch.draft());
     }
 
     void acceptLibrary(io.github.loongin.omniresonance.networking.NetworkTerminalResponse.FilterLibrary result) {
+        if (!queryPending) return;
         queryPending = false;
-        if (!result.query().equals(ClientSearchState.normalizedQuery(librarySearch.draft()))) return;
-        library = result.page();
-        libraryScroll = 0;
-        if (state instanceof NetworkTerminalState.Filters filters) {
-            state = new NetworkTerminalState.Filters(filters.network(), library);
-            scroll = pendingDirection == PagedListScroll.PageRequest.PREVIOUS ? Integer.MAX_VALUE : 0;
+        if (!result.query().isEmpty()) {
+            catalog.fail();
+            return;
         }
+        catalog.accept(result.page());
+        updateLibrary(0);
         pagePending = false;
         pendingDirection = PagedListScroll.PageRequest.NONE;
     }
@@ -133,18 +164,29 @@ final class TerminalFilterView {
         searchField = null;
         TerminalLayout.Rect toggle = new TerminalLayout.Rect(header.right() - 20, header.y(), 20, 20);
         TerminalSearchButton search =
-                new TerminalSearchButton(toggle, librarySearch.expanded(), label("search"), ignored -> {
-                    if (librarySearch.expanded()) librarySearch.close(searchTick);
-                    else librarySearch.open();
-                    rebuild.run();
-                });
-        search.active = !pending;
+                new TerminalSearchButton(toggle, librarySearch.expanded(), label("search"), ignored -> toggleSearch());
+        search.active = searchEligible();
         add.accept(search);
+        if (catalog.failed()) {
+            var retry = new TerminalButton(
+                    header.x() + 4,
+                    header.y() + (librarySearch.expanded() ? 50 : 26),
+                    Math.min(80, header.width() - 8),
+                    20,
+                    Component.translatable("omniresonance.terminal.retry"),
+                    ignored -> {
+                        catalog.clear();
+                        queryPending = false;
+                        rebuild.run();
+                    },
+                    false);
+            retry.active = !pending;
+            add.accept(retry);
+        }
         if (librarySearch.expanded()) {
-            searchField = new TerminalSearchBox(font, header.x(), header.y() + 24, header.width(), 20, label("search"));
-            searchField.setMaxLength(256);
-            searchField.setValue(librarySearch.draft());
-            searchField.setResponder(value -> librarySearch.edit(value, searchTick));
+            var bounds = TerminalSearchBox.bounds(header, header.y() + 24);
+            searchField = librarySearch.field(
+                    font, bounds, label("search"), 256, value -> librarySearch.edit(value, searchTick));
             add.accept(searchField);
         }
     }
@@ -236,7 +278,11 @@ final class TerminalFilterView {
 
     void apply(@Nullable NetworkTerminalState next) {
         if (next instanceof NetworkTerminalState.Filters filters) {
-            library = filters.page();
+            catalog.clear();
+            catalog.accept(filters.page());
+            library = catalog.page(librarySearch.draft(), 0);
+            next = new NetworkTerminalState.Filters(filters.network(), library);
+            queryPending = false;
             fullMode = false;
             fullPreset = null;
             detail = null;
@@ -245,6 +291,11 @@ final class TerminalFilterView {
             selectedRuleId = null;
         }
         if (next instanceof NetworkTerminalState.Preset preset && preset.rules().fullDomain()) {
+            if (catalog.ready()
+                    && catalog.matches("").stream()
+                            .noneMatch(entry -> entry.id()
+                                            .equals(preset.preset().id())
+                                    && entry.revision() == preset.preset().revision())) catalog.clear();
             fullMode = true;
             if (fullPreset == null
                     || !fullPreset.preset().id().equals(preset.preset().id())
@@ -288,6 +339,7 @@ final class TerminalFilterView {
             pastedTag = null;
             pasteNoticeTicks = 0;
             librarySearch.reset();
+            catalog.clear();
             queryPending = false;
             fullMode = false;
             fullPreset = null;
@@ -327,6 +379,7 @@ final class TerminalFilterView {
     void requestFailed(@Nullable NetworkTerminalState freshState) {
         pastedTag = null;
         pending = false;
+        if (queryPending) catalog.fail();
         queryPending = false;
         pagePending = false;
         pendingDirection = PagedListScroll.PageRequest.NONE;
@@ -653,7 +706,7 @@ final class TerminalFilterView {
                 queryPending = true;
                 actions.accept(new Action.Query(
                         librarySearch.draft(),
-                        amount < 0 ? library.offset() + library.entries().size() : Math.max(0, library.offset() - 128),
+                        amount < 0 ? library.offset() + libraryEntries().size() : Math.max(0, library.offset() - 128),
                         library.libraryRevision()));
             } else libraryScroll = Math.max(0, Math.min(maxLibraryScroll, libraryScroll + (amount < 0 ? 1 : -1)));
             rebuild.run();
@@ -686,14 +739,14 @@ final class TerminalFilterView {
             pendingDirection = result.pageRequest();
             pagePending = true;
             if (state instanceof NetworkTerminalState.Filters filters) {
-                expectedOffset = backwards
+                int offset = backwards
                         ? Math.max(0, filters.page().offset() - 128)
                         : filters.page().offset() + filters.page().entries().size();
-                if (librarySearch.draft().isEmpty()) actions.accept(new Action.Page(expectedOffset));
-                else {
-                    queryPending = true;
-                    actions.accept(new Action.Query(librarySearch.draft(), expectedOffset, library.libraryRevision()));
-                }
+                updateLibrary(offset);
+                if (backwards) scroll = Integer.MAX_VALUE;
+                pagePending = false;
+                pendingDirection = PagedListScroll.PageRequest.NONE;
+                rebuild.run();
             } else if (state instanceof NetworkTerminalState.Preset preset) {
                 expectedOffset = backwards
                         ? preset.rules().previousOffset()
@@ -730,14 +783,14 @@ final class TerminalFilterView {
                 Math.max(1, body.width() - first - second - 6),
                 Math.max(0, body.height() - 32));
         var libraryRows =
-                RoutingListLayout.calculateRows(libraryBounds, library.entries().size(), libraryScroll);
+                RoutingListLayout.calculateRows(libraryBounds, libraryEntries().size(), libraryScroll);
         libraryScroll = libraryRows.scroll();
-        maxLibraryScroll = Math.max(0, library.entries().size() - libraryRows.visibleRows());
+        maxLibraryScroll = Math.max(0, libraryEntries().size() - libraryRows.visibleRows());
         for (int row = 0;
                 row < libraryRows.visibleRows()
-                        && row + libraryScroll < library.entries().size();
+                        && row + libraryScroll < libraryEntries().size();
                 row++) {
-            var preset = library.entries().get(row + libraryScroll);
+            var preset = libraryEntries().get(row + libraryScroll);
             TerminalRowButton widget =
                     new TerminalRowButton(libraryRows.row(row), Component.literal(preset.name()), button -> {
                         if (resourceDraft != null && resourceDraft.selector == 4) {
@@ -904,7 +957,7 @@ final class TerminalFilterView {
                 field.setValue(
                         index == 2
                                 ? draft.selector == 4
-                                        ? library.entries().stream()
+                                        ? libraryEntries().stream()
                                                 .filter(preset -> preset.id().equals(draft.reference))
                                                 .map(
                                                         io.github.loongin.omniresonance.networking.FilterPresetSummary

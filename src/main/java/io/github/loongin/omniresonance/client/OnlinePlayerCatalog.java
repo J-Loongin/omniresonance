@@ -13,6 +13,7 @@ import org.jetbrains.annotations.Nullable;
 
 /** One selection view's bounded 262144-entry snapshot; reset on leaving, replacement, disconnect or revocation. */
 final class OnlinePlayerCatalog implements ClientTextSearch.Catalog<OnlinePlayerSummary> {
+    private final ClientCatalogWindow window = new ClientCatalogWindow(262144, 128);
     private final List<OnlinePlayerSummary> entries = new ArrayList<>();
     private final List<String> names = new ArrayList<>();
     private final Set<UUID> seen = new HashSet<>();
@@ -35,9 +36,11 @@ final class OnlinePlayerCatalog implements ClientTextSearch.Catalog<OnlinePlayer
         if (ready
                 || failed
                 || !page.snapshotId().equals(snapshotId)
-                || page.offset() != entries.size()
-                || page.totalCount() != total
-                || entries.size() + page.entries().size() > total) {
+                || !window.accept(
+                        page.snapshotId(),
+                        page.offset(),
+                        page.totalCount(),
+                        page.entries().size())) {
             fail();
             return false;
         }
@@ -91,6 +94,7 @@ final class OnlinePlayerCatalog implements ClientTextSearch.Catalog<OnlinePlayer
     }
 
     void reset() {
+        window.reset();
         entries.clear();
         names.clear();
         seen.clear();

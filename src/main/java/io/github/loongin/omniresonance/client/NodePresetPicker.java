@@ -4,12 +4,13 @@ package io.github.loongin.omniresonance.client;
 import io.github.loongin.omniresonance.networking.FilterPresetPage;
 import org.jetbrains.annotations.Nullable;
 
-/** Screen-owned single-page cache: replaced by query/page changes and released when the picker closes. */
+/** Screen-owned complete authorized catalog with local result windows; released when the picker closes. */
 final class NodePresetPicker {
     record Request(
             String query, int offset, long libraryRevision, long generation, PagedListScroll.PageRequest direction) {}
 
     private final ClientSearchState search = new ClientSearchState();
+    private final PresetSearchCatalog catalog = new PresetSearchCatalog();
     private long generation;
     private boolean open;
     private int scroll;
@@ -27,6 +28,7 @@ final class NodePresetPicker {
     void close() {
         open = false;
         search.reset();
+        catalog.clear();
         generation++;
         queued = null;
         page = null;
@@ -51,7 +53,7 @@ final class NodePresetPicker {
     }
 
     boolean ready() {
-        return open && page != null && pending == null && queued == null;
+        return open && catalog.ready() && pending == null && queued == null;
     }
 
     int count() {
@@ -64,22 +66,37 @@ final class NodePresetPicker {
 
     boolean closeSearch() {
         if (!search.close(0)) return false;
-        restart();
+        updateResults(0);
         return true;
     }
 
     void edit(String value) {
         if (search.expanded() && !search.draft().equals(value)) {
             search.edit(value, 0);
-            restart();
+            updateResults(0);
         }
+    }
+
+    private void updateResults(int offset) {
+        search.handled();
+        page = catalog.ready() ? catalog.page(query(), offset) : null;
+        scroll = 0;
+    }
+
+    boolean failed() {
+        return catalog.failed();
+    }
+
+    void retry() {
+        if (pending == null) restart();
     }
 
     private void restart() {
         generation++;
+        catalog.clear();
         page = null;
         scroll = 0;
-        queued = new Request(query(), 0, -1, generation, PagedListScroll.PageRequest.NONE);
+        queued = new Request("", 0, -1, generation, PagedListScroll.PageRequest.NONE);
     }
 
     @Nullable
@@ -95,13 +112,12 @@ final class NodePresetPicker {
         Request request = pending;
         pending = null;
         if (request == null || !open || request.generation() != generation) return false;
-        page = result;
-        scroll = result != null
-                        && request.direction() == PagedListScroll.PageRequest.PREVIOUS
-                        && result.offset() == request.offset()
-                        && result.libraryRevision() == request.libraryRevision()
-                ? Math.max(0, count() - visibleRows)
-                : 0;
+        if (result == null) catalog.fail();
+        else catalog.accept(result);
+        if (!catalog.ready() && !catalog.failed())
+            queued = new Request(
+                    "", catalog.received(), catalog.revision(), generation, PagedListScroll.PageRequest.NONE);
+        updateResults(0);
         return true;
     }
 
@@ -119,7 +135,9 @@ final class NodePresetPicker {
             int offset = result.pageRequest() == PagedListScroll.PageRequest.PREVIOUS
                     ? Math.max(0, page.offset() - FilterPresetPage.MAXIMUM_ENTRIES)
                     : page.offset() + page.entries().size();
-            queued = new Request(query(), offset, page.libraryRevision(), generation, result.pageRequest());
+            updateResults(offset);
+            if (result.pageRequest() == PagedListScroll.PageRequest.PREVIOUS)
+                scroll = Math.max(0, count() - visibleRows);
         }
     }
 }

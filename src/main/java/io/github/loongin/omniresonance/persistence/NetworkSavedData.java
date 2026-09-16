@@ -428,6 +428,14 @@ public final class NetworkSavedData extends SavedData {
     }
 
     /** Returns a stable immutable node snapshot without world access or mutation. */
+    /** Event-driven chunk-request snapshot; unsorted and never used as a per-tick world scan. */
+    public List<NetworkNodeRecord> chunkLoadingRequests() {
+        requireOwningThread();
+        var result = new java.util.ArrayList<NetworkNodeRecord>();
+        for (var node : nodes.values()) if (node.chunkLoadingRequested()) result.add(node);
+        return List.copyOf(result);
+    }
+
     public List<NetworkNodeRecord> nodes() {
         requireOwningThread();
         return NetworkNodeNbt.sorted(nodes.values());

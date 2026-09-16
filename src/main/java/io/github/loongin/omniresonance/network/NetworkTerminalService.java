@@ -64,6 +64,52 @@ public final class NetworkTerminalService {
         transferReplies = Objects.requireNonNull(sender);
     }
 
+    private @Nullable io.github.loongin.omniresonance.node.NodeNavigationService navigation;
+
+    public void installNavigation(io.github.loongin.omniresonance.node.NodeNavigationService value) {
+        requireServerThread();
+        if (navigation != null) throw new IllegalStateException("Navigation already installed");
+        navigation = Objects.requireNonNull(value);
+    }
+
+    public void disconnectNavigation(ServerPlayer player) {
+        requireServerThread();
+        if (navigation != null) navigation.disconnect(player);
+    }
+
+    private @Nullable NodeDirectoryService nodeDirectory;
+
+    public void installNodeDirectory(NodeDirectoryService value) {
+        requireServerThread();
+        if (nodeDirectory != null) throw new IllegalStateException("Node directory installed");
+        nodeDirectory = Objects.requireNonNull(value);
+    }
+
+    public void nodeDirectory(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.NodeDirectoryRequest request) {
+        requireServerThread();
+        var session = sessions.get(player.getUUID());
+        if (closed
+                || nodeDirectory == null
+                || session == null
+                || session.player != player
+                || !session.viewId.equals(request.view())
+                || !session.id.equals(request.session())
+                || !session.chunkActive
+                || !session.nodeOverview
+                || session.chunkGeneration != request.generation()
+                || request.sequence() <= session.nodeDirectorySequence) return;
+        session.nodeDirectorySequence = request.sequence();
+        try {
+            requireLayer(session, Layer.NETWORK);
+            nodeDirectory.handle(player, requireSelectedNetwork(session), request);
+        } catch (RuntimeException rejected) {
+            nodeDirectory.unavailable(player, request);
+            player.displayClientMessage(
+                    net.minecraft.network.chat.Component.translatable("omniresonance.navigation.rejected"), true);
+        }
+    }
+
     private final Supplier<UUID> sessionIds;
     private final Map<UUID, Session> sessions = new HashMap<>();
     private final long configurationEpoch;
@@ -80,6 +126,151 @@ public final class NetworkTerminalService {
     private @Nullable java.util.function.BiConsumer<
                     ServerPlayer, io.github.loongin.omniresonance.networking.DomainInventoryFrame>
             inventoryReplies;
+    private @Nullable io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime chunkRuntime;
+    private @Nullable BiConsumer<ServerPlayer, io.github.loongin.omniresonance.networking.ChunkOverviewPage>
+            chunkReplies;
+
+    public void installChunkOverview(
+            io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime runtime,
+            BiConsumer<ServerPlayer, io.github.loongin.omniresonance.networking.ChunkOverviewPage> sender) {
+        requireServerThread();
+        if (chunkRuntime != null) throw new IllegalStateException("Overview already installed");
+        chunkRuntime = Objects.requireNonNull(runtime);
+        chunkReplies = Objects.requireNonNull(sender);
+    }
+
+    public void chunkOverview(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.ChunkOverviewRequest request) {
+        requireServerThread();
+        var session = sessions.get(player.getUUID());
+        if (closed
+                || chunkRuntime == null
+                || session == null
+                || session.player != player
+                || player.server != server
+                || !session.viewId.equals(request.view())
+                || !session.id.equals(request.session())) return;
+        if (request.action() == io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.OPEN
+                || request.action()
+                        == io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.OPEN_NODES) {
+            if (request.generation() <= session.chunkGeneration) return;
+            session.chunkGeneration = request.generation();
+            session.nodeDirectorySequence = 0;
+            if (nodeDirectory != null) nodeDirectory.closePlayer(player);
+            session.chunkActive = true;
+            session.nodeOverview = request.action()
+                    == io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.OPEN_NODES;
+            session.chunkPending = false;
+            session.chunkSequence = 0;
+            session.chunkAnchor = 0;
+            session.chunkBefore = false;
+            if (inventorySync != null) inventorySync.cancel(player.getUUID());
+            if (storageAccess != null) storageAccess.close(player.getUUID());
+            session.inventoryActive = false;
+        } else if (!session.chunkActive || request.generation() != session.chunkGeneration) return;
+        if (request.sequence() <= session.chunkSequence) return;
+        if (request.action() == io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.CLOSE) {
+            session.chunkActive = false;
+            return;
+        }
+        if (session.chunkPending) return;
+        session.chunkSequence = request.sequence();
+        session.chunkRejected = false;
+        try {
+            requireLayer(session, Layer.NETWORK);
+            UUID network = requireSelectedNetwork(session);
+            topology().inspectNetwork(player, network);
+            if (request.action() == io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.PAGE) {
+                session.chunkAnchor = request.anchor();
+                session.chunkBefore = request.before();
+            } else if (request.action()
+                    == io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.HIGHLIGHT) {
+                if (navigation == null || !session.nodeOverview)
+                    throw new IllegalStateException("Node view required for navigation");
+                navigation.highlight(player, network, request.node());
+            } else if (request.action()
+                    == io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.TELEPORT) {
+                if (navigation == null || !session.nodeOverview)
+                    throw new IllegalStateException("Node view required for navigation");
+                navigation.teleport(player, network, request.node());
+            }
+        } catch (RuntimeException rejected) {
+            session.chunkRejected = true;
+            player.displayClientMessage(
+                    net.minecraft.network.chat.Component.translatable("omniresonance.navigation.rejected"), true);
+        }
+        session.chunkPending = true;
+        session.chunkNextTick = 0;
+    }
+    /** Publishes bounded current windows after chunk-runtime reconciliation; no edit locks are held by subscriptions. */
+    public void chunkOverviewTick() {
+        requireServerThread();
+        if (closed || chunkRuntime == null) return;
+        long now = gameTick();
+        for (var session : sessions.values())
+            if (session.chunkActive && now >= session.chunkNextTick) {
+                boolean available = true;
+                UUID network = session.networkId;
+                NetworkMetadata metadata = null;
+                try {
+                    requireLayer(session, Layer.NETWORK);
+                    metadata = topology().inspectNetwork(session.player, requireSelectedNetwork(session));
+                } catch (RuntimeException denied) {
+                    available = false;
+                    session.chunkActive = false;
+                }
+                var rows =
+                        new java.util.ArrayList<io.github.loongin.omniresonance.networking.ChunkOverviewPage.Entry>();
+                boolean previous = false, next = false;
+                int total = 0, ownerUsed = 0;
+                if (available) {
+                    var page = chunkRuntime.page(network, session.chunkAnchor, session.chunkBefore);
+                    previous = page.previous();
+                    next = page.next();
+                    total = page.total();
+                    ownerUsed = chunkRuntime.ownerCount(metadata.ownerId());
+                    for (var node : page.entries())
+                        rows.add(new io.github.loongin.omniresonance.networking.ChunkOverviewPage.Entry(
+                                node.nodeId(),
+                                node.nodeNumber(),
+                                node.revision(),
+                                node.name().value(),
+                                node.position().dimension().location(),
+                                node.position().pos(),
+                                node.mode(),
+                                node.enabled(),
+                                node.chunkLoadingRequested(),
+                                chunkRuntime.status(node.nodeId())));
+                }
+                var cfg = settings.chunkLoading();
+                try {
+                    chunkReplies.accept(
+                            session.player,
+                            new io.github.loongin.omniresonance.networking.ChunkOverviewPage(
+                                    session.id,
+                                    session.chunkGeneration,
+                                    session.chunkSequence,
+                                    available,
+                                    session.chunkRejected,
+                                    available && cfg.enabled(),
+                                    ownerUsed,
+                                    available ? cfg.perOwner() : 0,
+                                    available ? chunkRuntime.reservedCount() : 0,
+                                    available ? cfg.server() : 0,
+                                    total,
+                                    previous,
+                                    next,
+                                    rows));
+                } catch (RuntimeException failed) {
+                    session.chunkActive = false;
+                    LOGGER.error("Chunk overview send failed; subscription stopped", failed);
+                }
+                session.chunkPending = false;
+                session.chunkRejected = false;
+                session.chunkNextTick = now + 20;
+            }
+    }
+
     private boolean closed;
 
     /**
@@ -223,6 +414,10 @@ public final class NetworkTerminalService {
                 return failure(request, NetworkTerminalResponse.Reason.STALE_REQUEST);
             }
             session.lastSequence = request.sequence();
+            if (!(request instanceof NetworkTerminalRequest.Heartbeat)) {
+                session.chunkActive = false;
+                if (nodeDirectory != null) nodeDirectory.closePlayer(sender);
+            }
             if (session.inventoryActive && !(request instanceof NetworkTerminalRequest.Heartbeat)) {
                 if (inventorySync != null) inventorySync.cancel(sender.getUUID());
                 if (storageAccess != null) storageAccess.close(sender.getUUID());
@@ -393,6 +588,7 @@ public final class NetworkTerminalService {
             return;
         }
         if (request.generation() <= session.inventoryGeneration) return;
+        session.chunkActive = false;
         inventorySync.cancel(player.getUUID());
         if (storageAccess != null) storageAccess.close(player.getUUID());
         session.inventoryActive = false;
@@ -447,6 +643,8 @@ public final class NetworkTerminalService {
     /** Advances owned member/settings clocks; no per-tick roster enumeration or synchronization occurs. */
     public void tick() {
         requireServerThread();
+        if (!closed && navigation != null) navigation.tick(settings.navigation());
+        if (!closed && nodeDirectory != null) nodeDirectory.tick();
         if (!closed && administration != null) administration.tick();
         if (!closed && filters != null) filters.tick();
         if (!closed && networkSettings != null) networkSettings.tick();
@@ -471,6 +669,7 @@ public final class NetworkTerminalService {
     /** Releases only a matching actual player instance on the server thread, without network or file changes. */
     public void closePlayer(ServerPlayer player) {
         requireServerThread();
+        if (nodeDirectory != null) nodeDirectory.closePlayer(player);
         Session session = sessions.get(Objects.requireNonNull(player, "player").getUUID());
         if (session != null && session.player == player) {
             cancelSessionEdit(player, session);
@@ -485,6 +684,8 @@ public final class NetworkTerminalService {
             cancelSessionEdit(session.player, session);
         }
         sessions.clear();
+        if (navigation != null) navigation.close();
+        if (nodeDirectory != null) nodeDirectory.close();
         if (inventorySync != null) inventorySync.close();
         if (storageAccess != null) storageAccess.close();
         if (administration != null) administration.close();
@@ -679,6 +880,7 @@ public final class NetworkTerminalService {
     }
 
     private void cancelSessionEdit(ServerPlayer player, Session session) {
+        session.chunkActive = false;
         if (inventorySync != null) inventorySync.cancel(player.getUUID());
         if (storageAccess != null) storageAccess.close(player.getUUID());
         session.inventoryActive = false;
@@ -1752,6 +1954,10 @@ public final class NetworkTerminalService {
         private long lastSequence;
         private long inventoryGeneration;
         private boolean inventoryActive;
+        private boolean nodeOverview;
+        private long nodeDirectorySequence;
+        private boolean chunkActive, chunkPending, chunkRejected, chunkBefore;
+        private long chunkGeneration, chunkSequence, chunkAnchor, chunkNextTick;
         private Layer layer = Layer.DIRECTORY;
         private @Nullable UUID networkId;
         private @Nullable UUID tunnelId;

@@ -126,7 +126,9 @@ final class TerminalInteractionPolicy {
     }
 
     static BackAction shortcutAction(boolean draftSubmitted, boolean dirty) {
-        return dirty && !draftSubmitted ? BackAction.CONFIRM_DRAFT : BackAction.CLOSE_SCREEN;
+        return new ClientDraftExit(dirty, draftSubmitted).requiresConfirmation()
+                ? BackAction.CONFIRM_DRAFT
+                : BackAction.CLOSE_SCREEN;
     }
 
     static CreateResult createResult(DraftState draftState, boolean success) {
@@ -206,7 +208,7 @@ final class TerminalInteractionPolicy {
         }
 
         boolean requiresConfirmation() {
-            return dirty && !createPending;
+            return new ClientDraftExit(dirty, createPending).requiresConfirmation();
         }
     }
 }

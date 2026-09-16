@@ -64,7 +64,8 @@ public final class NetworkRuntimeRegistry {
             @Nullable NodeManagementService nodeManagement,
             @Nullable NodeMenuService nodeMenus,
             @Nullable NetworkTopologyService topology,
-            @Nullable ResourceDirectRuntime directTransfers) {
+            @Nullable ResourceDirectRuntime directTransfers,
+            @Nullable io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime chunkLoading) {
         RuntimeComponents {
             Objects.requireNonNull(terminal, "terminal");
             if (nodeManagement != null && nodes == null) {
@@ -76,6 +77,16 @@ public final class NetworkRuntimeRegistry {
             if (topology != null && nodeManagement == null) {
                 throw new IllegalArgumentException("Topology management requires the shared node-management locks");
             }
+        }
+
+        RuntimeComponents(
+                NetworkTerminalService terminal,
+                NodeAuthorityService nodes,
+                NodeManagementService nodeManagement,
+                NodeMenuService nodeMenus,
+                NetworkTopologyService topology,
+                ResourceDirectRuntime directTransfers) {
+            this(terminal, nodes, nodeManagement, nodeMenus, topology, directTransfers, null);
         }
 
         RuntimeComponents(
@@ -193,6 +204,14 @@ public final class NetworkRuntimeRegistry {
     public void onChunkUnload(ChunkEvent.Unload event) {
         if (event.getLevel() instanceof ServerLevel level) {
             requireServerThread(level.getServer());
+            if (server == level.getServer() && runtime != null && runtime.chunkLoading() != null)
+                runtime.chunkLoading()
+                        .chunkChanged(
+                                new io.github.loongin.omniresonance.chunkloading.ChunkLoadingAllocator.Chunk(
+                                        level.dimension().location(),
+                                        event.getChunk().getPos().x,
+                                        event.getChunk().getPos().z),
+                                false);
             if (server == level.getServer() && runtime != null && runtime.directTransfers() != null)
                 runtime.directTransfers()
                         .chunkUnloaded(level.dimension(), event.getChunk().getPos());
@@ -211,6 +230,12 @@ public final class NetworkRuntimeRegistry {
     public void onChunkLoad(ChunkEvent.Load event) {
         if (event.getLevel() instanceof ServerLevel level) {
             onChunkLoaded(level, event.getChunk().getPos().x, event.getChunk().getPos().z);
+            if (server == level.getServer() && runtime != null && runtime.chunkLoading() != null)
+                runtime.chunkLoading()
+                        .chunkChanged(new io.github.loongin.omniresonance.chunkloading.ChunkLoadingAllocator.Chunk(
+                                level.dimension().location(),
+                                event.getChunk().getPos().x,
+                                event.getChunk().getPos().z));
         }
     }
 
@@ -280,6 +305,7 @@ public final class NetworkRuntimeRegistry {
             return;
         }
         if (runtime != null) {
+            if (runtime.chunkLoading() != null) runtime.chunkLoading().close();
             if (runtime.directTransfers() != null) runtime.directTransfers().close();
             if (runtime.nodeMenus() != null) {
                 runtime.nodeMenus().close();
@@ -321,6 +347,8 @@ public final class NetworkRuntimeRegistry {
         if (server == event.getServer() && runtime != null) {
             runtime.terminal().applyConfiguration(config.latest());
             runtime.terminal().tick();
+            if (runtime.chunkLoading() != null) runtime.chunkLoading().tick(config.latest());
+            runtime.terminal().chunkOverviewTick();
             if (runtime.nodeMenus() != null) runtime.nodeMenus().tick();
             if (runtime.topology() != null) {
                 runtime.topology().applyConfiguration(config.latest());
@@ -348,6 +376,18 @@ public final class NetworkRuntimeRegistry {
      * Routes actual sender intent on its server thread; absent/unavailable runtimes return fixed failures.
      * Close remains fire-and-forget and this boundary never initializes data implicitly.
      */
+    public void handleNodeDirectory(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.NodeDirectoryRequest request) {
+        requireServerThread(player.server);
+        if (server == player.server && runtime != null) runtime.terminal().nodeDirectory(player, request);
+    }
+
+    public void handleChunkOverview(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.ChunkOverviewRequest request) {
+        requireServerThread(player.server);
+        if (server == player.server && runtime != null) runtime.terminal().chunkOverview(player, request);
+    }
+
     public void handleStorage(
             ServerPlayer player, io.github.loongin.omniresonance.networking.TerminalStorageRequest request) {
         requireServerThread(player.server);
@@ -386,6 +426,7 @@ public final class NetworkRuntimeRegistry {
         MinecraftServer senderServer = player.server;
         requireServerThread(senderServer);
         if (server == senderServer && runtime != null) {
+            runtime.terminal().disconnectNavigation(player);
             runtime.terminal().closePlayer(player);
             if (runtime.nodeMenus() != null) runtime.nodeMenus().disconnect(player);
             if (runtime.nodeManagement() != null) {
@@ -520,7 +561,30 @@ public final class NetworkRuntimeRegistry {
                 directTransfers::recovery,
                 (player, response) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, response));
         directTransfers.installSampleWork(new TerminalAuxiliaryWork(filters::sampleStep, terminal::inventoryStep));
-        return new RuntimeComponents(terminal, authority, nodeManagement, nodeMenus, topology, directTransfers);
+        var chunkLoading = new io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime(
+                server, repository, networks, nodes, authority, initial);
+        nodeManagement.installChunkAdmission(chunkLoading::admission);
+        nodeMenus.installChunkStatus(chunkLoading::status);
+        terminal.installNodeDirectory(new io.github.loongin.omniresonance.network.NodeDirectoryService(
+                server,
+                repository,
+                chunkLoading,
+                nodeManagement,
+                topology,
+                nodeMenus,
+                filters,
+                (player, page) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, page)));
+        terminal.installNavigation(new io.github.loongin.omniresonance.node.NodeNavigationService(
+                server,
+                nodeManagement,
+                authority,
+                initial.settings().navigation(),
+                (player, frame) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, frame)));
+        terminal.installChunkOverview(
+                chunkLoading,
+                (player, page) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, page));
+        return new RuntimeComponents(
+                terminal, authority, nodeManagement, nodeMenus, topology, directTransfers, chunkLoading);
     }
 
     private static void requireServerThread(MinecraftServer server) {

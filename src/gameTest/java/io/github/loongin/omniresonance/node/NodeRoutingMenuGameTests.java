@@ -70,6 +70,82 @@ public final class NodeRoutingMenuGameTests {
     private NodeRoutingMenuGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void chunkToggleKeepsModeAndChannelPagesInsteadOfReenteringTheRoute(GameTestHelper helper)
+            throws Exception {
+        try (var f = new Fixture(helper)) {
+            var pos = helper.absolutePos(new BlockPos(2, 3, 2));
+            f.authority.link(SOURCE, place(helper, pos), new ManagedName("Toggle"));
+            f.seedTunnels();
+            f.setDirectMode();
+            f.bindNode(CHANNEL);
+            var owner = player(helper, OWNER, pos);
+            var menu = f.menus.createMenu(182, owner, pos, SESSION);
+            owner.containerMenu = menu;
+            menu.handle(owner, new NodeMenuRequest.OpenModeRoot(182, SESSION, 1));
+            menu.handle(owner, new NodeMenuRequest.SetChunkLoadingRequested(182, SESSION, 2, true));
+            helper.assertTrue(menu.state() instanceof NodeMenuState.ModeRoot, "Chunk toggle left the mode page");
+            helper.assertTrue(
+                    ((NodeMenuState.ModeRoot) menu.state()).node().chunkLoadingRequested(),
+                    "Chunk toggle failed to update authority");
+            menu.handle(owner, new NodeMenuRequest.OpenDirect(182, SESSION, 3));
+            var list = (NodeMenuState.DirectChannelList) menu.state();
+            menu.handle(owner, new NodeMenuRequest.SetChunkLoadingRequested(182, SESSION, 4, false));
+            helper.assertTrue(
+                    menu.state() instanceof NodeMenuState.DirectChannelList current
+                            && current.page().equals(list.page()),
+                    "Chunk toggle replaced the channel cursor window");
+            menu.handle(owner, new NodeMenuRequest.OpenChannel(182, SESSION, 5, CHANNEL));
+            menu.handle(owner, new NodeMenuRequest.SetChunkLoadingRequested(182, SESSION, 6, true));
+            helper.assertTrue(
+                    menu.state() instanceof NodeMenuState.DirectChannelRoot, "Chunk toggle left the channel details");
+            menu.removed(owner);
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void remoteConfigurationMenuSharesEditorAndRejectsPhysicalOperations(GameTestHelper helper)
+            throws Exception {
+        try (var f = new Fixture(helper)) {
+            var pos = helper.absolutePos(new BlockPos(2, 3, 2));
+            f.authority.link(SOURCE, place(helper, pos), new ManagedName("Remote"));
+            f.seedTunnels();
+            f.setDirectMode();
+            f.bindNode(CHANNEL);
+            var owner = player(helper, OWNER, pos.offset(500, 0, 500));
+            var edit = f.topology.acquireNode(owner, SOURCE, NODE);
+            var state = f.menus.bindingEdit(owner, SOURCE, NODE, TUNNEL, CHANNEL);
+            var menu = new ResonanceNodeMenu(
+                    181, owner.getInventory(), f.menus, pos, SESSION, new NodeMenuService.Initial(NODE, SOURCE, state));
+            menu.configureRemote(edit, state);
+            owner.containerMenu = menu;
+            helper.assertTrue(
+                    f.menus.canKeepOpen(owner, menu), "Existing configuration editor required physical proximity");
+            var rejected = menu.handle(owner, new NodeMenuRequest.SetChunkLoadingRequested(181, SESSION, 1, true));
+            helper.assertTrue(
+                    rejected instanceof NodeMenuResponse.Failure
+                            && !f.source.findNode(NODE).orElseThrow().chunkLoadingRequested(),
+                    "Remote editor changed strong loading");
+            helper.assertTrue(
+                    menu.handle(owner, new NodeMenuRequest.OpenDirect(181, SESSION, 2))
+                            instanceof NodeMenuResponse.Failure,
+                    "Remote editor escaped into channel joining");
+            menu.handle(owner, new NodeMenuRequest.CancelEdit(181, SESSION, 3));
+            var retry = f.topology.acquireNode(owner, SOURCE, NODE);
+            f.topology.cancel(owner, retry);
+            boolean absent = false;
+            try {
+                f.menus.openExistingConfiguration(owner, SOURCE, NODE, TARGET_CHANNEL);
+            } catch (RuntimeException expected) {
+                absent = true;
+            }
+            helper.assertTrue(absent, "Remote editor admitted a missing binding");
+            menu.removed(owner);
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void revocationClosesOnlyTheReferencedNodeMenuAndReleasesItsEdit(GameTestHelper helper)
             throws IOException {
         try (Fixture fixture = new Fixture(helper)) {
@@ -1341,6 +1417,8 @@ public final class NodeRoutingMenuGameTests {
             EditLockTable locks = new EditLockTable();
             management = new NodeManagementService(
                     helper.getLevel().getServer(), networks, repository, nodes, authority, locks);
+            management.installChunkAdmission((network, node, moving) ->
+                    io.github.loongin.omniresonance.chunkloading.ChunkLoadingReservations.Admission.ALLOWED);
             topology = new NetworkTopologyService(
                     helper.getLevel().getServer(),
                     networks,

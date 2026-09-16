@@ -43,12 +43,7 @@ final class NodeResourceTypeSelectionView {
             Runnable queryChanged) {
         if (!selection.search().expanded()) return null;
         var bounds = NodePresetPickerView.search(layout.body());
-        var field = new TerminalSearchBox(
-                font, bounds.x(), bounds.y(), bounds.width(), bounds.height(), NodeResourcePolicyView.text("search"));
-        field.setMaxLength(256);
-        field.setHint(TerminalText.body(NodeResourcePolicyView.text("search")));
-        field.setValue(selection.search().draft());
-        field.setResponder(value -> {
+        var field = selection.search().field(font, bounds, NodeResourcePolicyView.text("search"), 256, value -> {
             selection.editSearch(value, currentTick.getAsLong());
             queryChanged.run();
         });

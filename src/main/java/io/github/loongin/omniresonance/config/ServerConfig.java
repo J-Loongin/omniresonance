@@ -98,6 +98,105 @@ public final class ServerConfig {
 
     private static final List<M2Definition> M2_DEFINITIONS = List.of(
             new M2Definition(
+                    "terminal.highlight_enabled",
+                    Kind.BOOLEAN,
+                    true,
+                    0,
+                    1,
+                    "toggle / 开关",
+                    "Enable node highlighting; disabling cancels active highlights.",
+                    "允许节点高亮；关闭取消已有高亮。"),
+            new M2Definition(
+                    "terminal.highlight_duration_ticks",
+                    Kind.INT,
+                    200,
+                    1,
+                    72000,
+                    "gt",
+                    "Lifetime of new highlights, including after teleport.",
+                    "新高亮的持续时间，包含传送后高亮。"),
+            new M2Definition(
+                    "terminal.teleport_enabled",
+                    Kind.BOOLEAN,
+                    true,
+                    0,
+                    1,
+                    "toggle / 开关",
+                    "Enable terminal travel; disabling cancels pending travel.",
+                    "允许终端传送；关闭取消待处理传送。"),
+            new M2Definition(
+                    "terminal.cross_dimension_teleport_enabled",
+                    Kind.BOOLEAN,
+                    true,
+                    0,
+                    1,
+                    "toggle / 开关",
+                    "Allow cross-dimension travel; disabling cancels cross-dimension tasks.",
+                    "允许跨维度传送；关闭取消跨维度任务。"),
+            new M2Definition(
+                    "terminal.temporary_chunk_loading_enabled",
+                    Kind.BOOLEAN,
+                    true,
+                    0,
+                    1,
+                    "toggle / 开关",
+                    "Allow temporary travel tickets; disabling cancels ticket-dependent tasks.",
+                    "允许传送临时票据；关闭取消依赖临时票据的任务。"),
+            new M2Definition(
+                    "terminal.teleport_cooldown_ticks",
+                    Kind.INT,
+                    20,
+                    0,
+                    72000,
+                    "gt",
+                    "Cooldown after success; zero removes success cooldown, not request interval.",
+                    "成功后的冷却；0不设成功冷却，仍保留请求间隔。"),
+            new M2Definition(
+                    "terminal.temporary_ticket_ttl_ticks",
+                    Kind.INT,
+                    100,
+                    1,
+                    1200,
+                    "gt",
+                    "Lifetime from acceptance; reload does not extend pending tasks.",
+                    "从接受起的期限；重载不延长已有任务。"),
+            new M2Definition(
+                    "terminal.max_pending_teleports_server",
+                    Kind.INT,
+                    64,
+                    1,
+                    1024,
+                    "tasks / 任务",
+                    "Global concurrent travel cap; lowering blocks admission, preserving existing tasks.",
+                    "全服待处理传送上限；调低仅阻止新准入，保留已有任务。"),
+            new M2Definition(
+                    "chunk_loading.enabled",
+                    Kind.BOOLEAN,
+                    true,
+                    0,
+                    1,
+                    "toggle / 开关",
+                    "Enable permanent node chunk loading.",
+                    "允许节点永久强加载。"),
+            new M2Definition(
+                    "chunk_loading.chunks_per_owner",
+                    Kind.QUOTA,
+                    25,
+                    0,
+                    100000,
+                    "chunks / 区块",
+                    "Distinct dimension/chunks per owner.",
+                    "每所有者去重后的维度/区块配额。"),
+            new M2Definition(
+                    "chunk_loading.chunks_server",
+                    Kind.QUOTA,
+                    500,
+                    0,
+                    1000000,
+                    "chunks / 区块",
+                    "Distinct physical chunks across all owners.",
+                    "全服去重后的物理区块配额。"),
+            new M2Definition(
                     "terminal.direct_storage_access",
                     Kind.ACCESS,
                     "read_only",
@@ -414,7 +513,20 @@ public final class ServerConfig {
                             longValue("terminal_sync.bytes_server_per_tick"),
                             intValue("terminal_sync.max_concurrent_full_syncs"),
                             intValue("terminal_sync.pending_delta_entries")),
-                    ServerSettings.DirectStorageAccess.parse((String) value("terminal.direct_storage_access")));
+                    ServerSettings.DirectStorageAccess.parse((String) value("terminal.direct_storage_access")),
+                    new ServerSettings.ChunkLoading(
+                            (Boolean) value("chunk_loading.enabled"),
+                            intValue("chunk_loading.chunks_per_owner"),
+                            intValue("chunk_loading.chunks_server")),
+                    new ServerSettings.Navigation(
+                            (Boolean) value("terminal.highlight_enabled"),
+                            intValue("terminal.highlight_duration_ticks"),
+                            (Boolean) value("terminal.teleport_enabled"),
+                            (Boolean) value("terminal.cross_dimension_teleport_enabled"),
+                            (Boolean) value("terminal.temporary_chunk_loading_enabled"),
+                            intValue("terminal.teleport_cooldown_ticks"),
+                            intValue("terminal.temporary_ticket_ttl_ticks"),
+                            intValue("terminal.max_pending_teleports_server")));
             candidate = new State(fallback.epoch(), Math.incrementExact(fallback.revision()), true, settings);
         } catch (RuntimeException failure) {
             LOGGER.warn("Rejected server configuration candidate; retaining validated lifecycle settings");
@@ -467,6 +579,7 @@ public final class ServerConfig {
     }
 
     private enum Kind {
+        BOOLEAN,
         ACCESS,
         INT,
         LONG,
@@ -486,6 +599,7 @@ public final class ServerConfig {
             String purposeEn,
             String purposeZh) {
         boolean accepts(Object value) {
+            if (kind == Kind.BOOLEAN) return value instanceof Boolean;
             if (kind == Kind.ACCESS) return "read_only".equals(value) || "read_write".equals(value);
             if (kind == Kind.LONG_QUOTA)
                 return (value instanceof Long || value instanceof Integer) && ((Number) value).longValue() >= -1;
@@ -516,20 +630,25 @@ public final class ServerConfig {
         String comment() {
             String type =
                     switch (kind) {
+                        case BOOLEAN -> "boolean";
                         case ACCESS -> "string";
                         case INT, QUOTA -> "int";
                         case LONG, LONG_QUOTA -> "long";
                         case DOUBLE -> "double";
                         case TICKS -> "int[]";
                     };
-            String range = kind == Kind.ACCESS
-                    ? "read_only, read_write"
-                    : kind == Kind.LONG_QUOTA
-                            ? "0..9223372036854775807 or -1 / 或-1"
-                            : minimum + ".." + maximum
-                                    + (kind == Kind.QUOTA
-                                            ? " or -1 / 或-1"
-                                            : kind == Kind.TICKS ? "; 1..8 nondecreasing entries / 1..8项非递减" : "");
+            String range = kind == Kind.BOOLEAN
+                    ? "true, false"
+                    : kind == Kind.ACCESS
+                            ? "read_only, read_write"
+                            : kind == Kind.LONG_QUOTA
+                                    ? "0..9223372036854775807 or -1 / 或-1"
+                                    : minimum + ".." + maximum
+                                            + (kind == Kind.QUOTA
+                                                    ? " or -1 / 或-1"
+                                                    : kind == Kind.TICKS
+                                                            ? "; 1..8 nondecreasing entries / 1..8项非递减"
+                                                            : "");
             boolean quota = kind == Kind.QUOTA || kind == Kind.LONG_QUOTA;
             boolean buffer = key.startsWith("recovery.");
             return String.join(
@@ -541,23 +660,33 @@ public final class ServerConfig {
                     "Default/默认值: " + defaultValue,
                     "Range/合法范围: " + range,
                     "Special values/特殊值: "
-                            + (kind == Kind.ACCESS
-                                    ? "None. / 无。"
-                                    : quota
-                                            ? "-1 removes gameplay quota only; 0 rejects additions (rules: empty only). / -1仅取消玩法限额；0禁止新增（规则仅允许空预设）。"
-                                            : "None; 0/-1 invalid. / 无；0/-1无效。"),
+                            + (key.equals("terminal.teleport_cooldown_ticks")
+                                    ? "0 disables success cooldown; request interval still applies. / 0不设成功冷却，仍限制请求间隔。"
+                                    : key.startsWith("chunk_loading.") && kind == Kind.QUOTA
+                                            ? "-1 removes admission quota; 0 blocks new distinct reservations while retaining existing ones. / -1不限准入名额；0拒绝新增不同区块资格，保留已有资格。"
+                                            : kind == Kind.BOOLEAN
+                                                    ? "None. / 无。"
+                                                    : kind == Kind.ACCESS
+                                                            ? "None. / 无。"
+                                                            : quota
+                                                                    ? "-1 removes gameplay quota only; 0 rejects additions (rules: empty only). / -1仅取消玩法限额；0禁止新增（规则仅允许空预设）。"
+                                                                    : "None; 0/-1 invalid. / 无；0/-1无效。"),
                     "Reload/重载: "
-                            + (kind == Kind.ACCESS
-                                    ? "NEXT - Revalidate before each operation; read_only rejects pending writes. / 每次操作前重新验证，切回只读拒绝待执行写入。"
-                                    : key.startsWith("terminal_sync.")
-                                            ? (key.endsWith("pending_delta_entries")
-                                                    ? "NEXT - Apply to unsent changes; overflow fails the view for manual retry. / 对待发变化应用新上限，超限失败并等待手动重试。"
-                                                    : "SYNC - New sends use updated byte limits; lower concurrency blocks new admission only. / 后续发送使用新字节预算，调低并发只阻止新准入。")
-                                            : quota
-                                                    ? "QUOTA - Keep existing entries; reject additions above lowered limits. / 调低保留已有条目，只阻止新增。"
-                                                    : buffer
-                                                            ? "BUFFER - Keep existing contents; reject positive additions when over capacity. / 调低保留已有内容，超限不得新增占用。"
-                                                            : "NEXT - Next work uses the new snapshot; started backoff stages are not extended. / 后续工作使用新快照，已开始退避阶段不延长。"));
+                            + (key.startsWith("chunk_loading.")
+                                    ? "ADMISSION - Lowering quotas preserves existing reservations; disabling releases tickets only. / 调低配额保留既有资格；关闭功能仅释放实际票据。"
+                                    : key.startsWith("terminal.") && kind == Kind.BOOLEAN
+                                            ? "CANCEL - Revalidate active navigation and cancel affected work when disabled. / 重新校验已有定位任务，关闭时取消受影响工作。"
+                                            : kind == Kind.ACCESS
+                                                    ? "NEXT - Revalidate before each operation; read_only rejects pending writes. / 每次操作前重新验证，切回只读拒绝待执行写入。"
+                                                    : key.startsWith("terminal_sync.")
+                                                            ? (key.endsWith("pending_delta_entries")
+                                                                    ? "NEXT - Apply to unsent changes; overflow fails the view for manual retry. / 对待发变化应用新上限，超限失败并等待手动重试。"
+                                                                    : "SYNC - New sends use updated byte limits; lower concurrency blocks new admission only. / 后续发送使用新字节预算，调低并发只阻止新准入。")
+                                                            : quota
+                                                                    ? "QUOTA - Keep existing entries; reject additions above lowered limits. / 调低保留已有条目，只阻止新增。"
+                                                                    : buffer
+                                                                            ? "BUFFER - Keep existing contents; reject positive additions when over capacity. / 调低保留已有内容，超限不得新增占用。"
+                                                                            : "NEXT - Next work uses the new snapshot; started backoff stages are not extended. / 后续工作使用新快照，已开始退避阶段不延长。"));
         }
     }
 

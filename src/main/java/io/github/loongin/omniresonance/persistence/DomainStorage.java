@@ -42,6 +42,7 @@ public final class DomainStorage {
     private final Path directory;
     private final LongSupplier createdMask;
     private final LongConsumer publishMask;
+    private final Runnable stateChanged;
     private State state = State.NOT_LOADED;
     private @Nullable DomainLedger ledger;
 
@@ -56,6 +57,17 @@ public final class DomainStorage {
             Path directory,
             LongSupplier createdMask,
             LongConsumer publishMask) {
+        this(networkId, storage, directory, createdMask, publishMask, () -> {});
+    }
+
+    public DomainStorage(
+            UUID networkId,
+            DimensionDataStorage storage,
+            Path directory,
+            LongSupplier createdMask,
+            LongConsumer publishMask,
+            Runnable stateChanged) {
+        this.stateChanged = Objects.requireNonNull(stateChanged);
         this.networkId = Objects.requireNonNull(networkId);
         this.storage = Objects.requireNonNull(storage);
         this.directory = Objects.requireNonNull(directory);
@@ -102,6 +114,7 @@ public final class DomainStorage {
             }
             ledger = new DomainLedger(networkId, loaded, this::createBucket);
             state = State.AVAILABLE;
+            notifyStateChanged();
             return Optional.of(ledger);
         } catch (RuntimeException failure) {
             fail(failure);
@@ -147,10 +160,19 @@ public final class DomainStorage {
         }
     }
 
+    private void notifyStateChanged() {
+        try {
+            stateChanged.run();
+        } catch (RuntimeException failure) {
+            LOGGER.error("Domain availability observer failed", failure);
+        }
+    }
+
     private void fail(RuntimeException failure) {
         if (ledger != null) ledger.invalidate();
         ledger = null;
         state = State.UNAVAILABLE;
+        notifyStateChanged();
         LOGGER.error(
                 "Resonance domain storage is unavailable for network {}; preserve files and restore from backup",
                 networkId,
@@ -167,6 +189,7 @@ public final class DomainStorage {
         }
         ledger = null;
         state = State.UNAVAILABLE;
+        notifyStateChanged();
     }
 
     private void checkThread() {

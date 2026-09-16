@@ -16,6 +16,7 @@ final class NodeResourceTypeSelection {
     private final ClientSearchState search = new ClientSearchState();
     private List<ResourceLocation> results = List.of();
     private int scroll;
+    private long matcherRevision = -1;
     private @Nullable ResourceLocation chosen;
 
     @Nullable
@@ -72,7 +73,7 @@ final class NodeResourceTypeSelection {
     }
 
     boolean tick(long nowTick) {
-        if (!search.due(nowTick)) return false;
+        if (!search.due(nowTick) && matcherRevision == ClientTextSearch.matcherRevision()) return false;
         refresh();
         search.handled();
         return true;
@@ -106,22 +107,28 @@ final class NodeResourceTypeSelection {
 
     private void refresh() {
         String query = ClientTextSearch.fold(search.draft());
-        var matches = new ArrayList<ResourceLocation>();
-        if (scope != null) {
-            for (ResourceLocation id : scope.choices()) if (matches(id, query)) matches.add(id);
-        } else {
-            for (var descriptor : draft.catalog.entries()) {
-                ResourceLocation id = descriptor.typeId();
-                if (draft.includes(id) && !draft.hasSetting(id) && matches(id, query)) matches.add(id);
-            }
-        }
-        results = List.copyOf(matches);
+        results = ClientTextSearch.filter(
+                (text, matcher, revision) -> {
+                    var matches = new ArrayList<ResourceLocation>();
+                    if (scope != null) {
+                        for (ResourceLocation id : scope.choices()) if (matches(id, text, matcher)) matches.add(id);
+                    } else {
+                        for (var descriptor : draft.catalog.entries()) {
+                            ResourceLocation id = descriptor.typeId();
+                            if (draft.includes(id) && !draft.hasSetting(id) && matches(id, text, matcher))
+                                matches.add(id);
+                        }
+                    }
+                    return List.copyOf(matches);
+                },
+                query);
+        matcherRevision = ClientTextSearch.matcherRevision();
         scroll = 0;
     }
 
-    private boolean matches(ResourceLocation id, String query) {
+    private boolean matches(ResourceLocation id, String query, java.util.function.BiPredicate<String, String> matcher) {
         return query.isEmpty()
                 || id.toString().contains(query)
-                || ClientTextSearch.fold(displayName.apply(id)).contains(query);
+                || matcher.test(ClientTextSearch.fold(displayName.apply(id)), query);
     }
 }

@@ -71,7 +71,9 @@ public final class SavedNetworkRepository {
         DomainStorage domain = domains.get(networkId);
         if (domain == null) {
             domain = new DomainStorage(
-                    networkId, storage, dataDirectory, network::bucketCreatedMask, network::markStorageBuckets);
+                    networkId, storage, dataDirectory, network::bucketCreatedMask, network::markStorageBuckets, () -> {
+                        if (networkObserver != null) networkObserver.accept(networkId);
+                    });
             domains.put(networkId, domain);
         }
         return domain;
@@ -79,6 +81,19 @@ public final class SavedNetworkRepository {
 
     private boolean unreadableNetworkShards;
     private @Nullable RuntimeListener runtimeListener;
+    private @Nullable java.util.function.Consumer<UUID> networkObserver;
+
+    /** Server-thread eligibility observer; only queues keys after commits, never reads partially published data. */
+    public void onNetworkChanged(@Nullable java.util.function.Consumer<UUID> observer) {
+        requireOwningThread();
+        networkObserver = observer;
+        for (NetworkSavedData data : loadedNetworks.values()) attachRuntimeListener(data);
+    }
+
+    private void notifyNetworkChanged(UUID id) {
+        if (runtimeListener != null) runtimeListener.networkChanged(id);
+        if (networkObserver != null) networkObserver.accept(id);
+    }
     /** One server-session observer. Callbacks enqueue keys only and never read partially published authority. */
     public interface RuntimeListener {
         void networkChanged(UUID id);
@@ -108,12 +123,9 @@ public final class SavedNetworkRepository {
                                 runtimeListener.recoveryChanged(data.metadata().id());
                         });
         data.onRuntimeChanged(
-                runtimeListener == null
+                runtimeListener == null && networkObserver == null
                         ? null
-                        : () -> {
-                            if (runtimeListener != null)
-                                runtimeListener.networkChanged(data.metadata().id());
-                        });
+                        : () -> notifyNetworkChanged(data.metadata().id()));
     }
 
     /** Immutable startup snapshot of one healthy network and its authoritative node records. */
@@ -276,7 +288,7 @@ public final class SavedNetworkRepository {
         reservedNames.add(name);
         loadedNetworks.put(metadata.id(), network);
         attachRuntimeListener(network);
-        if (runtimeListener != null) runtimeListener.networkChanged(metadata.id());
+        notifyNetworkChanged(metadata.id());
     }
 
     /**
@@ -324,7 +336,7 @@ public final class SavedNetworkRepository {
         removed.onRecoveryChanged(null);
         DomainStorage domain = domains.remove(id);
         if (domain != null) domain.close();
-        if (runtimeListener != null) runtimeListener.networkChanged(id);
+        notifyNetworkChanged(id);
         IOUtilities.withIOWorker(() -> {
             for (int bucket = 0; bucket < 64; bucket++) {
                 if ((bucketMask & (1L << bucket)) != 0) {

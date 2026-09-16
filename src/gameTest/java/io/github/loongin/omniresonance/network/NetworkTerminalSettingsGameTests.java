@@ -52,6 +52,416 @@ public final class NetworkTerminalSettingsGameTests {
     private NetworkTerminalSettingsGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void nodePrototypeSearchAndRenameUseBoundedAuthority(GameTestHelper helper) throws Exception {
+        try (var f = new Fixture(helper)) {
+            var config = new ServerConfig.State(1, 1, true, ServerSettings.defaults());
+            var data = f.repository.findLoadedNetwork(NETWORK).orElseThrow();
+            for (int i = 1; i <= 180; i++) {
+                var node = data.createNode(
+                        new UUID(1192, i),
+                        new ManagedName(i == 170 ? "Needle" : "Node " + i),
+                        net.minecraft.core.GlobalPos.of(
+                                helper.getLevel().dimension(), new net.minecraft.core.BlockPos(100000 + i, 80, 100000)),
+                        io.github.loongin.omniresonance.node.NodeForm.BLOCK,
+                        net.minecraft.core.Direction.NORTH);
+                f.nodes.add(new NetworkNodeDirectory.Entry(NETWORK, node));
+            }
+            try (var runtime = new io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime(
+                    helper.getLevel().getServer(), f.repository, f.directory, f.nodes, f.nodeAuthority, config)) {
+                runtime.tick(config);
+                var pages = new ArrayList<io.github.loongin.omniresonance.networking.NodeDirectoryPage>();
+                try (var browser = new NodeDirectoryService(
+                        helper.getLevel().getServer(),
+                        f.repository,
+                        runtime,
+                        f.nodeManagement,
+                        f.topology,
+                        f.menus,
+                        f.filters,
+                        (p, page) -> pages.add(page))) {
+                    var owner = player(helper, OWNER);
+                    var catalogRows = new ArrayList<io.github.loongin.omniresonance.networking.NodeDirectoryPage.Row>();
+                    long catalogRevision = 0;
+                    for (int batch = 0; batch < 3; batch++) {
+                        browser.handle(
+                                owner,
+                                NETWORK,
+                                new io.github.loongin.omniresonance.networking.NodeDirectoryRequest(
+                                        OWNER_VIEW,
+                                        OWNER_SESSION,
+                                        2,
+                                        batch + 1,
+                                        io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Action.CATALOG,
+                                        "",
+                                        io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Status.ALL,
+                                        null,
+                                        null,
+                                        0,
+                                        false,
+                                        null,
+                                        catalogRows.size(),
+                                        catalogRevision,
+                                        "",
+                                        false,
+                                        null));
+                        var received = pages.getLast();
+                        helper.assertTrue(
+                                received.catalog() != null && received.catalog().total() == 180,
+                                "Catalog must include the complete authorized network");
+                        helper.assertTrue(received.rows().size() <= 64, "Catalog batch exceeded its bound");
+                        if (batch > 0)
+                            helper.assertTrue(
+                                    received.catalog().revision() == catalogRevision, "Catalog revision drifted");
+                        catalogRevision = received.catalog().revision();
+                        catalogRows.addAll(received.rows());
+                    }
+                    helper.assertTrue(
+                            catalogRows.size() == 180
+                                    && catalogRows.get(169).node().nodeName().equals("Needle"),
+                            "Catalog omitted a node outside the first page");
+                    browser.handle(
+                            owner,
+                            NETWORK,
+                            new io.github.loongin.omniresonance.networking.NodeDirectoryRequest(
+                                    OWNER_VIEW,
+                                    OWNER_SESSION,
+                                    2,
+                                    4,
+                                    io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Action.CATALOG,
+                                    "",
+                                    io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Status.ALL,
+                                    null,
+                                    null,
+                                    0,
+                                    false,
+                                    null,
+                                    64,
+                                    catalogRevision + 1,
+                                    "",
+                                    false,
+                                    null));
+                    helper.assertTrue(
+                            !pages.getLast().available()
+                                    && pages.getLast().rows().isEmpty(),
+                            "Stale catalog token disclosed a continuation");
+                    pages.clear();
+                    UUID target = new UUID(1192, 170);
+                    browser.handle(
+                            owner,
+                            NETWORK,
+                            new io.github.loongin.omniresonance.networking.NodeDirectoryRequest(
+                                    OWNER_VIEW,
+                                    OWNER_SESSION,
+                                    1,
+                                    1,
+                                    io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Action.QUERY,
+                                    "Needle",
+                                    io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Status.OFFLINE,
+                                    null,
+                                    null,
+                                    0,
+                                    false,
+                                    null,
+                                    0,
+                                    0,
+                                    "",
+                                    false,
+                                    null));
+                    browser.tick();
+                    helper.assertTrue(pages.isEmpty(), "Search exceeded its 128-node tick budget");
+                    browser.tick();
+                    helper.assertTrue(
+                            pages.getLast().rows().size() == 1
+                                    && pages.getLast()
+                                            .rows()
+                                            .getFirst()
+                                            .node()
+                                            .nodeId()
+                                            .equals(target),
+                            "Search did not resume across ticks");
+                    browser.handle(
+                            owner,
+                            NETWORK,
+                            new io.github.loongin.omniresonance.networking.NodeDirectoryRequest(
+                                    OWNER_VIEW,
+                                    OWNER_SESSION,
+                                    1,
+                                    2,
+                                    io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Action.BEGIN_RENAME,
+                                    "Needle",
+                                    io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Status.ALL,
+                                    null,
+                                    null,
+                                    0,
+                                    false,
+                                    target,
+                                    0,
+                                    0,
+                                    "",
+                                    false,
+                                    null));
+                    browser.tick();
+                    browser.tick();
+                    helper.assertTrue(pages.getLast().editing(), "Rename did not obtain a lease");
+                    boolean locked = false;
+                    try {
+                        f.nodeManagement.acquireLinked(owner, NETWORK, target);
+                    } catch (io.github.loongin.omniresonance.node.NodeManagementService.Rejected expected) {
+                        locked = true;
+                    }
+                    helper.assertTrue(locked, "Rename window did not hold the shared node lease");
+                    browser.handle(
+                            owner,
+                            NETWORK,
+                            new io.github.loongin.omniresonance.networking.NodeDirectoryRequest(
+                                    OWNER_VIEW,
+                                    OWNER_SESSION,
+                                    1,
+                                    3,
+                                    io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Action.RENAME,
+                                    "",
+                                    io.github.loongin.omniresonance.networking.NodeDirectoryRequest.Status.ALL,
+                                    null,
+                                    null,
+                                    0,
+                                    false,
+                                    target,
+                                    0,
+                                    0,
+                                    "Renamed",
+                                    false,
+                                    null));
+                    browser.tick();
+                    browser.tick();
+                    helper.assertTrue(
+                            data.findNode(target).orElseThrow().name().value().equals("Renamed")
+                                    && !pages.getLast().editing(),
+                            "Explicit rename did not commit/release");
+                    helper.assertTrue(
+                            pages.getLast().chunkLoading() != null
+                                    && pages.getLast().chunkLoading().status()
+                                            == io.github.loongin.omniresonance.chunkloading.ChunkLoadingAllocator.Status
+                                                    .OFF
+                                    && pages.getLast().chunkLoading().ownerLimit()
+                                            == config.settings().chunkLoading().perOwner()
+                                    && pages.getLast().chunkLoading().serverLimit()
+                                            == config.settings().chunkLoading().server(),
+                            "Selected node did not receive loading status and live quotas");
+                    helper.assertTrue(runtime.physicalCount() == 0, "Node browsing/rename loaded distant chunks");
+                }
+            }
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void navigationRequiresNodeViewAndIsRejectedFromLoadingOverview(GameTestHelper helper)
+            throws Exception {
+        try (var f = new Fixture(helper)) {
+            var config = new ServerConfig.State(1, 1, true, ServerSettings.defaults());
+            var data = f.repository.findLoadedNetwork(NETWORK).orElseThrow();
+            var node = data.createNode(
+                    new UUID(1191, 1),
+                    new ManagedName("Navigation"),
+                    net.minecraft.core.GlobalPos.of(
+                            helper.getLevel().dimension(),
+                            helper.absolutePos(new net.minecraft.core.BlockPos(3, 3, 3))),
+                    io.github.loongin.omniresonance.node.NodeForm.BLOCK,
+                    net.minecraft.core.Direction.NORTH);
+            f.nodes.add(new NetworkNodeDirectory.Entry(NETWORK, node));
+            var frames = new ArrayList<io.github.loongin.omniresonance.networking.NodeHighlightFrame>();
+            f.terminal.installNavigation(new io.github.loongin.omniresonance.node.NodeNavigationService(
+                    helper.getLevel().getServer(),
+                    f.nodeManagement,
+                    f.nodeAuthority,
+                    config.settings().navigation(),
+                    (p, frame) -> frames.add(frame)));
+            try (var runtime = new io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime(
+                    helper.getLevel().getServer(), f.repository, f.directory, f.nodes, f.nodeAuthority, config)) {
+                var replies = new ArrayList<io.github.loongin.omniresonance.networking.ChunkOverviewPage>();
+                f.terminal.installChunkOverview(runtime, (p, page) -> replies.add(page));
+                var owner = player(helper, OWNER);
+                f.open(owner, OWNER_VIEW, OWNER_SESSION);
+                f.terminal.handle(owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK));
+                runtime.tick(config);
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OWNER_VIEW,
+                                OWNER_SESSION,
+                                1,
+                                1,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.OPEN,
+                                0,
+                                false));
+                f.terminal.chunkOverviewTick();
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OWNER_VIEW,
+                                OWNER_SESSION,
+                                1,
+                                2,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.HIGHLIGHT,
+                                0,
+                                false,
+                                node.nodeId()));
+                f.terminal.chunkOverviewTick();
+                helper.assertTrue(
+                        replies.getLast().operationRejected() && frames.isEmpty(),
+                        "Loading overview admitted highlight");
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OWNER_VIEW,
+                                OWNER_SESSION,
+                                2,
+                                1,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.OPEN_NODES,
+                                0,
+                                false));
+                f.terminal.chunkOverviewTick();
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OWNER_VIEW,
+                                OWNER_SESSION,
+                                2,
+                                2,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.HIGHLIGHT,
+                                0,
+                                false,
+                                node.nodeId()));
+                f.terminal.chunkOverviewTick();
+                helper.assertTrue(
+                        !replies.getLast().operationRejected() && frames.size() == 1,
+                        "Node view did not admit highlight");
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OWNER_VIEW,
+                                OWNER_SESSION,
+                                3,
+                                1,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.OPEN,
+                                0,
+                                false));
+                f.terminal.chunkOverviewTick();
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OWNER_VIEW,
+                                OWNER_SESSION,
+                                3,
+                                2,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.TELEPORT,
+                                0,
+                                false,
+                                node.nodeId()));
+                f.terminal.chunkOverviewTick();
+                helper.assertTrue(
+                        replies.getLast().operationRejected(),
+                        "Returning to loading overview retained node navigation authority");
+            }
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void chunkOverviewIsBoundedSessionScopedAndClearsRevokedAccess(GameTestHelper helper)
+            throws Exception {
+        try (Fixture f = new Fixture(helper)) {
+            var config = new ServerConfig.State(1, 1, true, ServerSettings.defaults());
+            var data = f.repository.findLoadedNetwork(NETWORK).orElseThrow();
+            for (int i = 1; i <= 70; i++) {
+                var node = data.createNode(
+                        new UUID(1190, i),
+                        new ManagedName("Overview " + i),
+                        net.minecraft.core.GlobalPos.of(
+                                helper.getLevel().dimension(), new net.minecraft.core.BlockPos(100000 + i, 80, 100000)),
+                        io.github.loongin.omniresonance.node.NodeForm.BLOCK,
+                        net.minecraft.core.Direction.NORTH);
+                f.nodes.add(new NetworkNodeDirectory.Entry(NETWORK, node));
+            }
+            try (var runtime = new io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime(
+                    helper.getLevel().getServer(), f.repository, f.directory, f.nodes, f.nodeAuthority, config)) {
+                var replies = new ArrayList<io.github.loongin.omniresonance.networking.ChunkOverviewPage>();
+                f.terminal.installChunkOverview(runtime, (player, page) -> replies.add(page));
+                var owner = player(helper, OWNER);
+                f.open(owner, OWNER_VIEW, OWNER_SESSION);
+                f.terminal.handle(owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK));
+                runtime.tick(config);
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OTHER_VIEW,
+                                OWNER_SESSION,
+                                1,
+                                1,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.OPEN,
+                                0,
+                                false));
+                f.terminal.chunkOverviewTick();
+                helper.assertTrue(replies.isEmpty(), "Wrong view subscribed to overview");
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OWNER_VIEW,
+                                OWNER_SESSION,
+                                1,
+                                1,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.OPEN,
+                                0,
+                                false));
+                f.terminal.chunkOverviewTick();
+                helper.assertTrue(
+                        replies.getLast().entries().size() == 64
+                                && replies.getLast().total() == 70
+                                && replies.getLast().next(),
+                        "Overview was not bounded");
+                helper.assertTrue(runtime.physicalCount() == 0, "Browsing inactive distant nodes created tickets");
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OWNER_VIEW,
+                                OWNER_SESSION,
+                                1,
+                                2,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.PAGE,
+                                64,
+                                false));
+                f.terminal.chunkOverviewTick();
+                helper.assertTrue(
+                        replies.getLast().entries().size() == 6
+                                && replies.getLast().entries().getFirst().number() == 65,
+                        "Cursor did not continue");
+                f.directory.commitRemoval(
+                        f.directory.prepareRemoval(f.directory.find(NETWORK).orElseThrow()));
+                f.terminal.chunkOverview(
+                        owner,
+                        new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
+                                OWNER_VIEW,
+                                OWNER_SESSION,
+                                1,
+                                5,
+                                io.github.loongin.omniresonance.networking.ChunkOverviewRequest.Action.PAGE,
+                                0,
+                                false));
+                f.terminal.chunkOverviewTick();
+                var denied = replies.getLast();
+                helper.assertTrue(
+                        !denied.available()
+                                && denied.entries().isEmpty()
+                                && denied.ownerLimit() == 0
+                                && denied.serverLimit() == 0
+                                && denied.serverUsed() == 0,
+                        "Revoked view exposed node or quota data");
+            }
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void terminalTagDraftSavesAppendIndependentRulesAndCanBeCancelled(GameTestHelper helper)
             throws IOException {
         try (Fixture f = new Fixture(helper)) {
@@ -1319,6 +1729,7 @@ public final class NetworkTerminalSettingsGameTests {
         private final Path path;
         private final SavedNetworkRepository repository;
         private final NetworkDirectory directory;
+        private final NetworkNodeDirectory nodes;
         private final NetworkTopologyService topology;
         private final NetworkSettingsService settings;
         private final NetworkTerminalService terminal;
@@ -1354,7 +1765,7 @@ public final class NetworkTerminalSettingsGameTests {
                     locks,
                     config,
                     UUID::randomUUID);
-            var nodes = new NetworkNodeDirectory(List.of());
+            nodes = new NetworkNodeDirectory(List.of());
             nodeAuthority = new io.github.loongin.omniresonance.node.NodeAuthorityService(
                     helper.getLevel().getServer(), repository, nodes, UUID::randomUUID);
             nodeManagement = new io.github.loongin.omniresonance.node.NodeManagementService(

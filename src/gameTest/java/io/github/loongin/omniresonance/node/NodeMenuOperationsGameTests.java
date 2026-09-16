@@ -234,7 +234,7 @@ public final class NodeMenuOperationsGameTests {
             NodeMenuResponse.State requested = state(
                     helper,
                     first.handle(owner, new NodeMenuRequest.SetChunkLoadingRequested(41, SESSION_A, 3, true)),
-                    NodeMenuState.DirectTunnelList.class);
+                    NodeMenuState.ModeRoot.class);
             helper.assertTrue(node(requested).chunkLoadingRequested(), "Request toggle was not authoritative");
             NodeMenuResponse.State disabled = state(
                     helper,
@@ -394,6 +394,8 @@ public final class NodeMenuOperationsGameTests {
             EditLockTable locks = new EditLockTable();
             management = new NodeManagementService(
                     helper.getLevel().getServer(), networks, repository, nodes, authority, locks);
+            management.installChunkAdmission((network, node, moving) ->
+                    io.github.loongin.omniresonance.chunkloading.ChunkLoadingReservations.Admission.ALLOWED);
             topology = new NetworkTopologyService(
                     helper.getLevel().getServer(),
                     networks,

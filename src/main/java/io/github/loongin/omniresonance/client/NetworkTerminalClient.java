@@ -44,12 +44,19 @@ public final class NetworkTerminalClient {
     /** Installs client events and the immutable protocol response consumer without accessing a world. */
     public NetworkTerminalClient(IEventBus modBus) {
         nodeClient = new ResonanceNodeClient(modBus);
+        new NodeHighlightClient();
         modBus.addListener(this::registerKeyMappings);
         NeoForge.EVENT_BUS.addListener(this::onClientTick);
         NeoForge.EVENT_BUS.addListener(this::onLoggingIn);
         NeoForge.EVENT_BUS.addListener(this::onLoggingOut);
         NeoForge.EVENT_BUS.addListener(this::onTagsUpdated);
         NetworkPayloads.installClientReceiver(this::receive);
+        NetworkPayloads.installNodeDirectoryReceiver(page -> {
+            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveNodeDirectory(page);
+        });
+        NetworkPayloads.installChunkOverviewReceiver(page -> {
+            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveChunkOverview(page);
+        });
         NetworkPayloads.installStorageReceiver(response -> {
             if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveStorage(response);
         });
@@ -87,6 +94,14 @@ public final class NetworkTerminalClient {
     }
 
     void sendStorage(io.github.loongin.omniresonance.networking.TerminalStorageRequest request) {
+        if (canSend()) PacketDistributor.sendToServer(request);
+    }
+
+    void sendNodeDirectory(io.github.loongin.omniresonance.networking.NodeDirectoryRequest request) {
+        if (canSend()) net.neoforged.neoforge.network.PacketDistributor.sendToServer(request);
+    }
+
+    void sendChunkOverview(io.github.loongin.omniresonance.networking.ChunkOverviewRequest request) {
         if (canSend()) PacketDistributor.sendToServer(request);
     }
 
@@ -157,6 +172,12 @@ public final class NetworkTerminalClient {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.screen instanceof NetworkSetupScreen screen && screen.matchesView(response.viewId())) {
             screen.applyResponse(response);
+            return;
+        }
+        if (minecraft.screen instanceof ResonanceNodeScreen child
+                && child.terminalParent() != null
+                && child.terminalParent().matchesView(response.viewId())) {
+            child.terminalParent().applyResponse(response);
             return;
         }
         if (response instanceof NetworkTerminalResponse.Success success && success.sequence() == 0 && canSend()) {

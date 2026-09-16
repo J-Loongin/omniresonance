@@ -118,6 +118,38 @@ public final class ItemFilterServiceGameTests {
     private ItemFilterServiceGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void catalogBatchesRetainAuthorityAndInvalidateTheMetadataIndex(GameTestHelper helper)
+            throws IOException {
+        try (Fixture f = new Fixture(helper, false)) {
+            for (int i = 0; i < 260; i++)
+                f.library.putPreset(
+                        new ResourceFilterPreset(new UUID(950, i + 1), new ManagedName("Catalog " + i), 0, List.of()),
+                        f.library.presetLibraryRevision(),
+                        -1,
+                        -1);
+            var first = f.service.page(f.owner, NETWORK, 0, "", -1);
+            var second = f.service.page(f.owner, NETWORK, 128, "", first.libraryRevision());
+            helper.assertTrue(
+                    first.entries().size() == 128 && second.entries().size() == 128,
+                    "Catalog pages must remain bounded");
+            helper.assertTrue(
+                    first.entries().stream()
+                            .noneMatch(a -> second.entries().stream().anyMatch(b -> a.id().equals(b.id()))),
+                    "Catalog pages overlap");
+            var edit = f.service.begin(f.owner, NETWORK, PresetEditOperation.RENAME, PRESET, "");
+            f.service.save(f.owner, edit, "Renamed catalog entry");
+            var changed = f.service.page(f.owner, NETWORK, 128, "", first.libraryRevision());
+            helper.assertTrue(
+                    changed.offset() == 0 && changed.libraryRevision() != first.libraryRevision(),
+                    "Changed catalog must restart so the client can reject mixed revisions");
+            var match = f.service.page(f.owner, NETWORK, 0, "Renamed catalog entry", -1);
+            helper.assertTrue(match.totalCount() == 1, "Metadata index retained the old name");
+            f.service.page(f.admin, NETWORK, 0, "", -1);
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void privateDomainReferencesRestrictPresetEdits(GameTestHelper helper) throws IOException {
         for (boolean indirect : new boolean[] {false, true}) {
             try (Fixture f = new Fixture(helper, false)) {
