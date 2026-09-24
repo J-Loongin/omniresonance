@@ -34,6 +34,7 @@ public final class TerminalStorageService implements AutoCloseable {
     private final Thread owner = Thread.currentThread();
     private final Supplier<ServerSettings> settings;
     private final Access access;
+    private final BiConsumer<UUID, io.github.loongin.omniresonance.persistence.AuditEntry> audit;
     private final Function<UUID, @Nullable DomainLedger> ledgers;
     private final Function<UUID, RecoveryBuffer> recovery;
     private final BiConsumer<ServerPlayer, TerminalStorageResponse> sender;
@@ -45,12 +46,14 @@ public final class TerminalStorageService implements AutoCloseable {
             Access access,
             Function<UUID, @Nullable DomainLedger> ledgers,
             Function<UUID, RecoveryBuffer> recovery,
-            BiConsumer<ServerPlayer, TerminalStorageResponse> sender) {
+            BiConsumer<ServerPlayer, TerminalStorageResponse> sender,
+            BiConsumer<UUID, io.github.loongin.omniresonance.persistence.AuditEntry> audit) {
         this.settings = java.util.Objects.requireNonNull(settings);
         this.access = java.util.Objects.requireNonNull(access);
         this.ledgers = java.util.Objects.requireNonNull(ledgers);
         this.recovery = java.util.Objects.requireNonNull(recovery);
         this.sender = java.util.Objects.requireNonNull(sender);
+        this.audit = java.util.Objects.requireNonNull(audit);
     }
 
     /** Opens only after terminal session authentication; snapshot readiness is rechecked before every click. */
@@ -178,6 +181,7 @@ public final class TerminalStorageService implements AutoCloseable {
             if (!request.bulk() && request.shift() && request.button() == 0 && request.inventorySlot() >= 0)
                 view.quickKey = status == Status.COMPLETE ? view.operation.quickMoveKey() : null;
             view.blocked |= status == Status.UNKNOWN || status == Status.FAILED;
+            recordConfirmed(view, moved);
             view.request = null;
             view.operation = null;
             view.cursor = view.slot = ItemStack.EMPTY;
@@ -186,6 +190,14 @@ public final class TerminalStorageService implements AutoCloseable {
             else view.player.inventoryMenu.broadcastChanges();
             send(view, request.sequence(), status, moved);
         }
+    }
+
+    private void recordConfirmed(View view, long amount) {
+        if (amount > 0)
+            audit.accept(
+                    view.network,
+                    io.github.loongin.omniresonance.persistence.AuditEntry.of(
+                            "terminal_storage", view.player, view.network, "confirmed_amount=" + amount));
     }
 
     private boolean allowed(View view) {
@@ -227,6 +239,7 @@ public final class TerminalStorageService implements AutoCloseable {
         View view = views.remove(player);
         if (view == null) return;
         pending.remove(player);
+        if (view.operation != null) recordConfirmed(view, view.operation.movedSoFar());
         if (view.touched && view.player.containerMenu == view.player.inventoryMenu) {
             view.player.inventoryMenu.removed(view.player);
             view.player.inventoryMenu.broadcastChanges();

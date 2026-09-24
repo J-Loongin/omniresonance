@@ -62,6 +62,7 @@ public final class OmniResonanceMod {
                 false,
                 PlayerInteractEvent.RightClickBlock.class,
                 DragonBreathPlayerInteraction::onRightClickBlock);
+        NeoForge.EVENT_BUS.addListener(networkRuntime::onRegisterCommands);
         NeoForge.EVENT_BUS.addListener(networkRuntime::onServerStarted);
         NeoForge.EVENT_BUS.addListener(networkRuntime::onServerStopped);
         NeoForge.EVENT_BUS.addListener(networkRuntime::onPlayerLoggedOut);

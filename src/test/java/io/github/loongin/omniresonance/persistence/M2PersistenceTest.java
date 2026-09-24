@@ -22,12 +22,13 @@ class M2PersistenceTest {
                         new NetworkMetadata(NETWORK, OWNER, new ManagedName("Network"), 0, Set.of()))
                 .save(new CompoundTag(), RegistryAccess.EMPTY);
         tag.putInt("schema_version", 5);
+        tag.remove("audit_entries");
         tag.remove("bucket_created_mask");
         tag.remove("recovery");
         CompoundTag before = tag.copy();
         NetworkSavedData loaded = NetworkSavedData.load(NETWORK, tag);
         CompoundTag saved = loaded.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(9, saved.getInt("schema_version"));
+        assertEquals(10, saved.getInt("schema_version"));
         assertEquals(new ListTag(), saved.get("recovery"));
         assertFalse(loaded.isDirty());
         assertEquals(before, tag);
@@ -37,12 +38,13 @@ class M2PersistenceTest {
     void realV1OwnerMigratesWithPointerAndEmptyLibrary() {
         CompoundTag tag = new CompoundTag();
         tag.putInt("schema_version", 1);
+        tag.remove("audit_entries");
         tag.putUUID("owner_id", OWNER);
         tag.putUUID("default_network_id", NETWORK);
         CompoundTag before = tag.copy();
         OwnerSavedData loaded = OwnerSavedData.load(OWNER, tag);
         CompoundTag saved = loaded.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(3, saved.getInt("schema_version"));
+        assertEquals(4, saved.getInt("schema_version"));
         assertEquals(NETWORK, loaded.defaultNetworkId().orElseThrow());
         assertEquals(new ListTag(), saved.get("filter_presets"));
         assertEquals(0L, saved.getLong("preset_library_revision"));
@@ -76,6 +78,7 @@ class M2PersistenceTest {
                         new NetworkMetadata(NETWORK, OWNER, new ManagedName("Network"), 0, Set.of()))
                 .save(new CompoundTag(), RegistryAccess.EMPTY);
         valid.putInt("schema_version", 6);
+        valid.remove("audit_entries");
         valid.remove("bucket_created_mask");
         CompoundTag entry = new CompoundTag();
         entry.putString("type_id", "unknown:raw");

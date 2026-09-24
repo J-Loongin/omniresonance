@@ -56,6 +56,51 @@ class DomainInventoryTransportTest {
     }
 
     @Test
+    void rejectingAQueuedViewStillDeliversItsFailureWithoutActivatingStorage() {
+        var frames = new ArrayList<DomainInventoryFrame>();
+        try (var sync = new DomainInventorySync(
+                network -> {
+                    throw new AssertionError("Queued rejection must not activate storage");
+                },
+                (player, frame) -> frames.add(frame))) {
+            sync.request(P1, NETWORK, SESSION, 1);
+            sync.fail(P1, DomainInventoryFrame.Reason.UNAVAILABLE);
+            assertEquals(0, sync.waitingCount());
+            sync.tick(new DomainInventorySync.Limits(4096, 4096, 1, 128), 1, () -> true);
+            assertEquals(
+                    List.of(new DomainInventoryFrame.Failed(SESSION, 1, 0, DomainInventoryFrame.Reason.UNAVAILABLE)),
+                    frames);
+            assertEquals(0, sync.pendingTasks(NETWORK));
+            assertEquals(0, sync.publisherCount());
+        }
+    }
+
+    @Test
+    void unadmittedPlayersCannotConsumeTheActiveReceiversWorkTurns() {
+        var ledger = ledger();
+        for (int value = 0; value < 100; value++) put(ledger, key(value), 1);
+        try (var client = new DomainInventoryReceiver();
+                var sync = new DomainInventorySync(network -> ledger, (player, frame) -> {
+                    if (player.equals(P1)) deliver(client, frame);
+                })) {
+            client.request(SESSION, 1);
+            sync.request(P1, NETWORK, SESSION, 1);
+            for (int index = 0; index < 63; index++)
+                sync.request(new UUID(100, index), NETWORK, new UUID(101, index), 1);
+            var limits = new DomainInventorySync.Limits(4096, 4096, 1, 128);
+            for (int tick = 0; tick < 128 && !client.mirror().ready(); tick++) sync.tick(limits, 1, () -> true);
+            assertTrue(
+                    client.mirror().ready(), "Waiting players must not dilute the one admitted receiver's work budget");
+            assertEquals(100, client.mirror().entries().size());
+            assertEquals(63, sync.waitingCount());
+            sync.close();
+            assertEquals(0, sync.waitingCount());
+            assertEquals(0, sync.publisherCount());
+            assertEquals(0, sync.pendingTasks(NETWORK));
+        }
+    }
+
+    @Test
     void writeReadinessRequiresDeliveredEndAndTheExactLiveGeneration() {
         var ledger = ledger();
         put(ledger, key(1), 10);

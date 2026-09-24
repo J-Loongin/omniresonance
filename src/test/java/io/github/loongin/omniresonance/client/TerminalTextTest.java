@@ -20,6 +20,28 @@ final class TerminalTextTest {
     private static final ResourceLocation TITLE_FONT =
             ResourceLocation.fromNamespaceAndPath("omniresonance", "ui_title");
 
+    @Test
+    void hoverHelpWrapsWithinTheViewportInsteadOfRenderingOneUnboundedLine() {
+        var widths = new ArrayList<Integer>();
+        var font =
+                new net.minecraft.client.gui.Font(
+                        id -> {
+                            throw new AssertionError("No rendering");
+                        },
+                        false) {
+                    @Override
+                    public List<net.minecraft.util.FormattedCharSequence> split(
+                            net.minecraft.network.chat.FormattedText text, int width) {
+                        widths.add(width);
+                        return List.of(Component.literal(text.getString()).getVisualOrderText());
+                    }
+                };
+        TerminalText.tooltipLines(font, Component.literal("Long help"), 640);
+        TerminalText.tooltipLines(font, Component.literal("Long help"), 180);
+        TerminalText.tooltipLines(font, Component.literal("Long help"), 12);
+        assertEquals(List.of(220, 156, 1), widths);
+    }
+
     @ParameterizedTest
     @CsvSource({
         "24,5,主网",

@@ -46,17 +46,31 @@ public final class NetworkPayloads {
         nodeDirectoryReceiver = Objects.requireNonNull(receiver);
     }
 
+    private static volatile @Nullable Consumer<NetworkStatusFrame> statusReceiver;
+
+    public static void installStatusReceiver(Consumer<NetworkStatusFrame> receiver) {
+        statusReceiver = Objects.requireNonNull(receiver);
+    }
+
     private NetworkPayloads() {}
 
     /**
-     * Registers required version-18 PLAY payloads with main-thread handlers. The framework supplies the
+     * Registers required version-20 PLAY payloads with main-thread handlers. The framework supplies the
      * real sending player and replies through its connection; server work never trusts a payload owner.
      * Missing client bootstrap fails explicitly rather than silently discarding successful responses.
      */
     public static void register(RegisterPayloadHandlersEvent event, NetworkRuntimeRegistry registry) {
         Objects.requireNonNull(registry, "registry");
         NodeMenuPayloads.installTerminalTransferHandler(registry::handleTerminalTransfer);
-        PayloadRegistrar registrar = event.registrar("19").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("21").executesOn(HandlerThread.MAIN);
+        registrar.playToClient(NetworkStatusFrame.TYPE, NetworkStatusFrame.STREAM_CODEC, (frame, context) -> {
+            var receiver = statusReceiver;
+            if (receiver == null) throw new IllegalStateException("Status receiver missing");
+            receiver.accept(frame);
+        });
+        registrar.playToServer(NetworkStatusRequest.TYPE, NetworkStatusRequest.STREAM_CODEC, (request, context) -> {
+            if (context.player() instanceof ServerPlayer player) registry.handleStatus(player, request);
+        });
         registrar.playToClient(NodeHighlightFrame.TYPE, NodeHighlightFrame.STREAM_CODEC, (frame, context) -> {
             var receiver = highlightReceiver;
             if (receiver == null) throw new IllegalStateException("Highlight receiver missing");

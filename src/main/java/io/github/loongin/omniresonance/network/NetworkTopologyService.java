@@ -551,6 +551,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         try {
             NetworkSavedData.TunnelCreation created =
                     network.createTunnel(tunnelId, name, initialChannelId, initialChannelName, limit);
+            audit(actor, edit, "create_tunnel", created.tunnel().tunnelId());
             release(actor, edit);
             return created;
         } catch (IllegalArgumentException | ArithmeticException failure) {
@@ -582,6 +583,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         UUID id = Objects.requireNonNull(objectIds().get(), "topology object id");
         try {
             NetworkChannelRecord created = network.createChannel(tunnelId, tunnel.revision(), id, name, limit);
+            audit(actor, edit, "create_channel", created.channelId());
             release(actor, edit);
             return created;
         } catch (IllegalArgumentException | ArithmeticException failure) {
@@ -597,13 +599,18 @@ public final class NetworkTopologyService implements AutoCloseable {
         if (!current.name().uniquenessKey().equals(name.uniquenessKey()) && network.containsTunnelName(name)) {
             throw rejected(Reason.NAME_CONFLICT);
         }
-        return commitTunnel(actor, edit, network.renameTunnel(current.tunnelId(), current.revision(), name));
+        return commitTunnel(
+                actor, edit, "rename_tunnel", network.renameTunnel(current.tunnelId(), current.revision(), name));
     }
 
     public NetworkTunnelRecord setTunnelEnabled(ServerPlayer actor, Edit edit, boolean enabled) {
         NetworkSavedData network = requireEdit(actor, edit, Kind.TUNNEL);
         NetworkTunnelRecord current = currentTunnel(network, edit);
-        return commitTunnel(actor, edit, network.setTunnelEnabled(current.tunnelId(), current.revision(), enabled));
+        return commitTunnel(
+                actor,
+                edit,
+                "set_tunnel_enabled",
+                network.setTunnelEnabled(current.tunnelId(), current.revision(), enabled));
     }
 
     public NetworkChannelRecord renameChannel(ServerPlayer actor, Edit edit, ManagedName name) {
@@ -616,6 +623,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         }
         NetworkChannelRecord updated = network.renameChannel(current.channelId(), current.revision(), name)
                 .orElseThrow(() -> rejected(Reason.STALE_REVISION));
+        if (updated.revision() != edit.revision()) audit(actor, edit, "rename_channel", updated.channelId());
         release(actor, edit);
         return updated;
     }
@@ -657,6 +665,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         List<NetworkNodeRecord> changed = network.deleteChannel(
                 current.channelId(), current.revision(), deletion.impact().topologyRevision());
         publishNodes(edit.networkId(), changed);
+        audit(actor, edit, "delete_channel", current.channelId());
         release(actor, edit);
         return changed;
     }
@@ -672,6 +681,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         List<NetworkNodeRecord> changed = network.deleteTunnel(
                 current.tunnelId(), current.revision(), deletion.impact().topologyRevision());
         publishNodes(edit.networkId(), changed);
+        audit(actor, edit, "delete_tunnel", current.tunnelId());
         release(actor, edit);
         return changed;
     }
@@ -724,7 +734,7 @@ public final class NetworkTopologyService implements AutoCloseable {
             releaseQuietly(actor, edit);
             throw rejected(Reason.UNAVAILABLE);
         }
-        return commitNode(actor, edit, node, result.node());
+        return commitNode(actor, edit, "switch_tunnel", node, result.node());
     }
 
     public NetworkNodeRecord setDirectBinding(
@@ -878,7 +888,7 @@ public final class NetworkTopologyService implements AutoCloseable {
                     faces,
                     confirmedReset,
                     settings.channelBindingsPerDirectNode());
-            return commitNode(actor, edit, node, updated);
+            return commitNode(actor, edit, "configure_channel", node, updated);
         } catch (IllegalStateException invalidAuthority) {
             releaseQuietly(actor, edit);
             throw rejected(Reason.UNAVAILABLE);
@@ -904,7 +914,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         }
         NetworkNodeRecord updated = network.removeDirectBinding(node.nodeId(), node.revision(), channelId)
                 .orElseThrow(() -> rejected(Reason.STALE_REVISION));
-        return commitNode(actor, edit, node, updated);
+        return commitNode(actor, edit, "remove_channel_configuration", node, updated);
     }
 
     /** Returns the current complete domain seed under the same authoritative lease, without publication or mutation. */
@@ -959,7 +969,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         try {
             NetworkNodeRecord updated =
                     network.saveDomainConfiguration(node.nodeId(), node.revision(), stored, faces, confirmedReset);
-            return commitNode(actor, edit, node, updated);
+            return commitNode(actor, edit, "configure_domain", node, updated);
         } catch (IllegalStateException invalidAuthority) {
             releaseQuietly(actor, edit);
             throw rejected(Reason.UNAVAILABLE);
@@ -984,7 +994,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         try {
             NetworkNodeRecord updated = network.setDomainConfiguration(
                     node.nodeId(), node.revision(), Objects.requireNonNull(direction, "direction"), confirmedReset);
-            return commitNode(actor, edit, node, updated);
+            return commitNode(actor, edit, "configure_domain", node, updated);
         } catch (IllegalStateException invalidAuthority) {
             releaseQuietly(actor, edit);
             throw rejected(Reason.UNAVAILABLE);
@@ -1001,7 +1011,7 @@ public final class NetworkTopologyService implements AutoCloseable {
         }
         NetworkNodeRecord updated = network.removeDomainConfiguration(node.nodeId(), node.revision())
                 .orElseThrow(() -> rejected(Reason.STALE_REVISION));
-        return commitNode(actor, edit, node, updated);
+        return commitNode(actor, edit, "remove_domain_configuration", node, updated);
     }
 
     public void heartbeat(ServerPlayer actor, Edit edit) {
@@ -1174,18 +1184,28 @@ public final class NetworkTopologyService implements AutoCloseable {
         }
     }
 
-    private NetworkTunnelRecord commitTunnel(ServerPlayer actor, Edit edit, Optional<NetworkTunnelRecord> result) {
+    private void audit(ServerPlayer actor, Edit edit, String action, UUID target) {
+        repository()
+                .auditNetwork(
+                        edit.networkId(),
+                        io.github.loongin.omniresonance.persistence.AuditEntry.of(action, actor, target, ""));
+    }
+
+    private NetworkTunnelRecord commitTunnel(
+            ServerPlayer actor, Edit edit, String action, Optional<NetworkTunnelRecord> result) {
         NetworkTunnelRecord updated = result.orElseThrow(() -> rejected(Reason.STALE_REVISION));
+        if (updated.revision() != edit.revision()) audit(actor, edit, action, updated.tunnelId());
         release(actor, edit);
         return updated;
     }
 
     private NetworkNodeRecord commitNode(
-            ServerPlayer actor, Edit edit, NetworkNodeRecord current, NetworkNodeRecord updated) {
+            ServerPlayer actor, Edit edit, String action, NetworkNodeRecord current, NetworkNodeRecord updated) {
         if (updated != current) {
             nodes().update(
                             new NetworkNodeDirectory.Entry(edit.networkId(), current),
                             new NetworkNodeDirectory.Entry(edit.networkId(), updated));
+            audit(actor, edit, action, updated.nodeId());
         }
         release(actor, edit);
         return updated;

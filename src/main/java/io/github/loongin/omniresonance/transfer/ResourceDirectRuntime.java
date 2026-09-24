@@ -39,6 +39,8 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
     private final NetworkNodeDirectory nodes;
     private final ResourceEndpointCache endpoints;
     private final ResourceDirectScheduler scheduler;
+    private final TransferTelemetry telemetry;
+    private long completedTelemetryTick = -1;
     private final DomainInputScheduler domainInputs;
     private final DomainOutputScheduler domainOutputs;
 
@@ -116,11 +118,16 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         this.nodes = nodes;
         requireThread();
         adapters = repository.resourceAdapters();
+        telemetry = new TransferTelemetry(adapters.types());
         // Sparse occupancy is bounded by tracked nodes × selected faces × registered types; no lower global
         // admission ceiling is inferred from per-network authority limits, and nothing is preallocated.
         endpoints = new ResourceEndpointCache(server, adapters, Integer.MAX_VALUE);
         filters = new ResourceFilterCache(this::readOwner, this::openTag);
         domainInputs = new DomainInputScheduler(new DomainInputScheduler.Environment() {
+            public TransferTelemetry telemetry() {
+                return telemetry;
+            }
+
             public List<net.minecraft.resources.ResourceLocation> types() {
                 return adapters.types();
             }
@@ -191,6 +198,10 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             }
         });
         domainOutputs = new DomainOutputScheduler(new DomainOutputScheduler.Environment() {
+            public TransferTelemetry telemetry() {
+                return telemetry;
+            }
+
             public List<net.minecraft.resources.ResourceLocation> types() {
                 return adapters.types();
             }
@@ -327,13 +338,43 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         if (samplesFirst) sampleWork.accept(budget);
         scheduler.tick(currentTick, settings, budget);
         if (!samplesFirst) sampleWork.accept(budget);
+        completedTelemetryTick = currentTick;
     }
+
+    @Override
+    public TransferTelemetry telemetry() {
+        requireThread();
+        return telemetry;
+    }
+
+    /** Read-only observations for the last completed scheduler tick, without world or storage activation. */
+    public TransferTelemetry.Snapshot telemetrySnapshot(UUID network) {
+        requireThread();
+        return telemetry.snapshot(network, completedTelemetryTick);
+    }
+
+    /** Observer-only counts for a network. Called by the shared 20-gt diagnostics cache, never by the scheduler. */
+    public TransferTelemetry.QueueCounts queueCounts(UUID network) {
+        requireThread();
+        var direct = scheduler.queueCounts(network, currentTick, currentSettings);
+        int due = direct.due(), backoff = direct.backoff();
+        for (var node : domainNetworks.getOrDefault(network, List.of())) {
+            var counts = domainInputs.contains(node)
+                    ? domainInputs.queueCounts(node, currentTick, currentSettings)
+                    : domainOutputs.queueCounts(node, currentTick, currentSettings);
+            due = Math.addExact(due, counts.due());
+            backoff = Math.addExact(backoff, counts.backoff());
+        }
+        return new TransferTelemetry.QueueCounts(due, backoff);
+    }
+
     /** Enqueues only; authoritative multi-object commits must finish before routing is read on the next tick. */
     public void networkChanged(UUID networkId) {
         requireThread();
         if (!closed
                 && (repository.findLoadedNetwork(networkId).isPresent()
                         || networkNodes.containsKey(networkId)
+                        || telemetry.contains(networkId)
                         || recoveryDestinations.containsKey(networkId))) changedNetworks.add(networkId);
     }
     /** Reads owner authority once after an explicit library edit, then wakes only its referencing networks. */
@@ -420,6 +461,7 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         outputPublications.clear();
         domainPublications.clear();
         domainNetworks.clear();
+        telemetry.clear();
         directSources.clear();
         networkSources.clear();
         changedNetworks.clear();
@@ -607,6 +649,7 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
     }
 
     private void refresh(UUID networkId) {
+        if (repository.findLoadedNetwork(networkId).isEmpty()) telemetry.remove(networkId);
         changedRecovery.add(networkId);
         List<SourceRegistration> oldSources = networkSources.remove(networkId);
         if (oldSources != null)

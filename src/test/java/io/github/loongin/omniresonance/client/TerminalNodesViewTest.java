@@ -126,6 +126,70 @@ class TerminalNodesViewTest {
     }
 
     @Test
+    void compactTerminalKeepsNodeControlsInsideTheSharedFrame() {
+        for (int width : new int[] {320, 427, 640}) {
+            var body = NetworkSetupScreen.managementLayout(width, 240).content();
+            var widgets = new ArrayList<AbstractWidget>();
+            var view =
+                    new TerminalNodesView(new UUID(1, 1), SESSION, 1, ignored -> {}, (node, teleport) -> {}, () -> {});
+            view.open();
+            view.build(font(), body, widgets::add, widgets::remove, ignored -> {});
+            view.accept(page(1, false, true, false));
+            node(widgets).onPress();
+            view.accept(page(2, true, true, false));
+            for (String name : List.of("disable", "rename", "highlight", "teleport")) {
+                var control = key(widgets, name);
+                assertTrue(control.getX() >= body.x() && control.getRight() <= body.right());
+                assertTrue(control.getY() >= body.y() && control.getBottom() <= body.bottom());
+                assertTrue(control.getWidth() >= 60);
+            }
+            assertTrue(node(widgets).getRight() < view.editorBounds().x());
+        }
+    }
+
+    @Test
+    void browsingActionsTileEveryRowWithoutReservedEmptyColumns() {
+        for (int width : new int[] {184, 219, 244, 288, 424, 700}) {
+            for (boolean enabled : new boolean[] {true, false}) {
+                var widgets = new ArrayList<AbstractWidget>();
+                var view = new TerminalNodesView(
+                        new UUID(1, 1), SESSION, 1, ignored -> {}, (node, teleport) -> {}, () -> {});
+                view.open();
+                view.build(
+                        font(),
+                        new TerminalLayout.Rect(0, 0, width, 360),
+                        widgets::add,
+                        widgets::remove,
+                        ignored -> {});
+                view.accept(page(1, false, enabled, false));
+                node(widgets).onPress();
+                view.accept(page(2, true, enabled, false));
+                var controls = enabled
+                        ? List.of(
+                                key(widgets, "disable"),
+                                key(widgets, "rename"),
+                                key(widgets, "highlight"),
+                                key(widgets, "teleport"))
+                        : List.of(key(widgets, "enable"), key(widgets, "highlight"), key(widgets, "teleport"));
+                var pane = view.editorBounds();
+                for (var control : controls) {
+                    var row = controls.stream()
+                            .filter(other -> other.getY() == control.getY())
+                            .toList();
+                    assertEquals(pane.x() + 8, row.getFirst().getX());
+                    assertEquals(pane.right() - 8, row.getLast().getRight());
+                    assertEquals(20, control.getHeight());
+                    for (int j = 1; j < row.size(); j++) {
+                        assertEquals(6, row.get(j).getX() - row.get(j - 1).getRight());
+                        assertTrue(
+                                Math.abs(row.get(j).getWidth() - row.get(j - 1).getWidth()) <= 1);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void nodeConfirmationUsesSharedContentSizedDialog() {
         var widgets = new ArrayList<AbstractWidget>();
         var requests = new ArrayList<NodeDirectoryRequest>();

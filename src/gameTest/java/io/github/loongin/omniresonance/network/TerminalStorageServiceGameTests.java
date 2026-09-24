@@ -55,6 +55,7 @@ public final class TerminalStorageServiceGameTests {
         UUID view = new UUID(98, 4), session = new UUID(98, 5), network = new UUID(98, 6);
         var ledger = new DomainLedger(network, Map.of(), i -> StorageBucketData.create(network, i));
         var replies = new ArrayList<TerminalStorageResponse>();
+        var audit = new ArrayList<io.github.loongin.omniresonance.persistence.AuditEntry>();
         var recovery = new RecoveryBuffer(() -> {});
         var iron = ItemVariant.from(
                 new ItemStack(Items.IRON_INGOT), helper.getLevel().registryAccess());
@@ -66,7 +67,8 @@ public final class TerminalStorageServiceGameTests {
                 (p, s, g, n) -> true,
                 n -> ledger,
                 n -> recovery,
-                (p, response) -> replies.add(response))) {
+                (p, response) -> replies.add(response),
+                (n, entry) -> audit.add(entry))) {
             service.open(player, view, session, 1, network);
             service.request(
                     player,
@@ -93,6 +95,11 @@ public final class TerminalStorageServiceGameTests {
                             && player.getInventory().getItem(11).isEmpty()
                             && steps > 1,
                     "Bulk continuation rejected its own updates or forgot the emptied source identity");
+            helper.assertTrue(
+                    audit.size() == 2
+                            && audit.get(0).summary().equals("confirmed_amount=64")
+                            && audit.get(1).summary().equals("confirmed_amount=48"),
+                    "Bulk progress duplicated or lost its audit");
             service.request(
                     player,
                     new TerminalStorageRequest(
@@ -124,13 +131,15 @@ public final class TerminalStorageServiceGameTests {
             deposit.commit(64);
         }
         var replies = new ArrayList<TerminalStorageResponse>();
+        var audit = new ArrayList<io.github.loongin.omniresonance.persistence.AuditEntry>();
         var buffer = new RecoveryBuffer(() -> {});
         try (var service = new TerminalStorageService(
                 TerminalStorageServiceGameTests::writable,
                 (p, s, g, n) -> true,
                 n -> ledger,
                 n -> buffer,
-                (p, response) -> replies.add(response))) {
+                (p, response) -> replies.add(response),
+                (n, entry) -> audit.add(entry))) {
             service.open(player, view, session, 1, network);
             int previous = player.inventoryMenu.getStateId();
             service.request(
@@ -162,13 +171,15 @@ public final class TerminalStorageServiceGameTests {
         UUID view = new UUID(94, 2), session = new UUID(94, 3), network = new UUID(94, 4);
         var ledger = new DomainLedger(network, Map.of(), i -> StorageBucketData.create(network, i));
         var replies = new ArrayList<TerminalStorageResponse>();
+        var audit = new ArrayList<io.github.loongin.omniresonance.persistence.AuditEntry>();
         var buffer = new RecoveryBuffer(() -> {});
         try (var service = new TerminalStorageService(
                 TerminalStorageServiceGameTests::writable,
                 (p, s, g, n) -> true,
                 n -> ledger,
                 n -> buffer,
-                (p, response) -> replies.add(response))) {
+                (p, response) -> replies.add(response),
+                (n, entry) -> audit.add(entry))) {
             service.open(player, view, session, 1, network);
             player.inventoryMenu.setCarried(new ItemStack(Items.IRON_INGOT, 10));
             var first =
@@ -204,13 +215,15 @@ public final class TerminalStorageServiceGameTests {
         var settings = new AtomicReference<>(writable());
         boolean[] allowed = {true};
         var replies = new ArrayList<TerminalStorageResponse>();
+        var audit = new ArrayList<io.github.loongin.omniresonance.persistence.AuditEntry>();
         var buffer = new RecoveryBuffer(() -> {});
         try (var service = new TerminalStorageService(
                 settings::get,
                 (p, s, g, n) -> allowed[0],
                 n -> ledger,
                 n -> buffer,
-                (p, response) -> replies.add(response))) {
+                (p, response) -> replies.add(response),
+                (n, entry) -> audit.add(entry))) {
             service.open(player, view, session, 1, network);
             player.inventoryMenu.setCarried(new ItemStack(Items.IRON_INGOT, 10));
             service.request(
@@ -241,6 +254,7 @@ public final class TerminalStorageServiceGameTests {
             helper.assertTrue(
                     replies.getLast().status() == TerminalStorageResponse.Status.DENIED && ledger.variantCount() == 0,
                     "Permission or sync-readiness loss allowed a pending write");
+            helper.assertTrue(audit.isEmpty(), "Rejected writes must not append an audit entry");
         }
         helper.succeed();
     }

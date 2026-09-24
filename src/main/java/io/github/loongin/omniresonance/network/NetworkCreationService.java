@@ -62,6 +62,26 @@ public final class NetworkCreationService {
         this.idSource = Objects.requireNonNull(idSource, "idSource");
     }
 
+    /** Applies the current server retention policy without changing stored history. */
+    public void configureAudit(int capacity) {
+        requireOwningThread();
+        repository.configureAudit(capacity);
+    }
+
+    /** Appends already committed terminal metadata; caller must authorize and confirm the operation first. */
+    public void recordNetwork(UUID network, io.github.loongin.omniresonance.persistence.AuditEntry entry) {
+        requireOwningThread();
+        repository.auditNetwork(network, entry);
+    }
+
+    /** Records a completed explicit creation in the existing owner shard on the server thread. */
+    public void recordCreation(net.minecraft.server.level.ServerPlayer actor, NetworkMetadata created) {
+        requireOwningThread();
+        repository.auditOwner(
+                created.ownerId(),
+                io.github.loongin.omniresonance.persistence.AuditEntry.of("create_network", actor, created.id(), ""));
+    }
+
     /**
      * Creates an owned network and, when necessary, its default pointer, then updates the derived directory.
      *

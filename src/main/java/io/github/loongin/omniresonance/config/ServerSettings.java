@@ -19,7 +19,8 @@ public record ServerSettings(
         TerminalSync terminalSync,
         DirectStorageAccess directStorageAccess,
         ChunkLoading chunkLoading,
-        Navigation navigation) {
+        Navigation navigation,
+        int auditEntriesPerScope) {
     public ServerSettings {
         ServerConfig.validateNetworksPerOwner(networksPerOwner);
         ServerConfig.validateTunnelsPerNetwork(tunnelsPerNetwork);
@@ -34,6 +35,38 @@ public record ServerSettings(
         java.util.Objects.requireNonNull(directStorageAccess, "directStorageAccess");
         java.util.Objects.requireNonNull(chunkLoading, "chunkLoading");
         java.util.Objects.requireNonNull(navigation, "navigation");
+        ServerConfig.validateM2("audit.entries_per_scope", auditEntriesPerScope);
+    }
+
+    public ServerSettings(
+            int networksPerOwner,
+            int tunnelsPerNetwork,
+            int channelsPerTunnel,
+            int channelBindingsPerDirectNode,
+            int administratorsPerNetwork,
+            Scheduler scheduler,
+            FilterLimits filterLimits,
+            RecoveryLimits recoveryLimits,
+            long storageVariantLimitPerNetwork,
+            TerminalSync terminalSync,
+            DirectStorageAccess directStorageAccess,
+            ChunkLoading chunkLoading,
+            Navigation navigation) {
+        this(
+                networksPerOwner,
+                tunnelsPerNetwork,
+                channelsPerTunnel,
+                channelBindingsPerDirectNode,
+                administratorsPerNetwork,
+                scheduler,
+                filterLimits,
+                recoveryLimits,
+                storageVariantLimitPerNetwork,
+                terminalSync,
+                directStorageAccess,
+                chunkLoading,
+                navigation,
+                (Integer) ServerConfig.defaultM2("audit.entries_per_scope"));
     }
 
     public record Navigation(

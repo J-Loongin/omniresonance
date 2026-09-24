@@ -12,26 +12,37 @@ import org.junit.jupiter.api.Test;
 
 class TerminalTagPasteTest {
     @Test
-    void copiedBareTagInExactModeGetsAnExplicitModeErrorWithoutChangingTheDraft() {
-        var copied = new TerminalTagClipboard.Candidate("minecraft:item", List.of("c:ingots"), "c:ingots");
+    void shortSearchCopyRestoresFullIdentityInsideAnExistingDraftWithoutGuessing() {
         var draft = new TerminalResourceRuleDraft(null);
-        draft.text = "c:ingots";
-        assertEquals("tag_in_exact_id", draft.selectorError(copied));
-        assertEquals(0, draft.selector);
+        var candidate = new TerminalTagClipboard.Candidate("minecraft:fluid", List.of("c:water"), "#water");
+        org.junit.jupiter.api.Assertions.assertTrue(draft.pasteTag(candidate, "#water"));
+        assertEquals("#c:water", draft.text);
+        assertEquals(ResourceLocation.parse("minecraft:fluid"), draft.type);
+        assertEquals(ComponentCondition.Mode.ID_ONLY, draft.mode);
+        org.junit.jupiter.api.Assertions.assertFalse(draft.pasteTag(null, "#water"));
+        org.junit.jupiter.api.Assertions.assertFalse(draft.pasteTag(candidate, "#lava"));
+        assertEquals("#c:water", draft.text);
+    }
+
+    @Test
+    void prefixedInputCreatesATagRuleAndLegacyTagIdsStillLoad() {
+        var draft = new TerminalResourceRuleDraft(null);
+        draft.editText("#c:ingots");
+        assertEquals(1, draft.selector);
+        assertEquals(
+                ResourceFilterRule.Selector.tag(ResourceLocation.parse("c:ingots")),
+                ((io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match) draft.intent()).selector());
         draft.selector = 1;
-        assertNull(draft.selectorError(copied));
-        draft.text = "#c:ingots";
-        assertEquals("tag_prefix", draft.selectorError(copied));
-        draft.selector = 0;
-        assertEquals("tag_in_exact_id", draft.selectorError(copied));
-        draft.text = "minecraft:iron_ingot";
-        assertNull(draft.selectorError(copied));
+        draft.text = "c:ingots";
+        assertEquals(
+                ResourceFilterRule.Selector.tag(ResourceLocation.parse("c:ingots")),
+                ((io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match) draft.intent()).selector());
     }
 
     @Test
     void usesOnlyTheMatchingTypedCopyAndCreatesAnIdOnlyTagRule() {
-        var candidate = new TerminalTagClipboard.Candidate("minecraft:fluid", List.of("c:water"), "c:water");
-        var rule = TerminalTagPaste.read(candidate, "c:water");
+        var candidate = new TerminalTagClipboard.Candidate("minecraft:fluid", List.of("c:water"), "#water");
+        var rule = TerminalTagPaste.read(candidate, "#water");
         assertEquals(ResourceLocation.parse("minecraft:fluid"), rule.typeId());
         assertEquals(ResourceFilterRule.Selector.tag(ResourceLocation.parse("c:water")), rule.selector());
         assertEquals(ComponentCondition.Mode.ID_ONLY, rule.mode());

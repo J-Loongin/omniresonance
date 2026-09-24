@@ -118,6 +118,21 @@ public final class NetworkRuntimeRegistry {
         }
     }
 
+    /** Main-thread status dispatch for the currently published server only; stale runtimes are never reused. */
+    public void handleStatus(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.NetworkStatusRequest request) {
+        var owner = player.serverLevel().getServer();
+        requireServerThread(owner);
+        if (server == owner && runtime != null) runtime.terminal().status(player, request);
+    }
+
+    /** Registers lazy read-only command adapters; old dispatchers cannot access another server session. */
+    public void onRegisterCommands(net.neoforged.neoforge.event.RegisterCommandsEvent event) {
+        io.github.loongin.omniresonance.network.NetworkDiagnosticCommands.register(
+                event.getDispatcher(),
+                owner -> runtime != null && server == owner ? runtime.terminal().diagnostics() : null);
+    }
+
     private static final Logger LOGGER = LoggerFactory.getLogger(NetworkRuntimeRegistry.class);
     private final ServerConfig config;
     private final RuntimeComponentsFactory factory;
@@ -563,6 +578,17 @@ public final class NetworkRuntimeRegistry {
         directTransfers.installSampleWork(new TerminalAuxiliaryWork(filters::sampleStep, terminal::inventoryStep));
         var chunkLoading = new io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime(
                 server, repository, networks, nodes, authority, initial);
+        var diagnostics = new io.github.loongin.omniresonance.network.NetworkDiagnosticsService(
+                server, repository, networks, chunkLoading, topology::settingsSnapshot);
+        diagnostics.installRuntime(network -> {
+            var counts = directTransfers.queueCounts(network);
+            return new io.github.loongin.omniresonance.network.NetworkDiagnosticsSnapshot.RuntimeStats(
+                    directTransfers.telemetrySnapshot(network),
+                    counts.due(),
+                    counts.backoff(),
+                    terminal.pendingSyncTasks(network));
+        });
+        terminal.installDiagnostics(diagnostics);
         nodeManagement.installChunkAdmission(chunkLoading::admission);
         nodeMenus.installChunkStatus(chunkLoading::status);
         terminal.installNodeDirectory(new io.github.loongin.omniresonance.network.NodeDirectoryService(

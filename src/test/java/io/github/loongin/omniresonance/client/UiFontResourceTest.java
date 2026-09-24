@@ -22,7 +22,28 @@ import org.junit.jupiter.api.Test;
 
 final class UiFontResourceTest {
     private static final String FONT_FILE = "omniresonance:omniresonance_ui_subset.ttf";
-    private static final int MAXIMUM_SUBSET_BYTES = 1_048_576;
+    private static final int MAXIMUM_SUBSET_BYTES = 4_194_304;
+
+    @Test
+    void userNamesHaveConsistentGlyphsAcrossCommonChineseCharacters() throws Exception {
+        try (var input = new ByteArrayInputStream(resource("/assets/omniresonance/font/omniresonance_ui_subset.ttf"))) {
+            var font = java.awt.Font.createFont(java.awt.Font.TRUETYPE_FONT, input);
+            var charset = java.nio.charset.Charset.forName("GB2312");
+            int checked = 0;
+            for (int first = 0xb0; first <= 0xf7; first++) {
+                for (int second = 0xa1; second <= 0xfe; second++) {
+                    String value = new String(new byte[] {(byte) first, (byte) second}, charset);
+                    if (value.indexOf('\ufffd') >= 0) continue;
+                    int point = value.codePointAt(0);
+                    assertTrue(
+                            font.canDisplay(point),
+                            () -> "Missing common Chinese glyph U+" + Integer.toHexString(point));
+                    checked++;
+                }
+            }
+            org.junit.jupiter.api.Assertions.assertEquals(6763, checked);
+        }
+    }
 
     @Test
     void scaledDefinitionsKeepLogicalMetricsButProvideEnoughRasterPixels() throws IOException {

@@ -363,6 +363,16 @@ public final class NodeManagementService implements AutoCloseable {
                             physical.entity(),
                             source.entry().record().revision(),
                             targetName);
+            repository()
+                    .auditNetwork(
+                            edit.sourceNetworkId(),
+                            io.github.loongin.omniresonance.persistence.AuditEntry.of(
+                                    "move_node_out", actor, moved.nodeId(), ""));
+            repository()
+                    .auditNetwork(
+                            edit.targetNetworkId(),
+                            io.github.loongin.omniresonance.persistence.AuditEntry.of(
+                                    "move_node_in", actor, moved.nodeId(), ""));
             releaseExact(edit.token(), actor.getUUID());
             return moved;
         } catch (IllegalArgumentException targetRejected) {
@@ -457,6 +467,11 @@ public final class NodeManagementService implements AutoCloseable {
             throw rejected(Reason.NAME_CONFLICT);
         }
         NetworkNodeRecord linked = authority().link(networkId, physical.entity(), name);
+        repository()
+                .auditNetwork(
+                        networkId,
+                        io.github.loongin.omniresonance.persistence.AuditEntry.of(
+                                "link_node", actor, linked.nodeId(), ""));
         releaseExact(token, actor.getUUID());
         return linked;
     }
@@ -611,6 +626,22 @@ public final class NodeManagementService implements AutoCloseable {
         NetworkNodeDirectory.Entry updatedEntry =
                 new NetworkNodeDirectory.Entry(target.entry().networkId(), updated);
         nodes().update(target.entry(), updatedEntry);
+        var before = target.entry().record();
+        if (!before.equals(updated)) {
+            String action = !before.name().equals(updated.name())
+                    ? "rename_node"
+                    : before.enabled() != updated.enabled()
+                            ? "set_node_enabled"
+                            : before.chunkLoadingRequested() != updated.chunkLoadingRequested()
+                                    ? "set_chunk_loading"
+                                    : "set_node_mode";
+            repository()
+                    .auditNetwork(
+                            target.entry().networkId(),
+                            io.github.loongin.omniresonance.persistence.AuditEntry.of(
+                                    action, actor, updated.nodeId(), ""));
+        }
+
         releaseExact(token, actor.getUUID());
         return updated;
     }

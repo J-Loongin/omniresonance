@@ -12,7 +12,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 final class TerminalLayoutTest {
     @ParameterizedTest
-    @CsvSource({"320,240,8,12,304,216", "640,360,32,18,576,324", "480,270,24,13,432,243", "1920,1080,600,330,720,420"})
+    @CsvSource({"320,240,8,8,304,224", "640,360,100,50,440,260", "480,270,20,8,440,254", "1920,1080,740,410,440,260"})
     void calculatesFixedCenteredWindow(
             int screenWidth, int screenHeight, int expectedX, int expectedY, int expectedWidth, int expectedHeight) {
         TerminalLayout.Rect window =
@@ -26,20 +26,50 @@ final class TerminalLayoutTest {
     }
 
     @Test
+    void physicalNodeSharesTheTerminalFrameAtEveryGuiSize() {
+        for (int width : new int[] {320, 427, 640, 960}) {
+            assertEquals(
+                    NetworkSetupScreen.managementLayout(width, 240), ResonanceNodeScreen.standaloneLayout(width, 240));
+        }
+    }
+
+    @Test
+    void terminalHomeAndPresetPagesUseIdenticalFramesAtEveryWindowSize() {
+        for (int width : new int[] {320, 427, 640, 960}) {
+            assertEquals(TerminalLayout.terminal(width, 240), NetworkSetupScreen.managementLayout(width, 240));
+        }
+    }
+
+    @Test
+    void terminalUsesOneFixedDesignCanvasAcrossViewportSizes() {
+        for (int[] size : new int[][] {{320, 240}, {427, 240}, {640, 360}, {960, 540}, {1200, 300}, {300, 900}}) {
+            var layout = TerminalLayout.terminal(size[0], size[1]);
+            assertEquals(380, layout.window().width());
+            assertEquals(230, layout.window().height());
+            assertEquals(Math.floorDiv(size[0] - 380, 2), layout.window().x());
+            assertEquals(Math.floorDiv(size[1] - 230, 2), layout.window().y());
+            assertFalse(layout.compact());
+            assertEquals(20, TerminalActionLayout.of(layout.content()).primary().height());
+            var cards = TerminalHomeLayout.cards(layout.content(), layout.compact());
+            assertEquals(cards.get(0).y(), cards.get(2).y());
+        }
+    }
+
+    @Test
     void derivesTitleAndContentInsideTheFixedWindow() {
         TerminalLayout layout = TerminalLayout.calculate(320, 240);
 
         assertAll(
-                () -> assertEquals(new TerminalLayout.Rect(8, 12, 304, 28), layout.titleBar()),
-                () -> assertEquals(new TerminalLayout.Rect(16, 48, 288, 172), layout.content()),
+                () -> assertEquals(new TerminalLayout.Rect(8, 8, 304, 28), layout.titleBar()),
+                () -> assertEquals(new TerminalLayout.Rect(16, 44, 288, 180), layout.content()),
                 () -> assertEquals(6, TerminalLayout.SCROLLBAR_WIDTH));
     }
 
     @Test
     void compactModeStartsBelowFourHundredPanelPixels() {
         assertAll(
-                () -> assertTrue(TerminalLayout.calculate(443, 360).compact()),
-                () -> assertFalse(TerminalLayout.calculate(445, 360).compact()));
+                () -> assertTrue(TerminalLayout.calculate(415, 360).compact()),
+                () -> assertFalse(TerminalLayout.calculate(416, 360).compact()));
     }
 
     @Test

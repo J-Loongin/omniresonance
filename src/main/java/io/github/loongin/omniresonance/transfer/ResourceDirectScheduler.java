@@ -63,6 +63,10 @@ public final class ResourceDirectScheduler {
      * stable. Registered types are immutable and stable for this environment lifetime. Preparation is pure,
      * bounded by workUnits, and returns the actual progress made; zero progress is deferred to a later tick. */
     public interface Environment {
+        default @Nullable TransferTelemetry telemetry() {
+            return null;
+        }
+
         default @Nullable UUID domainNetwork(UUID nodeId) {
             return null;
         }
@@ -263,52 +267,90 @@ public final class ResourceDirectScheduler {
         while (budget.canStart()) {
             WorkKey work = due.poll(tick, budget::canStart);
             if (work == null) break;
-            if (work instanceof DomainKey domain) {
-                UUID networkId = environment.domainNetwork(domain.nodeId());
-                if (networkId == null) continue;
-                if (!budget.canStart()) {
-                    due.schedule(domain, networkId, tick);
-                    break;
-                }
-                long nextTick = environment.advanceDomain(domain.nodeId(), tick, settings, budget);
-                scheduleDomain(domain.nodeId(), networkId, nextTick);
-                continue;
-            }
-            if (work instanceof RecoveryKey recovery) {
-                if (!budget.canStart()) {
-                    due.scheduleLowPriority(recovery, recovery.networkId(), tick);
-                    break;
-                }
-                if (environment.hasRecoveryWork(recovery.networkId())) {
-                    environment.advanceRecovery(recovery.networkId(), settings);
-                    if (environment.hasRecoveryWork(recovery.networkId())) {
-                        due.scheduleLowPriority(recovery, recovery.networkId(), Math.addExact(tick, 1));
-                    }
-                }
-                continue;
-            }
-            Key key = (Key) work;
-            State s = states.get(key);
-            if (s == null) continue;
-            if (!budget.canStart()) {
-                due.schedule(key, s.config.networkId(), tick);
-                break;
-            }
-            TypeState t = selectType(s, tick);
-            if (t == null) {
-                schedule(s, tick);
-                continue;
-            }
-            long slow = budget.slowCalls();
+            var telemetry = environment.telemetry();
+            UUID measuredNetwork = telemetry == null
+                    ? null
+                    : work instanceof DomainKey domain
+                            ? environment.domainNetwork(domain.nodeId())
+                            : work instanceof RecoveryKey recovery
+                                    ? recovery.networkId()
+                                    : states.containsKey((Key) work)
+                                            ? states.get((Key) work).config.networkId()
+                                            : null;
+            long beforeCalls = telemetry == null ? 0 : budget.calls();
+            long beforeNanos = telemetry == null ? 0 : budget.elapsedNanos();
             try {
-                step(s, t, tick, settings, budget, slow);
-            } catch (RuntimeException failure) {
-                finish(s, t, tick, settings, true, failure);
+                if (work instanceof DomainKey domain) {
+                    UUID networkId = environment.domainNetwork(domain.nodeId());
+                    if (networkId == null) continue;
+                    if (!budget.canStart()) {
+                        due.schedule(domain, networkId, tick);
+                        break;
+                    }
+                    long nextTick = environment.advanceDomain(domain.nodeId(), tick, settings, budget);
+                    scheduleDomain(domain.nodeId(), networkId, nextTick);
+                    continue;
+                }
+                if (work instanceof RecoveryKey recovery) {
+                    if (!budget.canStart()) {
+                        due.scheduleLowPriority(recovery, recovery.networkId(), tick);
+                        break;
+                    }
+                    if (environment.hasRecoveryWork(recovery.networkId())) {
+                        environment.advanceRecovery(recovery.networkId(), settings);
+                        if (environment.hasRecoveryWork(recovery.networkId())) {
+                            due.scheduleLowPriority(recovery, recovery.networkId(), Math.addExact(tick, 1));
+                        }
+                    }
+                    continue;
+                }
+                Key key = (Key) work;
+                State s = states.get(key);
+                if (s == null) continue;
+                if (!budget.canStart()) {
+                    due.schedule(key, s.config.networkId(), tick);
+                    break;
+                }
+                TypeState t = selectType(s, tick);
+                if (t == null) {
+                    schedule(s, tick);
+                    continue;
+                }
+                long slow = budget.slowCalls();
+                try {
+                    step(s, t, tick, settings, budget, slow);
+                } catch (RuntimeException failure) {
+                    finish(s, t, tick, settings, true, failure);
+                }
+                if (budget.slowCalls() > slow && t.status != Status.FAILED) finish(s, t, tick, settings, true);
+                if (!budget.canStart() && t.nextRunTick <= tick) t.status = Status.WAITING_BUDGET;
+                schedule(s, tick);
+            } finally {
+                if (telemetry != null && measuredNetwork != null)
+                    telemetry.work(
+                            measuredNetwork,
+                            tick,
+                            budget.calls() - beforeCalls,
+                            Math.max(0, budget.elapsedNanos() - beforeNanos));
             }
-            if (budget.slowCalls() > slow && t.status != Status.FAILED) finish(s, t, tick, settings, true);
-            if (!budget.canStart() && t.nextRunTick <= tick) t.status = Status.WAITING_BUDGET;
-            schedule(s, tick);
         }
+    }
+
+    /** Metadata-only observer scan, O(network configurations × registered types); no probes, callbacks or queue changes. */
+    public TransferTelemetry.QueueCounts queueCounts(UUID network, long tick, ServerSettings settings) {
+        int dueCount = 0, backoff = 0;
+        for (var key : byNetwork.getOrDefault(network, Set.of())) {
+            State state = states.get(key);
+            if (state == null || !(state.config.policy() instanceof ResourceTransferPolicy.Input)) continue;
+            long next = Long.MAX_VALUE;
+            for (var type : state.types)
+                if (state.config.policy().scope().includes(type.type)) next = Math.min(next, type.nextRunTick);
+            next = Math.max(next, state.blockedUntilTick);
+            if (next <= tick) dueCount++;
+            else if (state.failures > 0
+                    || state.emptyChecks >= settings.scheduler().emptyChecksBeforeSleep()) backoff++;
+        }
+        return new TransferTelemetry.QueueCounts(dueCount, backoff);
     }
 
     /** Pure server-thread status lookup; does not simulate, discover endpoints or change cursors. */
@@ -671,6 +713,8 @@ public final class ResourceDirectScheduler {
             return;
         }
         if (result.moved() > 0) {
+            if (environment.telemetry() != null)
+                environment.telemetry().moved(s.config.networkId(), t.type, tick, result.moved());
             var out = t.output.config.policy();
             t.output.types[t.index].window.received(tick, result.moved(), out.rate(t.type), out.intervalTicks());
             t.windowMoved = true;
@@ -679,13 +723,29 @@ public final class ResourceDirectScheduler {
             t.output.types[t.index].window.quarantineUncertainTargetInsert(
                     tick, t.output.config.policy().intervalTicks());
         if (result.failure() == ResourceTransferEngine.Failure.UNKNOWN_MUTATION) {
-            finish(s, t, tick, settings, true, result.cause());
+            finish(
+                    s,
+                    t,
+                    tick,
+                    settings,
+                    true,
+                    result.cause(),
+                    TransferIncident.reason(result.failure()),
+                    result.unknownStage());
             return;
         }
         t.spent = Math.addExact(t.spent, result.removed());
         if (result.failure() != ResourceTransferEngine.Failure.NONE
                 && result.failure() != ResourceTransferEngine.Failure.REFUSED) {
-            finish(s, t, tick, settings, true, result.cause());
+            finish(
+                    s,
+                    t,
+                    tick,
+                    settings,
+                    true,
+                    result.cause(),
+                    TransferIncident.reason(result.failure()),
+                    result.unknownStage());
             return;
         }
         if (t.spent >= p.rate(t.type)) {
@@ -832,20 +892,64 @@ public final class ResourceDirectScheduler {
             ServerSettings settings,
             boolean failed,
             @Nullable RuntimeException cause) {
+        finish(
+                s,
+                t,
+                tick,
+                settings,
+                failed,
+                cause,
+                cause == null ? TransferIncident.Reason.SLOW_CALL : TransferIncident.Reason.EXCEPTION,
+                ResourceTransferEngine.Stage.NONE);
+    }
+
+    private void finish(
+            State s,
+            TypeState t,
+            long tick,
+            ServerSettings settings,
+            boolean failed,
+            @Nullable RuntimeException cause,
+            TransferIncident.Reason reason,
+            ResourceTransferEngine.Stage incidentStage) {
         var cfg = settings.scheduler();
         if (failed && tick >= s.nextDiagnosticTick) {
-            LOGGER.error(
-                    "Resource direct configuration failed; applying bounded retry backoff (node={}, channel={}, type={})",
-                    s.config.nodeId(),
-                    s.config.channelId(),
-                    t.type,
-                    cause);
+            if (reason == TransferIncident.Reason.SLOW_CALL)
+                LOGGER.warn(
+                        "Slow resource direct call; applying bounded retry backoff (node={}, channel={}, type={})",
+                        s.config.nodeId(),
+                        s.config.channelId(),
+                        t.type);
+            else {
+                LOGGER.error(
+                        "Resource direct configuration failed; applying bounded retry backoff (node={}, channel={}, type={}, reason={}, stage={})",
+                        s.config.nodeId(),
+                        s.config.channelId(),
+                        t.type,
+                        reason,
+                        incidentStage,
+                        cause);
+            }
             s.nextDiagnosticTick = Math.addExact(tick, cfg.breakerBackoffTicks().getFirst());
         }
         long delay = s.config.policy().intervalTicks();
         if (failed) {
             s.failures++;
             t.status = Status.FAILED;
+            if (environment.telemetry() != null)
+                environment
+                        .telemetry()
+                        .failure(
+                                s.config.networkId(),
+                                tick,
+                                "direct_transfer",
+                                TransferIncident.of(
+                                        s.config.nodeId(),
+                                        t.output == null ? null : t.output.config.nodeId(),
+                                        s.config.channelId(),
+                                        t.type,
+                                        reason,
+                                        incidentStage));
             if (s.failures >= cfg.failureThreshold()) {
                 int stage = Math.min(s.breakerStage, cfg.breakerBackoffTicks().size() - 1);
                 delay = Math.max(delay, cfg.breakerBackoffTicks().get(stage));

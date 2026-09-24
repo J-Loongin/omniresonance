@@ -140,7 +140,7 @@ class ManagedSavedDataTest {
         assertTrue(migrated.domainConfiguration(NODE_A).isEmpty());
         assertEquals(NodeMode.DIRECT, migrated.findNode(NODE_A).orElseThrow().mode());
         CompoundTag saved = migrated.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(9, saved.getInt("schema_version"));
+        assertEquals(10, saved.getInt("schema_version"));
         assertEquals(0, saved.getLong("management_revision"));
         assertEquals(0, saved.getLong("last_tunnel_number"));
         assertEquals(0, saved.getLong("topology_revision"));
@@ -182,7 +182,8 @@ class ManagedSavedDataTest {
                 Optional.of(new DomainNodeConfiguration(NODE_B, TransferDirection.OUTPUT)),
                 loaded.domainConfiguration(NODE_B));
         CompoundTag currentExpected = before.copy();
-        currentExpected.putInt("schema_version", 9);
+        currentExpected.putInt("schema_version", 10);
+        currentExpected.put("audit_entries", new ListTag());
         currentExpected.putLong("bucket_created_mask", 0);
         CompoundTag expectedDomain = currentExpected
                 .getList("domain_configurations", Tag.TAG_COMPOUND)
@@ -992,7 +993,8 @@ class ManagedSavedDataTest {
 
     private static CompoundTag currentNetworkTag() {
         CompoundTag tag = networkTag();
-        tag.putInt("schema_version", 9);
+        tag.putInt("schema_version", 10);
+        tag.put("audit_entries", new ListTag());
         tag.putLong("bucket_created_mask", 0);
         tag.put("recovery", new ListTag());
         return tag;
@@ -1000,7 +1002,8 @@ class ManagedSavedDataTest {
 
     private static CompoundTag currentOwnerTag(boolean withDefault) {
         CompoundTag tag = ownerTag(withDefault);
-        tag.putInt("schema_version", 3);
+        tag.putInt("schema_version", 4);
+        tag.put("audit_entries", new ListTag());
         tag.putLong("preset_library_revision", 0);
         tag.put("filter_presets", new ListTag());
         return tag;

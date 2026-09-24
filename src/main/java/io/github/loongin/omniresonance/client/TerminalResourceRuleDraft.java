@@ -42,7 +42,7 @@ final class TerminalResourceRuleDraft {
                 text = exact.resourceId().toString();
             else if (match.selector() instanceof ResourceFilterRule.TagSelector tag) {
                 selector = 1;
-                text = tag.tagId().toString();
+                text = "#" + tag.tagId();
             } else if (match.selector() instanceof ResourceFilterRule.Glob glob) {
                 selector = 2;
                 text = glob.glob().pattern();
@@ -53,12 +53,30 @@ final class TerminalResourceRuleDraft {
         }
     }
 
-    @Nullable
-    String selectorError(@Nullable TerminalTagClipboard.Candidate copied) {
-        if (selector != 0 && selector != 1) return null;
-        if (text.startsWith("#")) return selector == 0 ? "tag_in_exact_id" : "tag_prefix";
-        var tag = TerminalTagPaste.read(copied, text);
-        return selector == 0 && tag != null ? "tag_in_exact_id" : null;
+    boolean pasteTag(@Nullable TerminalTagClipboard.Candidate candidate, String value) {
+        var match = TerminalTagPaste.read(candidate, value);
+        if (match == null) return false;
+        type = match.typeId();
+        selector = 1;
+        text = "#" + ((ResourceFilterRule.TagSelector) match.selector()).tagId();
+        mode = ComponentCondition.Mode.ID_ONLY;
+        source = ComponentCondition.idOnly();
+        sampleToken = null;
+        selected.clear();
+        dirty = true;
+        return true;
+    }
+
+    void editText(String value) {
+        text = value;
+        if (selector < 3 && value.startsWith("#")) selector = 1;
+        dirty = true;
+    }
+
+    void select(int value) {
+        selector = value;
+        if (selector == 1 && !text.startsWith("#")) text = "#" + text;
+        else if (selector != 1 && text.startsWith("#")) text = text.substring(1);
     }
 
     ResourceRuleIntent intent() {
@@ -66,7 +84,8 @@ final class TerminalResourceRuleDraft {
         ResourceFilterRule.Selector choice =
                 switch (selector) {
                     case 0 -> ResourceFilterRule.Selector.exact(canonical(text));
-                    case 1 -> ResourceFilterRule.Selector.tag(canonical(text));
+                    case 1 ->
+                        ResourceFilterRule.Selector.tag(canonical(text.startsWith("#") ? text.substring(1) : text));
                     case 2 -> ResourceFilterRule.Selector.glob(text);
                     case 3 -> ResourceFilterRule.Selector.wholeType();
                     default -> throw new IllegalArgumentException("Invalid selector");

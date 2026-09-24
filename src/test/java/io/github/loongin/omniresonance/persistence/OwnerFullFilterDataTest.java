@@ -12,7 +12,7 @@ class OwnerFullFilterDataTest {
     @Test
     void newOwnerUsesFullResourceSchema() {
         var owner = OwnerSavedData.create(new UUID(1, 2), null);
-        assertEquals(3, owner.save(new CompoundTag(), RegistryAccess.EMPTY).getInt("schema_version"));
+        assertEquals(4, owner.save(new CompoundTag(), RegistryAccess.EMPTY).getInt("schema_version"));
     }
 
     @Test
@@ -20,6 +20,7 @@ class OwnerFullFilterDataTest {
         UUID id = new UUID(4, 5), ownerId = new UUID(1, 2), network = new UUID(6, 7);
         CompoundTag old = new CompoundTag();
         old.putInt("schema_version", 2);
+        old.remove("audit_entries");
         old.putUUID("owner_id", ownerId);
         old.putUUID("default_network_id", network);
         old.putLong("preset_library_revision", 17);
@@ -48,7 +49,7 @@ class OwnerFullFilterDataTest {
                         new UUID(8, 9), new UUID(10, 11))));
         restored.putPreset(full, 17, -1, -1);
         var tag = restored.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(3, tag.getInt("schema_version"));
+        assertEquals(4, tag.getInt("schema_version"));
         var loaded = OwnerSavedData.load(ownerId, tag);
         assertEquals(full, loaded.findPreset(id).orElseThrow());
         org.junit.jupiter.api.Assertions.assertFalse(loaded.isDirty());

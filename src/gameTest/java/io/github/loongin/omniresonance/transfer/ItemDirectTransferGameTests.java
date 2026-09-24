@@ -173,6 +173,16 @@ public final class ItemDirectTransferGameTests {
             f.tick(100);
             helper.assertTrue(f.chest(1).getItem(0).getCount() == 16, "Retention was violated");
             helper.assertTrue(f.chest(7).getItem(0).getCount() == 64, "Inputs did not share the output quota");
+            var stats = f.runtime.telemetrySnapshot(f.data.metadata().id());
+            helper.assertTrue(
+                    stats.tick() == 100
+                            && stats.calls() > 0
+                            && stats.moved().stream()
+                                    .anyMatch(value -> value.type().equals(ResourceTypes.ITEM) && value.amount() == 64),
+                    "Real direct transfers did not publish telemetry");
+            helper.assertTrue(
+                    stats.equals(f.runtime.telemetrySnapshot(f.data.metadata().id())),
+                    "Reading telemetry changed its counters");
             f.chest(4).setItem(0, new ItemStack(Items.IRON_INGOT, 32));
             f.runtime.nodeChanged(b);
             f.tick(105);

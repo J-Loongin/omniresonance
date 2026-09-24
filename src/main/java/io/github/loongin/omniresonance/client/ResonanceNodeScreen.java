@@ -346,6 +346,10 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         rebuildIfActive();
     }
 
+    static TerminalLayout standaloneLayout(int width, int height) {
+        return TerminalLayout.terminal(width, height);
+    }
+
     @Override
     protected void init() {
         tunnelResultRows.clear();
@@ -353,11 +357,13 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         resourceRows.clear();
         modalBackdrop.clear();
         layout = terminalParent == null
-                ? TerminalLayout.calculate(width, height)
+                ? standaloneLayout(width, height)
                 : terminalParent.configurationLayout(width, height);
         imageWidth = layout.window().width();
         imageHeight = layout.window().height();
         super.init();
+        leftPos = layout.window().x();
+        topPos = layout.window().y();
         font = TerminalText.font(Objects.requireNonNull(minecraft, "minecraft"));
         bodyBounds = layout.content();
         nameField = null;
@@ -2337,7 +2343,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
 
     @Override
     public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        if (terminalParent != null) terminalParent.render(graphics, -1, -1, partialTick);
+        if (terminalParent != null) terminalParent.renderBackdrop(graphics, partialTick);
         else {
             graphics.fill(0, 0, width, height, TerminalTheme.WORLD_DIM);
             TerminalTheme.renderWindow(graphics, layout);

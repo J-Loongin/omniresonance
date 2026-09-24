@@ -84,6 +84,14 @@ final class TerminalText {
                 false);
     }
 
+    static java.util.List<FormattedCharSequence> tooltipLines(Font font, Component text, int screenWidth) {
+        return font.split(body(text), Math.max(1, Math.min(220, screenWidth - 24)));
+    }
+
+    static void renderTooltip(GuiGraphics graphics, Font font, Component text, int x, int y) {
+        graphics.renderTooltip(font, tooltipLines(font, text, graphics.guiWidth()), x, y);
+    }
+
     static String networkLabel(String value, TerminalLayout.Rect bounds, ToIntFunction<String> measure) {
         return ellipsize(value, bounds.width() - 8, measure);
     }

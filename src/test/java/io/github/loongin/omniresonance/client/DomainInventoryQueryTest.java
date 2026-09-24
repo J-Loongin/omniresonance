@@ -18,6 +18,20 @@ class DomainInventoryQueryTest {
             () -> "a useful metal");
 
     @Test
+    void fullAndRecipeViewerTagQueriesBothFindMatchingStoredResources() {
+        var wood = new DomainInventoryQuery.Document(
+                "stripped birch wood",
+                "minecraft",
+                "minecraft:stripped_birch_wood",
+                "minecraft:item",
+                List.of("c:stripped_woods"),
+                () -> "");
+        assertTrue(DomainInventoryQuery.parse("#c:stripped_woods").matches(wood));
+        assertTrue(DomainInventoryQuery.parse("#stripped_woods").matches(wood));
+        assertFalse(DomainInventoryQuery.parse("#c:stripped_woods").matches(IRON));
+    }
+
+    @Test
     void fieldsAndBooleanGroupsUseQuotedPhrasesWithoutRegex() {
         assertTrue(DomainInventoryQuery.parse("\"iron ingot\" @mine #ingots type:item !*gold")
                 .matches(IRON));

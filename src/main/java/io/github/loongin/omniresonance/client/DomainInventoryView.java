@@ -354,7 +354,7 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     void tick(boolean frozen, java.util.function.LongSupplier clock) {
-        if (!receiver.mirror().ready() && loadingTicks < 6) loadingTicks++;
+        if (!receiver.mirror().ready() && !TerminalInteractionPolicy.loadingVisible(loadingTicks)) loadingTicks++;
         if (noticeTicks > 0 && --noticeTicks == 0) localNotice = null;
         if (pendingOperation == 0
                 && operationStatus != null
@@ -467,7 +467,7 @@ final class DomainInventoryView implements AutoCloseable {
                     body.width() - 16,
                     TerminalTheme.ERROR);
         } else if (!receiver.mirror().ready()) {
-            if (loadingTicks < 6) return;
+            if (!TerminalInteractionPolicy.loadingVisible(loadingTicks)) return;
             graphics.drawWordWrap(
                     font,
                     TerminalText.body(

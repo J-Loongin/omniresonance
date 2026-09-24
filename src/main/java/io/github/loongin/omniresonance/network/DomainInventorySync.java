@@ -56,7 +56,6 @@ public final class DomainInventorySync implements AutoCloseable {
         if (generation <= 0) throw new IllegalArgumentException("Invalid inventory generation");
         cancel(player);
         views.put(player, new View(network, session, generation));
-        order.addLast(player);
         waiting.addLast(player);
     }
 
@@ -75,22 +74,21 @@ public final class DomainInventorySync implements AutoCloseable {
         int idle = 0;
         for (int step = 0;
                 step < maximumWork
-                        && !order.isEmpty()
+                        && (!order.isEmpty() || !waiting.isEmpty() && activeFull < limits.concurrentFull())
                         && workAvailable.getAsBoolean()
                         && remaining >= DomainInventoryFrame.HEADER_BYTES + 1;
                 step++) {
+            boolean worked = false;
+            // Waiting requests do not consume active receiver turns. Admission still costs one bounded turn.
+            if (!waiting.isEmpty() && activeFull < limits.concurrentFull()) {
+                UUID admitted = waiting.removeFirst();
+                admit(admitted, views.get(admitted), limits.pendingEntries());
+                order.addLast(admitted);
+                worked = true;
+            }
             UUID player = order.removeFirst();
             order.addLast(player);
             View view = views.get(player);
-            boolean worked = false;
-            if (view.receiver == null
-                    && view.failure == null
-                    && player.equals(waiting.peekFirst())
-                    && activeFull < limits.concurrentFull()) {
-                waiting.removeFirst();
-                admit(player, view, limits.pendingEntries());
-                worked = true;
-            }
             if (view.receiver != null) {
                 worked |= view.publisher.work();
                 reconcile(view);
@@ -119,7 +117,7 @@ public final class DomainInventorySync implements AutoCloseable {
                 if (frame instanceof DomainInventoryFrame.Failed) cancel(player);
             }
             idle = worked ? 0 : idle + 1;
-            if (idle >= order.size()) break;
+            if (idle >= order.size() && (waiting.isEmpty() || activeFull >= limits.concurrentFull())) break;
         }
         return limits.bytesServer() - remaining;
     }
@@ -176,7 +174,7 @@ public final class DomainInventorySync implements AutoCloseable {
         check();
         var view = views.get(player);
         if (view == null) return;
-        waiting.remove(player);
+        if (waiting.remove(player)) order.addLast(player);
         if (view.receiver != null) {
             view.receiver.abort(reason);
             reconcile(view);
@@ -196,6 +194,16 @@ public final class DomainInventorySync implements AutoCloseable {
             publishers.remove(view.network, view.publisher);
             view.publisher.close();
         }
+    }
+
+    /** Counts pending full/delta work from admitted view metadata only; never activates a publisher. */
+    public int pendingTasks(UUID network) {
+        check();
+        int count = 0;
+        for (var view : views.values())
+            if (view.network.equals(network)
+                    && (view.receiver == null || view.receiver.fullSync() || view.receiver.pendingCount() > 0)) count++;
+        return count;
     }
 
     /** Owner-thread aggregate diagnostics, not player-visible authority. */
@@ -218,6 +226,7 @@ public final class DomainInventorySync implements AutoCloseable {
     public void close() {
         check();
         while (!order.isEmpty()) cancel(order.peekFirst());
+        while (!waiting.isEmpty()) cancel(waiting.peekFirst());
     }
 
     private void check() {

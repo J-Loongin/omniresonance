@@ -38,6 +38,10 @@ public final class DomainInputScheduler {
     /** Server-thread authority and counted capability boundary. Direct-first returns -1 when clear, otherwise
      * the next safe review tick; it must not treat mere existence of a direct binding as unfinished work. */
     public interface Environment {
+        default @Nullable TransferTelemetry telemetry() {
+            return null;
+        }
+
         List<ResourceLocation> types();
 
         boolean active(Configuration config);
@@ -176,7 +180,14 @@ public final class DomainInputScheduler {
                     nodeId,
                     type.type,
                     failure);
-            finish(state, type, tick, settings, true);
+            finish(
+                    state,
+                    type,
+                    tick,
+                    settings,
+                    true,
+                    TransferIncident.Reason.EXCEPTION,
+                    ResourceTransferEngine.Stage.NONE);
         }
         return due(state);
     }
@@ -342,6 +353,8 @@ public final class DomainInputScheduler {
                                 environment.recovery(c.networkId()),
                                 settings.recoveryLimits(),
                                 b);
+                if (result.moved() > 0 && environment.telemetry() != null)
+                    environment.telemetry().moved(c.networkId(), t.type, tick, result.moved());
                 if (result.removed() > 0) {
                     t.window.moved(tick, result.removed(), c.policy().rate(t.type));
                     t.moved = true;
@@ -365,7 +378,14 @@ public final class DomainInputScheduler {
                             result.unknownStage(),
                             result.unknownRequested(),
                             result.cause());
-                    finish(state, t, tick, settings, true);
+                    finish(
+                            state,
+                            t,
+                            tick,
+                            settings,
+                            true,
+                            TransferIncident.reason(result.failure()),
+                            result.unknownStage());
                     return;
                 }
                 if ((batch > 1 || c.policy().keepCount() > 0)
@@ -412,8 +432,27 @@ public final class DomainInputScheduler {
     }
 
     private void finish(State s, TypeState t, long tick, ServerSettings settings, boolean failure) {
+        finish(s, t, tick, settings, failure, TransferIncident.Reason.SLOW_CALL, ResourceTransferEngine.Stage.NONE);
+    }
+
+    private void finish(
+            State s,
+            TypeState t,
+            long tick,
+            ServerSettings settings,
+            boolean failure,
+            TransferIncident.Reason reason,
+            ResourceTransferEngine.Stage stage) {
         long delay = s.config.policy().intervalTicks();
         if (failure) {
+            if (environment.telemetry() != null)
+                environment
+                        .telemetry()
+                        .failure(
+                                s.config.networkId(),
+                                tick,
+                                "domain_input",
+                                TransferIncident.of(s.config.nodeId(), null, null, t.type, reason, stage));
             if (s.failures < Integer.MAX_VALUE) s.failures++;
             if (s.failures >= settings.scheduler().failureThreshold()) {
                 var stages = settings.scheduler().breakerBackoffTicks();
@@ -479,6 +518,19 @@ public final class DomainInputScheduler {
             }
         }
         return null;
+    }
+
+    /** Read-only node metadata counters; never resolves capabilities, opens storage or advances a cursor. */
+    public TransferTelemetry.QueueCounts queueCounts(UUID node, long tick, ServerSettings settings) {
+        checkThread();
+        State state = states.get(node);
+        if (state == null) return new TransferTelemetry.QueueCounts(0, 0);
+        long next = due(state);
+        boolean backoff = state.failures > 0;
+        for (var type : state.types)
+            if (state.config.policy().scope().includes(type.type))
+                backoff |= type.emptyChecks >= settings.scheduler().emptyChecksBeforeSleep();
+        return new TransferTelemetry.QueueCounts(next <= tick ? 1 : 0, next > tick && backoff ? 1 : 0);
     }
 
     private static long due(State s) {

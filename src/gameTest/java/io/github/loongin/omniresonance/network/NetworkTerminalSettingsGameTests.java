@@ -51,6 +51,146 @@ public final class NetworkTerminalSettingsGameTests {
 
     private NetworkTerminalSettingsGameTests() {}
 
+    @GameTest(template = "bootstrap", timeoutTicks = 80)
+    public static void statusSubscriptionRefreshesAndRevocationClearsTheSnapshot(GameTestHelper helper)
+            throws Exception {
+        var f = new Fixture(helper);
+        var server = helper.getLevel().getServer();
+        var config = new ServerConfig.State(1, 1, true, ServerSettings.defaults());
+        var chunks = new io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime(
+                server, f.repository, f.directory, f.nodes, f.nodeAuthority, config);
+        chunks.tick(config);
+        var frames = new ArrayList<io.github.loongin.omniresonance.networking.NetworkStatusFrame>();
+        f.terminal.installDiagnostics(
+                new NetworkDiagnosticsService(server, f.repository, f.directory, chunks, ServerSettings::defaults));
+        f.terminal.installStatusSender((p, frame) -> frames.add(frame));
+        var administrator = player(helper, ADMINISTRATOR);
+        f.open(player(helper, OWNER), OWNER_VIEW, OWNER_SESSION);
+        f.open(administrator, ADMIN_VIEW, ADMIN_SESSION);
+        f.terminal.handle(administrator, new NetworkTerminalRequest.OpenNetwork(ADMIN_VIEW, ADMIN_SESSION, 1, NETWORK));
+        f.terminal.status(
+                administrator,
+                new io.github.loongin.omniresonance.networking.NetworkStatusRequest(
+                        ADMIN_VIEW, ADMIN_SESSION, 1, true));
+        helper.assertTrue(frames.size() == 1 && frames.getFirst().snapshot() != null, "Authorized status did not open");
+        f.terminal.tick();
+        helper.assertTrue(frames.size() == 1, "Status refreshed more often than 20gt");
+        helper.startSequence()
+                .thenIdle(21)
+                .thenExecute(() -> {
+                    f.terminal.tick();
+                    helper.assertTrue(frames.size() == 2, "Status subscription did not refresh");
+                    f.terminal.status(
+                            administrator,
+                            new io.github.loongin.omniresonance.networking.NetworkStatusRequest(
+                                    ADMIN_VIEW, ADMIN_SESSION, 1, false));
+                })
+                .thenIdle(21)
+                .thenExecute(() -> {
+                    f.terminal.tick();
+                    helper.assertTrue(frames.size() == 2, "Closed status view kept publishing");
+                    f.terminal.status(
+                            administrator,
+                            new io.github.loongin.omniresonance.networking.NetworkStatusRequest(
+                                    ADMIN_VIEW, ADMIN_SESSION, 2, true));
+                    helper.assertTrue(
+                            frames.size() == 3 && frames.getLast().generation() == 2,
+                            "New status generation did not open");
+                    var data = f.repository.findLoadedNetwork(NETWORK).orElseThrow();
+                    var change = data.prepareAdministratorChange(ADMINISTRATOR, false, data.managementRevision(), -1);
+                    var index = f.directory.prepareMetadataReplacement(change.previous(), change.next());
+                    data.commitAdministratorChange(change);
+                    f.directory.commitMetadataReplacement(index);
+                })
+                .thenIdle(21)
+                .thenExecute(() -> {
+                    try {
+                        f.terminal.tick();
+                        helper.assertTrue(
+                                frames.getLast().snapshot() == null, "Revocation retained private diagnostic data");
+                        int count = frames.size();
+                        f.terminal.tick();
+                        helper.assertTrue(frames.size() == count, "Rejected subscription kept publishing");
+                    } finally {
+                        chunks.close();
+                        try {
+                            f.close();
+                        } catch (java.io.IOException failure) {
+                            throw new IllegalStateException(failure);
+                        }
+                    }
+                })
+                .thenSucceed();
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void diagnosticsCommandsReadWithoutActivatingStorageOrGrantingRoles(GameTestHelper helper)
+            throws Exception {
+        try (var f = new Fixture(helper)) {
+            var config = new ServerConfig.State(1, 1, true, ServerSettings.defaults());
+            var server = helper.getLevel().getServer();
+            try (var chunks = new io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime(
+                    server, f.repository, f.directory, f.nodes, f.nodeAuthority, config)) {
+                chunks.tick(config);
+                var diagnostics = new NetworkDiagnosticsService(
+                        server, f.repository, f.directory, chunks, ServerSettings::defaults);
+                var data = f.repository.findLoadedNetwork(NETWORK).orElseThrow();
+                var before = data.save(
+                        new net.minecraft.nbt.CompoundTag(), helper.getLevel().registryAccess());
+                boolean dirty = data.isDirty();
+                var snapshot = diagnostics.inspect(NETWORK).orElseThrow();
+                helper.assertTrue(
+                        snapshot.storageState().equals("not_loaded") && snapshot.knownVariants() == -1,
+                        "Unloaded storage was presented as empty or activated");
+                helper.assertTrue(
+                        f.repository.inspectDomain(NETWORK) == null
+                                || f.repository.inspectDomain(NETWORK).state()
+                                        == io.github.loongin.omniresonance.persistence.DomainStorage.State.NOT_LOADED,
+                        "Inspection loaded storage");
+                var dispatcher =
+                        new com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack>();
+                int[] reads = {0};
+                NetworkDiagnosticCommands.register(dispatcher, requested -> {
+                    reads[0]++;
+                    return diagnostics;
+                });
+                var source = server.createCommandSourceStack().withSuppressedOutput();
+                helper.assertTrue(
+                        !dispatcher.getRoot().getChild("omniresonance").canUse(source.withPermission(3)),
+                        "Read commands exposed below permission level four");
+                helper.assertTrue(
+                        dispatcher.execute("omniresonance network show " + NETWORK, source.withPermission(4)) == 1,
+                        "Inspect command was not wired to the common snapshot");
+                helper.assertTrue(
+                        dispatcher.execute("omniresonance network list " + OWNER, source.withPermission(4)) > 0,
+                        "Owner-filtered list was not available");
+                String parsedCommand = "omniresonance network show " + NETWORK;
+                var parsed = dispatcher
+                        .parse(parsedCommand, source.withPermission(4))
+                        .getContext()
+                        .build(parsedCommand);
+                helper.assertTrue(
+                        parsed.getCommand().run(parsed.copyFor(source.withPermission(3))) == 0,
+                        "Previously parsed command bypassed the execution-time permission check");
+                helper.assertTrue(reads[0] == 2, "Unexpected provider access");
+                helper.assertTrue(
+                        data.isDirty() == dirty
+                                && before.equals(data.save(
+                                        new net.minecraft.nbt.CompoundTag(),
+                                        helper.getLevel().registryAccess())),
+                        "Diagnostics changed authority or appended audit data");
+                helper.assertTrue(
+                        !data.metadata().administrators().contains(OTHER_OWNER), "Read command granted a role");
+                var loaded = f.repository.domainStorage(NETWORK);
+                loaded.activate();
+                helper.assertTrue(
+                        diagnostics.inspect(NETWORK).orElseThrow().knownVariants() == 0,
+                        "Already activated empty ledger did not report its known count");
+            }
+        }
+        helper.succeed();
+    }
+
     @GameTest(template = "bootstrap")
     public static void nodePrototypeSearchAndRenameUseBoundedAuthority(GameTestHelper helper) throws Exception {
         try (var f = new Fixture(helper)) {

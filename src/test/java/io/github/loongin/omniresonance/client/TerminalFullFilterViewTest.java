@@ -76,6 +76,234 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
+    void pastingShortRecipeSearchIntoTheEditorRestoresTheTypedFullTag() {
+        TerminalTagClipboard.clear();
+        try {
+            TerminalTagClipboard.copy("minecraft:fluid", List.of("c:water"), ignored -> {});
+            var view = new TerminalFilterView(() -> {});
+            view.apply(STATE);
+            var edit = new NetworkTerminalState.PresetEdit(
+                    NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+            view.apply(edit);
+            var actions = new ArrayList<TerminalFilterView.Action>();
+            var layout = TerminalLayout.terminal(640, 360);
+            var widgets = build(view, layout, edit, actions);
+            var field = (TerminalEditBox) widgets.stream()
+                    .filter(w -> key(w).endsWith(".selector_value"))
+                    .findFirst()
+                    .orElseThrow();
+            field.setValue(TerminalTagClipboard.recent().text());
+            widgets = build(view, layout, edit, actions);
+            field = (TerminalEditBox) widgets.stream()
+                    .filter(w -> key(w).endsWith(".selector_value"))
+                    .findFirst()
+                    .orElseThrow();
+            assertEquals("#c:water", field.getValue());
+            assertTrue(widgets.stream().anyMatch(w -> key(w).endsWith(".resource_fluid")));
+            assertTrue(widgets.stream().anyMatch(w -> key(w).endsWith(".selector_1")));
+            assertTrue(actions.isEmpty());
+            ((TerminalButton) widgets.stream()
+                            .filter(w -> key(w).endsWith(".save"))
+                            .findFirst()
+                            .orElseThrow())
+                    .onPress();
+            var intent = (io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match)
+                    ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent();
+            assertEquals(ResourceTypes.FLUID, intent.typeId());
+            assertEquals(ResourceFilterRule.Selector.tag(ResourceLocation.parse("c:water")), intent.selector());
+        } finally {
+            TerminalTagClipboard.clear();
+        }
+    }
+
+    @Test
+    void proportionalSmallEditorScrollsToSamplingWithoutMovingTheFooter() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(STATE);
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var layout = TerminalLayout.terminal(320, 240);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var widgets = build(view, layout, edit, actions);
+        var footer = TerminalActionLayout.of(layout.content());
+        for (int index = 0; index < 2; index++) {
+            assertTrue(view.scroll(layout.content().x() + 12, layout.content().y() + 12, -1));
+            widgets = build(view, layout, edit, actions);
+        }
+        var field = (TerminalEditBox) widgets.stream()
+                .filter(w -> key(w).endsWith(".selector_value"))
+                .findFirst()
+                .orElseThrow();
+        field.setValue("minecraft:diamond");
+        ((TerminalButton) widgets.stream()
+                        .filter(w -> key(w).endsWith(".components_id_only"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        widgets = build(view, layout, edit, actions);
+        assertTrue(view.scroll(layout.content().x() + 12, layout.content().y() + 12, -1));
+        widgets = build(view, layout, edit, actions);
+        ((TerminalSampleSlot) widgets.stream()
+                        .filter(TerminalSampleSlot.class::isInstance)
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        assertTrue(view.closeLocalLayer());
+        assertTrue(view.resourceDirty());
+        assertTrue(actions.isEmpty());
+        widgets = build(view, layout, edit, actions);
+        for (var widget : widgets) {
+            assertTrue(widget.getY() >= layout.content().y()
+                    && widget.getBottom() <= layout.content().bottom());
+            if (key(widget).endsWith(".save") || key(widget).endsWith(".cancel"))
+                assertEquals(footer.primary().y(), widget.getY());
+            else assertTrue(widget.getBottom() <= footer.content().bottom());
+        }
+    }
+
+    @Test
+    void sampleSelectionIsLocalAndReferenceSelectionPreservesTheDraft() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0)));
+        view.apply(STATE);
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.terminal(640, 360);
+        var widgets = build(view, layout, edit, actions);
+        ((TerminalButton) widgets.stream()
+                        .filter(w -> key(w).endsWith(".components_id_only"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        widgets = build(view, layout, edit, actions);
+        assertFalse(widgets.stream().anyMatch(w -> key(w).endsWith(".inventory_slot") || key(w).endsWith(".tank")));
+        var sample = (TerminalSampleSlot) widgets.stream()
+                .filter(TerminalSampleSlot.class::isInstance)
+                .findFirst()
+                .orElseThrow();
+        sample.onPress();
+        assertTrue(actions.isEmpty());
+        assertTrue(view.closeLocalLayer());
+        assertTrue(view.resourceDirty());
+        for (int n = 0; n < 4; n++) {
+            widgets = build(view, layout, edit, actions);
+            ((TerminalButton) widgets.stream()
+                            .filter(w -> key(w).contains(".selector_") && w instanceof TerminalButton)
+                            .findFirst()
+                            .orElseThrow())
+                    .onPress();
+        }
+        widgets = build(view, layout, edit, actions);
+        assertTrue(widgets.stream().anyMatch(TerminalSearchButton.class::isInstance));
+        ((TerminalRowButton) widgets.stream()
+                        .filter(TerminalRowButton.class::isInstance)
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        widgets = build(view, layout, edit, actions);
+        assertFalse(widgets.stream().anyMatch(TerminalSearchButton.class::isInstance));
+        assertTrue(widgets.stream().anyMatch(w -> w.getMessage().getString().equals(SUMMARY.name())));
+        ((TerminalButton) widgets.stream()
+                        .filter(w -> key(w).endsWith(".save"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        var intent = (io.github.loongin.omniresonance.filter.ResourceRuleIntent.Reference)
+                ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent();
+        assertEquals(PRESET, intent.presetId());
+    }
+
+    @Test
+    void editorUsesOnePaneAndHidesNumericSamplingFields() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(STATE);
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var widgets = build(view, TerminalLayout.calculate(320, 240), edit, new ArrayList<>());
+        assertFalse(widgets.stream().anyMatch(w -> key(w).endsWith(".inventory_slot") || key(w).endsWith(".tank")));
+        assertFalse(widgets.stream().anyMatch(TerminalSampleSlot.class::isInstance));
+        assertFalse(widgets.stream().anyMatch(TerminalRowButton.class::isInstance));
+        var field = widgets.stream()
+                .filter(w -> key(w).endsWith(".selector_value"))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(field.getWidth() >= 240);
+    }
+
+    @Test
+    void ghostPreviewRejectsReadonlyAndFailedAdmissionDiscardsPrefill() {
+        var view = new TerminalFilterView(() -> {});
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        var readonly = new NetworkTerminalState.Preset(
+                NETWORK, new FilterPresetSummary(PRESET, "Preset", 0, 1, false), STATE.rules());
+        view.apply(readonly);
+        build(view, layout, readonly, actions);
+        assertEquals(null, view.ghostTarget());
+        view.apply(STATE);
+        build(view, layout, STATE, actions);
+        assertTrue(view.acceptGhost(
+                view.ghostTarget(),
+                new RecipeGhostTarget.Ingredient(ResourceTypes.FLUID, ResourceLocation.parse("minecraft:water"))));
+        view.requestFailed(null);
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var widgets = build(view, layout, edit, actions);
+        var field = (TerminalEditBox) widgets.stream()
+                .filter(w -> key(w).endsWith(".selector_value"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("minecraft:stone", field.getValue());
+        assertFalse(view.resourceDirty());
+    }
+
+    @Test
+    void ghostDropRequiresCurrentEditablePresetAndOnlyCreatesADraft() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(STATE);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        build(view, layout, STATE, actions);
+        var target = view.ghostTarget();
+        assertTrue(target != null);
+        var ingredient =
+                new RecipeGhostTarget.Ingredient(ResourceTypes.ITEM, ResourceLocation.parse("minecraft:iron_ingot"));
+        assertTrue(view.acceptGhost(target, ingredient));
+        assertTrue(actions.getLast() instanceof TerminalFilterView.Action.BeginFull);
+        assertFalse(view.acceptGhost(target, ingredient));
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var widgets = build(view, layout, edit, actions);
+        assertTrue(view.resourceDirty());
+        assertEquals(null, view.ghostTarget());
+        var field = (TerminalEditBox) widgets.stream()
+                .filter(w -> key(w).endsWith(".selector_value"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("minecraft:iron_ingot", field.getValue());
+        assertEquals(1, actions.size());
+        ((TerminalButton) widgets.stream()
+                        .filter(w -> key(w).endsWith(".save"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        var intent = (io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match)
+                ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent();
+        assertEquals(ResourceFilterRule.Selector.exact(ingredient.id()), intent.selector());
+        assertEquals(ComponentCondition.Mode.ID_ONLY, intent.mode());
+        view.apply(STATE);
+        build(view, layout, STATE, actions);
+        assertFalse(
+                view.acceptGhost(new RecipeGhostTarget.Target(UUID.randomUUID(), PRESET, target.area()), ingredient));
+    }
+
+    @Test
     void librarySearchSharesTheResultRowWidthAtBothWindowSizes() {
         for (int width : new int[] {427, 960}) {
             var state = new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0));
@@ -104,7 +332,7 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
-    void savingACopiedTagAsExactIdRequiresAnExplicitModeChange() {
+    void prefixedTagInputSelectsTagModeWithoutAnExtraClick() {
         TerminalTagClipboard.clear();
         try {
             TerminalTagClipboard.copy("minecraft:item", List.of("c:ingots"), value -> {});
@@ -120,19 +348,13 @@ class TerminalFullFilterViewTest {
                     .filter(w -> key(w).endsWith(".selector_value"))
                     .findFirst()
                     .orElseThrow();
-            field.setValue("c:ingots");
-            var save = (TerminalButton) widgets.stream()
-                    .filter(w -> key(w).endsWith(".save"))
-                    .findFirst()
-                    .orElseThrow();
-            save.onPress();
-            assertTrue(actions.isEmpty());
+            field.setValue("#c:ingots");
+            assertTrue(widgets.stream().anyMatch(w -> key(w).endsWith(".selector_1")));
             ((TerminalButton) widgets.stream()
-                            .filter(w -> key(w).endsWith(".selector_0"))
+                            .filter(w -> key(w).endsWith(".save"))
                             .findFirst()
                             .orElseThrow())
                     .onPress();
-            save.onPress();
             var intent = (io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match)
                     ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent();
             assertEquals(ResourceFilterRule.Selector.tag(ResourceLocation.parse("c:ingots")), intent.selector());
@@ -146,17 +368,17 @@ class TerminalFullFilterViewTest {
         var view = new TerminalFilterView(() -> {});
         var actions = new ArrayList<TerminalFilterView.Action>();
         var layout = TerminalLayout.calculate(960, 540);
-        var candidate = new TerminalTagClipboard.Candidate("minecraft:item", List.of("c:ingots"), "c:ingots");
-        assertFalse(view.pasteTag(candidate, "c:ingots"));
+        var candidate = new TerminalTagClipboard.Candidate("minecraft:item", List.of("c:ingots"), "#ingots");
+        assertFalse(view.pasteTag(candidate, "#ingots"));
         var readonly = new NetworkTerminalState.Preset(
                 NETWORK, new FilterPresetSummary(PRESET, "Preset", 0, 1, false), STATE.rules());
         view.apply(readonly);
         build(view, layout, readonly, actions);
-        assertFalse(view.pasteTag(candidate, "c:ingots"));
+        assertFalse(view.pasteTag(candidate, "#ingots"));
         assertTrue(actions.isEmpty());
         view.apply(STATE);
         build(view, layout, STATE, actions);
-        assertTrue(view.pasteTag(candidate, "c:water"));
+        assertTrue(view.pasteTag(candidate, "#water"));
         assertTrue(actions.isEmpty());
         assertFalse(view.resourceDirty());
     }
@@ -169,9 +391,9 @@ class TerminalFullFilterViewTest {
         var actions = new ArrayList<TerminalFilterView.Action>();
         var layout = TerminalLayout.calculate(960, 540);
         build(view, layout, STATE, actions);
-        var candidate = new TerminalTagClipboard.Candidate("minecraft:fluid", List.of("c:water"), "c:water");
-        assertTrue(view.pasteTag(candidate, "c:water"));
-        assertFalse(view.pasteTag(candidate, "c:water"));
+        var candidate = new TerminalTagClipboard.Candidate("minecraft:fluid", List.of("c:water"), "#water");
+        assertTrue(view.pasteTag(candidate, "#water"));
+        assertFalse(view.pasteTag(candidate, "#water"));
         var request = (NetworkTerminalRequest.BeginResourceRule)
                 NetworkSetupScreen.resourceRuleRequest(actions.getLast(), PRESET, RULE, 1);
         assertEquals(PRESET, request.presetId());
@@ -184,7 +406,7 @@ class TerminalFullFilterViewTest {
                 .filter(w -> key(w).endsWith(".selector_value"))
                 .findFirst()
                 .orElseThrow();
-        assertEquals("c:water", field.getValue());
+        assertEquals("#c:water", field.getValue());
         assertTrue(view.resourceDirty());
         ((TerminalButton) widgets.stream()
                         .filter(w -> key(w).endsWith(".save"))
@@ -208,7 +430,7 @@ class TerminalFullFilterViewTest {
         var layout = TerminalLayout.calculate(960, 540);
         build(view, layout, STATE, actions);
         assertTrue(view.pasteTag(
-                new TerminalTagClipboard.Candidate("minecraft:fluid", List.of("c:water"), "c:water"), "c:water"));
+                new TerminalTagClipboard.Candidate("minecraft:fluid", List.of("c:water"), "#water"), "#water"));
         view.requestFailed(null);
         var edit = new NetworkTerminalState.PresetEdit(
                 NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
@@ -223,7 +445,7 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
-    void actualThreePaneControlsReadAndEditPinnedRuleWithoutDisplayingUuid() {
+    void layeredControlsReadAndEditPinnedRuleWithoutDisplayingUuid() {
         for (int[] size : new int[][] {{320, 240}, {640, 360}, {960, 540}}) {
             TerminalFilterView view = new TerminalFilterView(() -> {});
             view.apply(new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0)));
@@ -232,20 +454,19 @@ class TerminalFullFilterViewTest {
             var layout = TerminalLayout.calculate(size[0], size[1]);
             var widgets = build(view, layout, STATE, actions);
             assertEquals(
-                    1,
+                    0,
                     widgets.stream()
                             .filter(TerminalSearchButton.class::isInstance)
                             .count());
             assertFalse(widgets.stream().anyMatch(widget -> key(widget).endsWith(".save")));
             var rows =
                     widgets.stream().filter(TerminalRowButton.class::isInstance).toList();
-            assertEquals(2, rows.size());
-            assertTrue(rows.get(0).getRight() < rows.get(1).getX(), "Library and rules overlap");
-            ((TerminalRowButton) rows.get(1)).onPress();
+            assertEquals(1, rows.size());
+            ((TerminalRowButton) rows.getFirst()).onPress();
             var read = (NetworkTerminalRequest.ReadResourceRule)
                     NetworkSetupScreen.resourceRuleRequest(actions.getLast(), PRESET, RULE, 1);
             assertEquals(RULE, read.ruleId());
-            assertFalse(rows.get(1).getMessage().getString().contains(RULE.toString()));
+            assertFalse(rows.getFirst().getMessage().getString().contains(RULE.toString()));
             var rule = new ResourceFilterRule.Match(
                     RULE,
                     ResourceTypes.ITEM,
@@ -328,18 +549,18 @@ class TerminalFullFilterViewTest {
     @Test
     void searchUsesCompleteCatalogLocallyAndKeepsCaretAcrossRebuilds() {
         var view = new TerminalFilterView(() -> {});
-        view.apply(new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0)));
-        view.apply(STATE);
+        var directory = new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0));
+        view.apply(directory);
         var actions = new ArrayList<TerminalFilterView.Action>();
         var layout = TerminalLayout.calculate(960, 540);
-        var widgets = build(view, layout, STATE, actions);
+        var widgets = build(view, layout, directory, actions);
         assertFalse(view.searchExpanded());
         ((TerminalSearchButton) widgets.stream()
                         .filter(TerminalSearchButton.class::isInstance)
                         .findFirst()
                         .orElseThrow())
                 .onPress();
-        widgets = build(view, layout, STATE, actions);
+        widgets = build(view, layout, directory, actions);
         var field = (TerminalSearchBox) widgets.stream()
                 .filter(TerminalSearchBox.class::isInstance)
                 .findFirst()
@@ -349,7 +570,7 @@ class TerminalFullFilterViewTest {
         field.setCursorPosition(3);
         field.setHighlightPos(1);
         view.tick(2, false);
-        widgets = build(view, layout, STATE, actions);
+        widgets = build(view, layout, directory, actions);
         org.junit.jupiter.api.Assertions.assertSame(
                 field,
                 widgets.stream()
@@ -363,10 +584,10 @@ class TerminalFullFilterViewTest {
             ClientTextSearch.install((name, query) -> query.equals("pinyin"));
             field.setValue("pinyin");
             view.tick(3, false);
-            var matched = build(view, layout, STATE, actions);
-            assertTrue(matched.stream()
-                    .anyMatch(widget -> widget instanceof TerminalRowButton
-                            && widget.getMessage().getString().equals(SUMMARY.name())));
+            var matched = build(view, layout, directory, actions);
+            assertEquals(
+                    1,
+                    matched.stream().filter(TerminalRowButton.class::isInstance).count());
             assertTrue(actions.isEmpty(), "Local matching must not send a search query");
         } finally {
             ClientTextSearch.usePlain();

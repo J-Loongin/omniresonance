@@ -37,7 +37,16 @@ public final class NetworkTerminalClient {
     private static final KeyMapping TERMINAL_KEY = new KeyMapping(
             KEY_NAME, TERMINAL_CONTEXT, KeyModifier.SHIFT, InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_E, KEY_CATEGORY);
 
+    static final KeyMapping DOMAIN_KEY = new KeyMapping(
+            "key.omniresonance.open_domain",
+            new DomainConflictContext(),
+            KeyModifier.NONE,
+            InputConstants.Type.KEYSYM,
+            GLFW.GLFW_KEY_UNKNOWN,
+            KEY_CATEGORY);
+
     private boolean connected;
+    private boolean suppressShortcutClicks;
     private boolean firstPromptDismissed;
     private final ResonanceNodeClient nodeClient;
 
@@ -51,6 +60,9 @@ public final class NetworkTerminalClient {
         NeoForge.EVENT_BUS.addListener(this::onLoggingOut);
         NeoForge.EVENT_BUS.addListener(this::onTagsUpdated);
         NetworkPayloads.installClientReceiver(this::receive);
+        NetworkPayloads.installStatusReceiver(frame -> {
+            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveStatus(frame);
+        });
         NetworkPayloads.installNodeDirectoryReceiver(page -> {
             if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveNodeDirectory(page);
         });
@@ -71,6 +83,18 @@ public final class NetworkTerminalClient {
 
     boolean isTerminalKey(int keyCode, int scanCode) {
         return TERMINAL_KEY.matches(keyCode, scanCode) && TERMINAL_KEY.isConflictContextAndModifierActive();
+    }
+
+    boolean isDomainKey(int keyCode, int scanCode) {
+        return DOMAIN_KEY.matches(keyCode, scanCode) && DOMAIN_KEY.isConflictContextAndModifierActive();
+    }
+
+    boolean isDomainMouseKey(int button) {
+        return DOMAIN_KEY.matchesMouse(button) && DOMAIN_KEY.isConflictContextAndModifierActive();
+    }
+
+    void domainShortcutClosed() {
+        suppressShortcutClicks = true;
     }
 
     Component translatedKey() {
@@ -101,6 +125,10 @@ public final class NetworkTerminalClient {
         if (canSend()) net.neoforged.neoforge.network.PacketDistributor.sendToServer(request);
     }
 
+    void sendStatus(io.github.loongin.omniresonance.networking.NetworkStatusRequest request) {
+        if (canSend()) PacketDistributor.sendToServer(request);
+    }
+
     void sendChunkOverview(io.github.loongin.omniresonance.networking.ChunkOverviewRequest request) {
         if (canSend()) PacketDistributor.sendToServer(request);
     }
@@ -125,12 +153,14 @@ public final class NetworkTerminalClient {
             return;
         }
         TerminalInteractionPolicy.RetrySnapshot snapshot = current.retrySnapshot();
+        boolean domainPending = current.domainShortcutPending();
         current.closeForReplacement();
-        minecraft.setScreen(new NetworkSetupScreen(this, snapshot));
+        minecraft.setScreen(new NetworkSetupScreen(this, snapshot, domainPending));
     }
 
     private void registerKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(TERMINAL_KEY);
+        event.register(DOMAIN_KEY);
     }
 
     private void onClientTick(ClientTickEvent.Post event) {
@@ -138,9 +168,19 @@ public final class NetworkTerminalClient {
         while (TERMINAL_KEY.consumeClick()) {
             clicked = true;
         }
+        boolean domainClicked = false;
+        while (DOMAIN_KEY.consumeClick()) domainClicked = true;
+        if (suppressShortcutClicks) {
+            suppressShortcutClicks = false;
+            return;
+        }
         Minecraft minecraft = Minecraft.getInstance();
-        if (clicked && canSend() && minecraft.level != null && minecraft.player != null && minecraft.screen == null) {
-            minecraft.setScreen(new NetworkSetupScreen(this));
+        if ((clicked || domainClicked)
+                && canSend()
+                && minecraft.level != null
+                && minecraft.player != null
+                && minecraft.screen == null) {
+            minecraft.setScreen(new NetworkSetupScreen(this, domainClicked));
         }
     }
 
@@ -160,6 +200,7 @@ public final class NetworkTerminalClient {
 
     private void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         connected = false;
+        suppressShortcutClicks = false;
         TerminalTagClipboard.clear();
         firstPromptDismissed = false;
         Minecraft minecraft = Minecraft.getInstance();
@@ -185,6 +226,25 @@ public final class NetworkTerminalClient {
         }
     }
 
+    private static final class DomainConflictContext implements IKeyConflictContext {
+        @Override
+        public boolean isActive() {
+            var minecraft = Minecraft.getInstance();
+            return DomainShortcutNavigation.contextActive(
+                    minecraft.level != null,
+                    minecraft.screen != null,
+                    minecraft.screen instanceof NetworkSetupScreen screen && screen.domainInventoryOpen());
+        }
+
+        @Override
+        public boolean conflicts(IKeyConflictContext other) {
+            return other == this
+                    || other == TERMINAL_CONTEXT
+                    || other == KeyConflictContext.IN_GAME
+                    || other == KeyConflictContext.GUI;
+        }
+    }
+
     private static final class TerminalConflictContext implements IKeyConflictContext {
         @Override
         public boolean isActive() {
@@ -195,7 +255,10 @@ public final class NetworkTerminalClient {
 
         @Override
         public boolean conflicts(IKeyConflictContext other) {
-            return other == this || other == KeyConflictContext.IN_GAME || other == KeyConflictContext.GUI;
+            return other == this
+                    || other instanceof DomainConflictContext
+                    || other == KeyConflictContext.IN_GAME
+                    || other == KeyConflictContext.GUI;
         }
     }
 }

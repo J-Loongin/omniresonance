@@ -13,6 +13,12 @@ import org.lwjgl.glfw.GLFW;
 final class TerminalInteractionPolicy {
     private TerminalInteractionPolicy() {}
 
+    static final int LOADING_DELAY_TICKS = 6;
+
+    static boolean loadingVisible(long elapsedTicks) {
+        return elapsedTicks >= LOADING_DELAY_TICKS;
+    }
+
     static boolean renderEmptyDirectory(boolean createOverlay) {
         return !createOverlay;
     }

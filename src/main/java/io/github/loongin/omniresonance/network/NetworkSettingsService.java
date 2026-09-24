@@ -170,6 +170,9 @@ public final class NetworkSettingsService implements AutoCloseable {
         }
         NetworkMetadata renamed = data.commitRename(prepared);
         directory.commitRename(index);
+        repository.auditNetwork(
+                renamed.id(),
+                io.github.loongin.omniresonance.persistence.AuditEntry.of("rename_network", actor, renamed.id(), ""));
         locks.release(edit.token(), actor.getUUID());
         return renamed;
     }
@@ -243,12 +246,17 @@ public final class NetworkSettingsService implements AutoCloseable {
                     .firstOwnedExcluding(removed.ownerId(), removed.id())
                     .map(NetworkMetadata::id)
                     .orElse(null);
+            if (ownerData == null) ownerData = repository.createOwner(removed.ownerId(), fallback);
             repository.removeNetwork(removed.id());
             directory.commitRemoval(index);
             if (ownerData != null
                     && ownerData.defaultNetworkId().filter(removed.id()::equals).isPresent()) {
                 ownerData.setDefaultNetwork(fallback);
             }
+            repository.auditOwner(
+                    removed.ownerId(),
+                    io.github.loongin.omniresonance.persistence.AuditEntry.of(
+                            "delete_network", actor, removed.id(), ""));
             return removed;
         } finally {
             locks.release(edit.token(), actor.getUUID());

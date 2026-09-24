@@ -14,7 +14,7 @@ class ResourceNodePolicyDataTest {
     @Test
     void savesResourcePolicyAsCurrentSchema() {
         CompoundTag saved = ItemPolicyDataTest.data().save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(9, saved.getInt("schema_version"));
+        assertEquals(10, saved.getInt("schema_version"));
         CompoundTag binding = saved.getList("direct_bindings", Tag.TAG_COMPOUND).getCompound(0);
         assertTrue(binding.contains("resource_policy", Tag.TAG_COMPOUND));
         assertFalse(binding.contains("item_policy"));
@@ -82,6 +82,7 @@ class ResourceNodePolicyDataTest {
     void trueVersionSevenMigratesOnlyItemsAndKeepsExplicitFaces() {
         var saved = ItemPolicyDataTest.data().save(new CompoundTag(), RegistryAccess.EMPTY);
         saved.putInt("schema_version", 7);
+        saved.remove("audit_entries");
         saved.remove("bucket_created_mask");
         var old = saved.getList("direct_bindings", Tag.TAG_COMPOUND).getCompound(0);
         old.remove("resource_policy");

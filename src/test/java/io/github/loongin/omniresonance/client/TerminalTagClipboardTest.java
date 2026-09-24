@@ -17,14 +17,15 @@ class TerminalTagClipboardTest {
             var writes = new ArrayList<String>();
             TerminalTagClipboard.copy("minecraft:item", List.of("c:ingots/iron"), writes::add);
             TerminalTagClipboard.copy("minecraft:fluid", List.of(), writes::add);
-            assertEquals(List.of("c:ingots/iron"), writes);
+            assertEquals(List.of("#ingots/iron"), writes);
             assertEquals("minecraft:item", TerminalTagClipboard.recent().resourceType());
+            assertEquals(List.of("c:ingots/iron"), TerminalTagClipboard.recent().tags());
             assertThrows(
                     IllegalStateException.class,
                     () -> TerminalTagClipboard.copy("minecraft:fluid", List.of("c:water"), value -> {
                         throw new IllegalStateException();
                     }));
-            assertEquals("c:ingots/iron", TerminalTagClipboard.recent().text());
+            assertEquals("#ingots/iron", TerminalTagClipboard.recent().text());
         } finally {
             TerminalTagClipboard.clear();
         }

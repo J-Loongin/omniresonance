@@ -44,18 +44,51 @@ final class TerminalFilterView {
         record CopyRule(String value) implements Action {}
     }
 
-    private record PastedTag(
+    private record PendingRule(
             UUID network, UUID preset, io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match intent) {}
 
-    private @Nullable PastedTag pastedTag;
+    private @Nullable PendingRule pendingRule;
     private int pasteNoticeTicks;
+    private @Nullable TerminalClickButton selectorButton;
+
+    @Nullable
+    RecipeGhostTarget.Target ghostTarget() {
+        if (!(state instanceof NetworkTerminalState.Preset preset)
+                || !fullMode
+                || management
+                || pending
+                || pagePending
+                || queryPending
+                || pendingRule != null
+                || resourceDraft != null
+                || !preset.preset().editable()
+                || list.width() <= 0
+                || list.height() <= 0) return null;
+        return new RecipeGhostTarget.Target(
+                preset.network().id(),
+                preset.preset().id(),
+                new RecipeGhostTarget.Area(list.x(), list.y(), list.width(), list.height()));
+    }
+
+    boolean acceptGhost(RecipeGhostTarget.Target target, RecipeGhostTarget.Ingredient ingredient) {
+        if (!target.equals(ghostTarget())) return false;
+        var intent = new io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match(
+                ingredient.type(),
+                io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.exact(ingredient.id()),
+                io.github.loongin.omniresonance.filter.ComponentCondition.Mode.ID_ONLY,
+                java.util.Set.of(),
+                null);
+        pendingRule = new PendingRule(target.network(), target.preset(), intent);
+        actions.accept(new Action.BeginFull(target.preset(), null, false));
+        return true;
+    }
 
     boolean pasteTag(@Nullable TerminalTagClipboard.Candidate candidate, String clipboard) {
         if (!(state instanceof NetworkTerminalState.Preset preset)
                 || !fullMode
                 || management
                 || pending
-                || pastedTag != null
+                || pendingRule != null
                 || pagePending
                 || resourceDraft != null
                 || !preset.preset().editable()) return false;
@@ -64,7 +97,7 @@ final class TerminalFilterView {
             pasteNoticeTicks = 60;
             return true;
         }
-        pastedTag = new PastedTag(preset.network().id(), preset.preset().id(), intent);
+        pendingRule = new PendingRule(preset.network().id(), preset.preset().id(), intent);
         actions.accept(new Action.BeginFull(preset.preset().id(), null, false));
         return true;
     }
@@ -93,11 +126,9 @@ final class TerminalFilterView {
 
     private boolean searchEligible() {
         return !management
+                && !samplePicker.isOpen()
                 && (!pending || queryPending)
-                && (state instanceof NetworkTerminalState.Filters
-                        || fullMode
-                                && (state instanceof NetworkTerminalState.Preset
-                                        || resourceDraft != null && state instanceof NetworkTerminalState.PresetEdit));
+                && (state instanceof NetworkTerminalState.Filters || choosingReference);
     }
 
     private void toggleSearch() {
@@ -200,7 +231,34 @@ final class TerminalFilterView {
     private io.github.loongin.omniresonance.networking.FilterPresetPage library =
             new io.github.loongin.omniresonance.networking.FilterPresetPage(java.util.List.of(), 0, 0, 0);
     private int libraryScroll, detailScroll, maxLibraryScroll, maxDetailScroll;
-    private String sampleSlot = "0", sampleTank = "0", sampleFailure = "";
+    private String sampleFailure = "";
+    private int sampleSlot = -1;
+    private boolean choosingReference;
+    private final TerminalSamplePicker samplePicker = new TerminalSamplePicker();
+
+    boolean closeLocalLayer() {
+        if (samplePicker.back()) {
+            rebuild.run();
+            return true;
+        }
+        if (choosingReference) {
+            if (closeSearch()) return true;
+            choosingReference = false;
+            closeSearch();
+            rebuild.run();
+            return true;
+        }
+        if (!management && state instanceof NetworkTerminalState.Preset && resourceDraft == null && detail != null) {
+            detail = null;
+            readonlyDraft = null;
+            selectedRuleId = null;
+            detailScroll = 0;
+            rebuild.run();
+            return true;
+        }
+        return false;
+    }
+
     private TerminalLayout.Rect libraryBounds = new TerminalLayout.Rect(0, 0, 0, 0);
     private TerminalLayout.Rect detailBounds = new TerminalLayout.Rect(0, 0, 0, 0);
 
@@ -297,6 +355,7 @@ final class TerminalFilterView {
                                             .equals(preset.preset().id())
                                     && entry.revision() == preset.preset().revision())) catalog.clear();
             fullMode = true;
+            if (!(state instanceof NetworkTerminalState.Preset)) librarySearch.reset();
             if (fullPreset == null
                     || !fullPreset.preset().id().equals(preset.preset().id())
                     || fullPreset.preset().revision() != preset.preset().revision()) {
@@ -307,6 +366,8 @@ final class TerminalFilterView {
             }
             fullPreset = preset;
             resourceDraft = null;
+            samplePicker.close();
+            choosingReference = false;
         }
         if (fullMode
                 && next instanceof NetworkTerminalState.PresetEdit edit
@@ -314,29 +375,39 @@ final class TerminalFilterView {
                         || edit.operation() == PresetEditOperation.EDIT_RULE
                         || edit.operation() == PresetEditOperation.REMOVE_RULE)
                 && !(state instanceof NetworkTerminalState.PresetEdit)) {
+            sampleSlot = -1;
             resourceDraft = new TerminalResourceRuleDraft(
                     edit.operation() == PresetEditOperation.ADD_RULE || detail == null
                             ? null
                             : detail.rules().getFirst());
-            if (pastedTag != null
+            if (pendingRule != null
                     && edit.operation() == PresetEditOperation.ADD_RULE
                     && edit.preset() != null
-                    && pastedTag.preset().equals(edit.preset().id())
-                    && pastedTag.network().equals(edit.network().id())) {
-                var match = pastedTag.intent();
+                    && pendingRule.preset().equals(edit.preset().id())
+                    && pendingRule.network().equals(edit.network().id())) {
+                var match = pendingRule.intent();
                 resourceDraft.type = match.typeId();
-                resourceDraft.selector = 1;
-                resourceDraft.text = ((io.github.loongin.omniresonance.filter.ResourceFilterRule.TagSelector)
-                                match.selector())
-                        .tagId()
-                        .toString();
+                if (match.selector()
+                        instanceof io.github.loongin.omniresonance.filter.ResourceFilterRule.TagSelector tag) {
+                    resourceDraft.selector = 1;
+                    resourceDraft.text = "#" + tag.tagId();
+                } else if (match.selector()
+                        instanceof io.github.loongin.omniresonance.filter.ResourceFilterRule.Exact exact) {
+                    resourceDraft.selector = 0;
+                    resourceDraft.text = exact.resourceId().toString();
+                }
                 resourceDraft.dirty = true;
             }
-            pastedTag = null;
+            pendingRule = null;
+            samplePicker.close();
+            choosingReference = false;
+            librarySearch.reset();
             detailScroll = 0;
         }
         if (!supports(next)) {
-            pastedTag = null;
+            samplePicker.close();
+            choosingReference = false;
+            pendingRule = null;
             pasteNoticeTicks = 0;
             librarySearch.reset();
             catalog.clear();
@@ -372,12 +443,12 @@ final class TerminalFilterView {
             selectedRule = null;
         }
         if (!(next instanceof NetworkTerminalState.PresetEdit) && !java.util.Objects.equals(state, next))
-            pastedTag = null;
+            pendingRule = null;
         state = next;
     }
 
     void requestFailed(@Nullable NetworkTerminalState freshState) {
-        pastedTag = null;
+        pendingRule = null;
         pending = false;
         if (queryPending) catalog.fail();
         queryPending = false;
@@ -690,6 +761,10 @@ final class TerminalFilterView {
 
     boolean scroll(double x, double y, double amount) {
         if (pending || pagePending) return supports(state);
+        if (samplePicker.scroll(x, y, amount)) {
+            rebuild.run();
+            return true;
+        }
         if (state instanceof NetworkTerminalState.Preset
                 && x >= actionBounds.x()
                 && x < actionBounds.right()
@@ -768,133 +843,37 @@ final class TerminalFilterView {
             Consumer<AbstractWidget> add,
             Consumer<String> changed,
             Consumer<Action> actions) {
-        var footer = TerminalActionLayout.of(body);
-        if (resourceDraft != null) body = footer.content();
-        int first = Math.max(70, body.width() / 4), second = Math.max(80, body.width() / 3);
-        int searchInset = librarySearch.expanded() ? 24 : 0;
-        buildLibrarySearch(font, new TerminalLayout.Rect(body.x() + 4, body.y() + 2, first - 8, 20), add);
-        libraryBounds = new TerminalLayout.Rect(
-                body.x() + 4, body.y() + 26 + searchInset, first - 8, Math.max(0, body.height() - 32 - searchInset));
-        list = new TerminalLayout.Rect(
-                body.x() + first + 2, body.y() + 26, second - 8, Math.max(0, body.height() - 32));
-        detailBounds = new TerminalLayout.Rect(
-                body.x() + first + second,
-                body.y() + 26,
-                Math.max(1, body.width() - first - second - 6),
-                Math.max(0, body.height() - 32));
-        var libraryRows =
-                RoutingListLayout.calculateRows(libraryBounds, libraryEntries().size(), libraryScroll);
-        libraryScroll = libraryRows.scroll();
-        maxLibraryScroll = Math.max(0, libraryEntries().size() - libraryRows.visibleRows());
-        for (int row = 0;
-                row < libraryRows.visibleRows()
-                        && row + libraryScroll < libraryEntries().size();
-                row++) {
-            var preset = libraryEntries().get(row + libraryScroll);
-            TerminalRowButton widget =
-                    new TerminalRowButton(libraryRows.row(row), Component.literal(preset.name()), button -> {
-                        if (resourceDraft != null && resourceDraft.selector == 4) {
-                            resourceDraft.reference = preset.id();
-                            resourceDraft.dirty = true;
-                            changed.accept(resourceDraft.text);
-                            rebuild.run();
-                        } else actions.accept(new Action.Open(preset.id(), preset.revision(), 0));
-                    });
-            widget.active = !pending && !queryPending && (resourceDraft == null || resourceDraft.selector == 4);
-            widget.setSelected(
-                    resourceDraft != null && resourceDraft.selector == 4
-                            ? preset.id().equals(resourceDraft.reference)
-                            : fullPreset != null
-                                    && preset.id().equals(fullPreset.preset().id()));
-            add.accept(widget);
-        }
+        searchField = null;
+        libraryBounds = new TerminalLayout.Rect(0, 0, 0, 0);
+        list = new TerminalLayout.Rect(0, 0, 0, 0);
+        detailBounds = new TerminalLayout.Rect(0, 0, 0, 0);
         if (fullPreset == null) return null;
-        var page = fullPreset.rules();
-        var rows = RoutingListLayout.calculateRows(list, page.entries().size(), scroll);
-        scroll = rows.scroll();
-        visibleRows = rows.visibleRows();
-        maximumScroll = Math.max(0, page.entries().size() - visibleRows);
-        for (int row = 0;
-                row < rows.visibleRows() && row + scroll < page.entries().size();
-                row++) {
-            int index = row + scroll;
-            UUID ruleId = page.ruleIds().get(index);
-            TerminalRowButton widget = new TerminalRowButton(
-                    rows.row(row), Component.literal(displayRule(page.entries().get(index))), button -> {
-                        selectedRuleId = ruleId;
-                        detailScroll = 0;
-                        actions.accept(new Action.Read(
-                                fullPreset.preset().id(), fullPreset.preset().revision(), ruleId));
-                    });
-            widget.active = !pending && resourceDraft == null;
-            widget.setSelected(ruleId.equals(selectedRuleId));
-            add.accept(widget);
-        }
-        int half = Math.max(20, (detailBounds.width() - 4) / 2);
-        if (resourceDraft == null) {
-            button(
+        if (resourceDraft != null && samplePicker.isOpen()) {
+            samplePicker.build(
+                    font,
+                    body,
+                    resourceDraft.type,
+                    pending,
                     add,
-                    detailBounds.x(),
-                    body.y() + 2,
-                    half,
-                    "add_rule_full",
-                    () -> actions.accept(
-                            new Action.BeginFull(fullPreset.preset().id(), null, false)),
-                    !pending && fullPreset.preset().editable(),
-                    false);
-            button(
-                    add,
-                    detailBounds.x() + half + 4,
-                    body.y() + 2,
-                    half,
-                    "edit_rule_full",
-                    () -> actions.accept(
-                            new Action.BeginFull(fullPreset.preset().id(), selectedRuleId, false)),
-                    !pending
-                            && selectedRuleId != null
-                            && detail != null
-                            && fullPreset.preset().editable(),
-                    false);
-            if (detail != null) {
-                TerminalResourceRuleDraft readonly =
-                        new TerminalResourceRuleDraft(detail.rules().getFirst());
-                java.util.List<String> lines = detailLines(readonly);
-                var content = RoutingListLayout.calculateRows(detailBounds, lines.size() + 2, detailScroll);
-                detailScroll = content.scroll();
-                maxDetailScroll = Math.max(0, lines.size() + 2 - content.visibleRows());
-                for (int row = 0; row < content.visibleRows() && row + detailScroll < lines.size() + 2; row++) {
-                    int index = row + detailScroll;
-                    var bounds = content.row(row);
-                    if (index < lines.size()) {
-                        TerminalRowButton label = new TerminalRowButton(
-                                bounds, Component.literal(displayRule(lines.get(index))), ignored -> {});
-                        label.setReadOnly();
-                        add.accept(label);
-                    } else if (index == lines.size())
-                        button(
-                                add,
-                                bounds.x(),
-                                bounds.y(),
-                                bounds.width(),
-                                "copy_id",
-                                () -> actions.accept(new Action.CopyRule(readonly.text)),
-                                !pending && !readonly.text.isEmpty(),
-                                false);
-                    else
-                        button(
-                                add,
-                                bounds.x(),
-                                bounds.y(),
-                                bounds.width(),
-                                "remove_rule_full",
-                                () -> actions.accept(
-                                        new Action.BeginFull(fullPreset.preset().id(), selectedRuleId, true)),
-                                !pending && fullPreset.preset().editable(),
-                                false);
-                }
-            }
+                    action -> {
+                        if (action instanceof Action.Sample sample) sampleSlot = sample.slot();
+                        actions.accept(action);
+                    },
+                    rebuild);
             return null;
         }
+        if (resourceDraft != null && choosingReference) {
+            buildReferencePicker(font, body, add, changed);
+            return searchField;
+        }
+        var footer = TerminalActionLayout.of(body);
+        if (resourceDraft == null) {
+            buildRuleBrowser(body, add, actions);
+            return null;
+        }
+        body = footer.content();
+        detailBounds = new TerminalLayout.Rect(
+                body.x() + 4, body.y() + 4, Math.max(0, body.width() - 8), Math.max(0, body.height() - 8));
         TerminalResourceRuleDraft draft = resourceDraft;
         button(
                 add,
@@ -913,15 +892,6 @@ final class TerminalFilterView {
                 "save",
                 () -> {
                     try {
-                        boolean removing = state instanceof NetworkTerminalState.PresetEdit edit
-                                && edit.operation() == PresetEditOperation.REMOVE_RULE;
-                        String selectorError = removing ? null : draft.selectorError(TerminalTagClipboard.recent());
-                        if (selectorError != null) {
-                            sampleFailure = selectorError;
-                            rebuild.run();
-                            return;
-                        }
-                        sampleFailure = "";
                         actions.accept(new Action.SaveFull(
                                 state instanceof NetworkTerminalState.PresetEdit edit
                                                 && edit.operation() == PresetEditOperation.REMOVE_RULE
@@ -935,47 +905,65 @@ final class TerminalFilterView {
                 !pending,
                 true);
         java.util.List<String> keys = draft.keys();
-        int count = 7 + keys.size();
+        java.util.List<Integer> fields = new java.util.ArrayList<>(java.util.List.of(0, 1, 2));
+        if (draft.selector != 4 && !draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY)) {
+            fields.add(3);
+            if (draft.mode != io.github.loongin.omniresonance.filter.ComponentCondition.Mode.ID_ONLY) {
+                fields.add(6);
+                if (draft.mode == io.github.loongin.omniresonance.filter.ComponentCondition.Mode.SELECTED)
+                    for (int index = 0; index < keys.size(); index++) fields.add(index + 7);
+            }
+        }
+        int count = fields.size();
         var details = RoutingListLayout.calculateRows(detailBounds, count, detailScroll);
         detailScroll = details.scroll();
         maxDetailScroll = Math.max(0, count - details.visibleRows());
+        selectorButton = null;
         EditBox firstField = null;
         boolean deleting = state instanceof NetworkTerminalState.PresetEdit edit
                 && edit.operation() == PresetEditOperation.REMOVE_RULE;
         for (int row = 0; row < details.visibleRows() && row + detailScroll < count; row++) {
-            int index = row + detailScroll;
+            int index = fields.get(row + detailScroll);
             var bounds = details.row(row);
-            if (index == 2 || index == 4 || index == 5) {
-                TerminalEditBox field = new TerminalEditBox(
-                        font,
+            if (index == 2 && draft.selector == 4) {
+                Component selected = libraryEntries().stream()
+                        .filter(preset -> preset.id().equals(draft.reference))
+                        .map(preset -> (Component) Component.literal(preset.name()))
+                        .findFirst()
+                        .orElse(label("choose_reference"));
+                var referenceButton = new TerminalButton(
                         bounds.x(),
                         bounds.y(),
                         bounds.width(),
                         20,
-                        label(index == 2 ? "selector_value" : index == 4 ? "inventory_slot" : "tank"));
-                field.setMaxLength(index == 2 ? 65535 : 10);
-                field.setValue(
-                        index == 2
-                                ? draft.selector == 4
-                                        ? libraryEntries().stream()
-                                                .filter(preset -> preset.id().equals(draft.reference))
-                                                .map(
-                                                        io.github.loongin.omniresonance.networking.FilterPresetSummary
-                                                                ::name)
-                                                .findFirst()
-                                                .orElse(label("selector_4").getString())
-                                        : draft.text
-                                : index == 4 ? sampleSlot : sampleTank);
+                        selected,
+                        ignored -> {
+                            choosingReference = true;
+                            rebuild.run();
+                        },
+                        false);
+                referenceButton.active = !pending && !deleting;
+                referenceButton.setTooltip(
+                        net.minecraft.client.gui.components.Tooltip.create(label("choose_reference")));
+                add.accept(referenceButton);
+            } else if (index == 2) {
+                TerminalEditBox field =
+                        new TerminalEditBox(font, bounds.x(), bounds.y(), bounds.width(), 20, label("selector_value"));
+                field.setMaxLength(65535);
+                field.setValue(draft.text);
                 field.setResponder(value -> {
                     sampleFailure = "";
-                    if (index == 2) {
-                        draft.text = value;
-                        draft.dirty = true;
-                        changed.accept(value);
-                    } else if (index == 4) sampleSlot = value;
-                    else sampleTank = value;
+                    if (draft.pasteTag(TerminalTagClipboard.recent(), value)) {
+                        sampleSlot = -1;
+                        changed.accept(draft.text);
+                        rebuild.run();
+                        return;
+                    }
+                    draft.editText(value);
+                    if (selectorButton != null) selectorButton.setMessage(label("selector_" + draft.selector));
+                    changed.accept(value);
                 });
-                field.active = !pending && !deleting && (index != 2 || draft.selector < 3);
+                field.active = !pending && !deleting && draft.selector < 3;
                 add.accept(field);
                 if (firstField == null) firstField = field;
             } else {
@@ -1000,6 +988,7 @@ final class TerminalFilterView {
                                 : draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.FLUID)
                                         ? io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY
                                         : io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM;
+                        sampleSlot = -1;
                         draft.source = io.github.loongin.omniresonance.filter.ComponentCondition.idOnly();
                         draft.sampleToken = null;
                         draft.mode = io.github.loongin.omniresonance.filter.ComponentCondition.Mode.ID_ONLY;
@@ -1007,17 +996,14 @@ final class TerminalFilterView {
                         if (draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY))
                             draft.selector = 3;
                     } else if (index == 1) {
-                        draft.selector = (draft.selector + 1) % 5;
+                        draft.select((draft.selector + 1) % 5);
+                        if (draft.selector == 4) choosingReference = true;
                     } else if (index == 3)
                         draft.mode = io.github.loongin.omniresonance.filter.ComponentCondition.Mode.values()[
                                 (draft.mode.ordinal() + 1) % 3];
                     else if (index == 6) {
-                        try {
-                            actions.accept(new Action.Sample(
-                                    draft.type, Integer.parseInt(sampleSlot), Integer.parseInt(sampleTank)));
-                        } catch (IllegalArgumentException invalid) {
-                            sampleFailure = "invalid_sample";
-                        }
+                        samplePicker.open();
+                        rebuild.run();
                         return;
                     } else if (index >= 7) {
                         var component = net.minecraft.resources.ResourceLocation.parse(keys.get(index - 7));
@@ -1037,18 +1023,15 @@ final class TerminalFilterView {
                 TerminalClickButton widget = index == 6
                         ? new TerminalSampleSlot(bounds, message, press, () -> {
                             var player = net.minecraft.client.Minecraft.getInstance().player;
-                            try {
-                                int slot = Integer.parseInt(sampleSlot);
-                                return player == null
-                                                || slot < 0
-                                                || slot >= player.getInventory().getContainerSize()
-                                        ? net.minecraft.world.item.ItemStack.EMPTY
-                                        : player.getInventory().getItem(slot);
-                            } catch (NumberFormatException invalid) {
-                                return net.minecraft.world.item.ItemStack.EMPTY;
-                            }
+                            return player == null
+                                            || sampleSlot < 0
+                                            || sampleSlot
+                                                    >= player.getInventory().getContainerSize()
+                                    ? net.minecraft.world.item.ItemStack.EMPTY
+                                    : player.getInventory().getItem(sampleSlot);
                         })
                         : new TerminalButton(bounds.x(), bounds.y(), bounds.width(), 20, message, press, false);
+                if (index == 1) selectorButton = widget;
                 widget.active = !pending
                         && !deleting
                         && (index < 7
@@ -1063,6 +1046,117 @@ final class TerminalFilterView {
             }
         }
         return firstField;
+    }
+
+    private void buildReferencePicker(
+            Font font, TerminalLayout.Rect body, Consumer<AbstractWidget> add, Consumer<String> changed) {
+        var footer = TerminalActionLayout.of(body);
+        buildLibrarySearch(font, new TerminalLayout.Rect(body.x() + 4, body.y() + 2, body.width() - 8, 20), add);
+        int inset = librarySearch.expanded() ? 50 : 26;
+        libraryBounds = new TerminalLayout.Rect(
+                body.x() + 4,
+                body.y() + inset,
+                body.width() - 8,
+                Math.max(0, footer.content().height() - inset));
+        var entries = libraryEntries();
+        var rows = RoutingListLayout.calculateRows(libraryBounds, entries.size(), libraryScroll);
+        libraryScroll = rows.scroll();
+        maxLibraryScroll = Math.max(0, entries.size() - rows.visibleRows());
+        for (int row = 0; row < rows.visibleRows() && row + libraryScroll < entries.size(); row++) {
+            var preset = entries.get(row + libraryScroll);
+            var widget = new TerminalRowButton(rows.row(row), Component.literal(preset.name()), ignored -> {
+                if (resourceDraft == null) return;
+                resourceDraft.reference = preset.id();
+                resourceDraft.dirty = true;
+                choosingReference = false;
+                librarySearch.reset();
+                changed.accept(resourceDraft.text);
+                rebuild.run();
+            });
+            widget.active = !pending && !queryPending;
+            add.accept(widget);
+        }
+        var back = footer.primary();
+        button(add, back.x(), back.y(), back.width(), "sample_back", this::closeLocalLayer, !pending, false);
+    }
+
+    private void buildRuleBrowser(TerminalLayout.Rect body, Consumer<AbstractWidget> add, Consumer<Action> actions) {
+        var toolbar = new TerminalLayout.Rect(body.x(), body.y(), body.width(), 36);
+        if (detail == null) {
+            var addBounds = TerminalActionLayout.toolbarButton(toolbar, 1, 0);
+            button(
+                    add,
+                    addBounds.x(),
+                    addBounds.y(),
+                    addBounds.width(),
+                    "add_rule_full",
+                    () -> actions.accept(
+                            new Action.BeginFull(fullPreset.preset().id(), null, false)),
+                    !pending && fullPreset.preset().editable(),
+                    false);
+            list = new TerminalLayout.Rect(
+                    body.x() + 4, body.y() + 36, body.width() - 8, Math.max(0, body.height() - 40));
+            var page = fullPreset.rules();
+            var rows = RoutingListLayout.calculateRows(list, page.entries().size(), scroll);
+            scroll = rows.scroll();
+            visibleRows = rows.visibleRows();
+            maximumScroll = Math.max(0, page.entries().size() - visibleRows);
+            for (int row = 0;
+                    row < rows.visibleRows() && row + scroll < page.entries().size();
+                    row++) {
+                int index = row + scroll;
+                UUID id = page.ruleIds().get(index);
+                var widget = new TerminalRowButton(
+                        rows.row(row),
+                        Component.literal(displayRule(page.entries().get(index))),
+                        ignored -> {
+                            selectedRuleId = id;
+                            detailScroll = 0;
+                            actions.accept(new Action.Read(
+                                    fullPreset.preset().id(),
+                                    fullPreset.preset().revision(),
+                                    id));
+                        });
+                widget.active = !pending;
+                add.accept(widget);
+            }
+            return;
+        }
+        var readonly = new TerminalResourceRuleDraft(detail.rules().getFirst());
+        for (int index = 0; index < 3; index++) {
+            int action = index;
+            var bounds = TerminalActionLayout.toolbarButton(toolbar, 3, index);
+            String key = index == 0 ? "edit_rule_full" : index == 1 ? "remove_rule_full" : "copy_id";
+            button(
+                    add,
+                    bounds.x(),
+                    bounds.y(),
+                    bounds.width(),
+                    key,
+                    () -> {
+                        if (action == 2) actions.accept(new Action.CopyRule(readonly.text));
+                        else
+                            actions.accept(
+                                    new Action.BeginFull(fullPreset.preset().id(), selectedRuleId, action == 1));
+                    },
+                    !pending
+                            && (index == 2
+                                    ? !readonly.text.isEmpty()
+                                    : fullPreset.preset().editable()),
+                    false);
+        }
+        detailBounds =
+                new TerminalLayout.Rect(body.x() + 4, body.y() + 36, body.width() - 8, Math.max(0, body.height() - 40));
+        var lines = detailLines(readonly);
+        var rows = RoutingListLayout.calculateRows(detailBounds, lines.size(), detailScroll);
+        detailScroll = rows.scroll();
+        maxDetailScroll = Math.max(0, lines.size() - rows.visibleRows());
+        for (int row = 0; row < rows.visibleRows() && row + detailScroll < lines.size(); row++) {
+            var widget = new TerminalRowButton(
+                    rows.row(row), Component.literal(displayRule(lines.get(row + detailScroll))), ignored -> {});
+            widget.setReadOnly();
+            add.accept(widget);
+        }
     }
 
     private java.util.List<String> detailLines(TerminalResourceRuleDraft draft) {
@@ -1114,17 +1208,20 @@ final class TerminalFilterView {
     }
 
     private void renderFull(GuiGraphics graphics, Font font) {
-        if (!librarySearch.expanded())
+        if (samplePicker.isOpen()) {
+            samplePicker.render(graphics, font);
+            return;
+        }
+        if (choosingReference && !librarySearch.expanded())
             graphics.drawString(
                     font,
-                    TerminalText.body(label("title")),
+                    TerminalText.body(label("choose_reference")),
                     libraryBounds.x(),
                     libraryBounds.y() - 20,
                     TerminalTheme.TEXT,
                     false);
-        graphics.drawString(
-                font, TerminalText.body(label("rules")), list.x(), list.y() - 20, TerminalTheme.TEXT, false);
-        for (TerminalLayout.Rect bounds : java.util.List.of(libraryBounds, list, detailBounds))
+        for (TerminalLayout.Rect bounds : java.util.List.of(libraryBounds, list, detailBounds)) {
+            if (bounds.width() == 0 || bounds.height() == 0) continue;
             TerminalTheme.renderScrollbar(
                     graphics,
                     bounds.right() - TerminalLayout.SCROLLBAR_WIDTH,
@@ -1135,6 +1232,7 @@ final class TerminalFilterView {
                             : bounds == detailBounds ? maxDetailScroll + 1 : maximumScroll + 1,
                     1,
                     bounds == libraryBounds ? libraryScroll : bounds == detailBounds ? detailScroll : scroll);
+        }
         if (!sampleFailure.isEmpty())
             graphics.drawString(
                     font,

@@ -98,6 +98,15 @@ public final class ServerConfig {
 
     private static final List<M2Definition> M2_DEFINITIONS = List.of(
             new M2Definition(
+                    "audit.entries_per_scope",
+                    Kind.INT,
+                    1000,
+                    0,
+                    10000,
+                    "entries / 条目",
+                    "Ring-audit entries per owner or network; no separate files.",
+                    "每所有者或网络环形审计条目上限，不独立创建文件。"),
+            new M2Definition(
                     "terminal.highlight_enabled",
                     Kind.BOOLEAN,
                     true,
@@ -526,7 +535,8 @@ public final class ServerConfig {
                             (Boolean) value("terminal.temporary_chunk_loading_enabled"),
                             intValue("terminal.teleport_cooldown_ticks"),
                             intValue("terminal.temporary_ticket_ttl_ticks"),
-                            intValue("terminal.max_pending_teleports_server")));
+                            intValue("terminal.max_pending_teleports_server")),
+                    intValue("audit.entries_per_scope"));
             candidate = new State(fallback.epoch(), Math.incrementExact(fallback.revision()), true, settings);
         } catch (RuntimeException failure) {
             LOGGER.warn("Rejected server configuration candidate; retaining validated lifecycle settings");
@@ -660,33 +670,37 @@ public final class ServerConfig {
                     "Default/默认值: " + defaultValue,
                     "Range/合法范围: " + range,
                     "Special values/特殊值: "
-                            + (key.equals("terminal.teleport_cooldown_ticks")
-                                    ? "0 disables success cooldown; request interval still applies. / 0不设成功冷却，仍限制请求间隔。"
-                                    : key.startsWith("chunk_loading.") && kind == Kind.QUOTA
-                                            ? "-1 removes admission quota; 0 blocks new distinct reservations while retaining existing ones. / -1不限准入名额；0拒绝新增不同区块资格，保留已有资格。"
-                                            : kind == Kind.BOOLEAN
-                                                    ? "None. / 无。"
-                                                    : kind == Kind.ACCESS
+                            + (key.startsWith("audit.")
+                                    ? "0 stops appends without deleting history. / 0停止追加但不删除历史。"
+                                    : key.equals("terminal.teleport_cooldown_ticks")
+                                            ? "0 disables success cooldown; request interval still applies. / 0不设成功冷却，仍限制请求间隔。"
+                                            : key.startsWith("chunk_loading.") && kind == Kind.QUOTA
+                                                    ? "-1 removes admission quota; 0 blocks new distinct reservations while retaining existing ones. / -1不限准入名额；0拒绝新增不同区块资格，保留已有资格。"
+                                                    : kind == Kind.BOOLEAN
                                                             ? "None. / 无。"
-                                                            : quota
-                                                                    ? "-1 removes gameplay quota only; 0 rejects additions (rules: empty only). / -1仅取消玩法限额；0禁止新增（规则仅允许空预设）。"
-                                                                    : "None; 0/-1 invalid. / 无；0/-1无效。"),
+                                                            : kind == Kind.ACCESS
+                                                                    ? "None. / 无。"
+                                                                    : quota
+                                                                            ? "-1 removes gameplay quota only; 0 rejects additions (rules: empty only). / -1仅取消玩法限额；0禁止新增（规则仅允许空预设）。"
+                                                                            : "None; 0/-1 invalid. / 无；0/-1无效。"),
                     "Reload/重载: "
-                            + (key.startsWith("chunk_loading.")
-                                    ? "ADMISSION - Lowering quotas preserves existing reservations; disabling releases tickets only. / 调低配额保留既有资格；关闭功能仅释放实际票据。"
-                                    : key.startsWith("terminal.") && kind == Kind.BOOLEAN
-                                            ? "CANCEL - Revalidate active navigation and cancel affected work when disabled. / 重新校验已有定位任务，关闭时取消受影响工作。"
-                                            : kind == Kind.ACCESS
-                                                    ? "NEXT - Revalidate before each operation; read_only rejects pending writes. / 每次操作前重新验证，切回只读拒绝待执行写入。"
-                                                    : key.startsWith("terminal_sync.")
-                                                            ? (key.endsWith("pending_delta_entries")
-                                                                    ? "NEXT - Apply to unsent changes; overflow fails the view for manual retry. / 对待发变化应用新上限，超限失败并等待手动重试。"
-                                                                    : "SYNC - New sends use updated byte limits; lower concurrency blocks new admission only. / 后续发送使用新字节预算，调低并发只阻止新准入。")
-                                                            : quota
-                                                                    ? "QUOTA - Keep existing entries; reject additions above lowered limits. / 调低保留已有条目，只阻止新增。"
-                                                                    : buffer
-                                                                            ? "BUFFER - Keep existing contents; reject positive additions when over capacity. / 调低保留已有内容，超限不得新增占用。"
-                                                                            : "NEXT - Next work uses the new snapshot; started backoff stages are not extended. / 后续工作使用新快照，已开始退避阶段不延长。"));
+                            + (key.startsWith("audit.")
+                                    ? "AUDIT - Later appends evict oldest excess entries. / 后续追加淘汰最旧超额条目。"
+                                    : key.startsWith("chunk_loading.")
+                                            ? "ADMISSION - Lowering quotas preserves existing reservations; disabling releases tickets only. / 调低配额保留既有资格；关闭功能仅释放实际票据。"
+                                            : key.startsWith("terminal.") && kind == Kind.BOOLEAN
+                                                    ? "CANCEL - Revalidate active navigation and cancel affected work when disabled. / 重新校验已有定位任务，关闭时取消受影响工作。"
+                                                    : kind == Kind.ACCESS
+                                                            ? "NEXT - Revalidate before each operation; read_only rejects pending writes. / 每次操作前重新验证，切回只读拒绝待执行写入。"
+                                                            : key.startsWith("terminal_sync.")
+                                                                    ? (key.endsWith("pending_delta_entries")
+                                                                            ? "NEXT - Apply to unsent changes; overflow fails the view for manual retry. / 对待发变化应用新上限，超限失败并等待手动重试。"
+                                                                            : "SYNC - New sends use updated byte limits; lower concurrency blocks new admission only. / 后续发送使用新字节预算，调低并发只阻止新准入。")
+                                                                    : quota
+                                                                            ? "QUOTA - Keep existing entries; reject additions above lowered limits. / 调低保留已有条目，只阻止新增。"
+                                                                            : buffer
+                                                                                    ? "BUFFER - Keep existing contents; reject positive additions when over capacity. / 调低保留已有内容，超限不得新增占用。"
+                                                                                    : "NEXT - Next work uses the new snapshot; started backoff stages are not extended. / 后续工作使用新快照，已开始退避阶段不延长。"));
         }
     }
 

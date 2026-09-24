@@ -57,11 +57,45 @@ public final class SavedNetworkRepository {
     private final DimensionDataStorage storage;
     private final Path dataDirectory;
     private final io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory adapters;
+    private int auditCapacity =
+            io.github.loongin.omniresonance.config.ServerSettings.defaults().auditEntriesPerScope();
+
+    /** Applies validated retention on the owner thread; no historical entries are removed until an append. */
+    public void configureAudit(int capacity) {
+        requireOwningThread();
+        if (capacity < 0 || capacity > AuditRing.MAXIMUM) throw new IllegalArgumentException("Invalid audit capacity");
+        auditCapacity = capacity;
+    }
+
+    /** Records a confirmed action in an already loaded network; callers own authorization and commit ordering. */
+    public void auditNetwork(UUID network, AuditEntry entry) {
+        requireOwningThread();
+        if (auditCapacity == 0) return;
+        var data = loadedNetworks.get(network);
+        // A deleted scope intentionally loses its network history; closing its old view must not resurrect it.
+        if (data != null) data.appendAudit(entry, auditCapacity);
+    }
+
+    /** Records a confirmed owner action; its shard must already exist so logging never creates authority. */
+    public void auditOwner(UUID owner, AuditEntry entry) {
+        requireOwningThread();
+        if (auditCapacity == 0) return;
+        findOwner(owner)
+                .orElseThrow(() -> new IllegalStateException("Audit owner missing"))
+                .appendAudit(entry, auditCapacity);
+    }
+
     private final Set<net.minecraft.resources.ResourceLocation> registeredTypes;
     private final Set<String> reservedNames = new HashSet<>();
     private final Map<UUID, NetworkSavedData> loadedNetworks = new HashMap<>();
     /** One lazy lifecycle per accessed loaded network; removed with its network or this server repository. */
     private final Map<UUID, DomainStorage> domains = new HashMap<>();
+
+    /** Read-only inspection of an existing server-thread domain lifecycle; absence means not loaded, never creates it. */
+    public @Nullable DomainStorage inspectDomain(UUID networkId) {
+        requireOwningThread();
+        return domains.get(Objects.requireNonNull(networkId));
+    }
 
     /** Returns a lazy domain lifecycle on the server thread; this does not read bucket contents or simulate. */
     public DomainStorage domainStorage(UUID networkId) {

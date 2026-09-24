@@ -196,6 +196,15 @@ public final class ItemFilterServiceGameTests {
                 var edit = f.service.begin(f.owner, NETWORK, PresetEditOperation.RENAME, PRESET, "");
                 f.service.save(f.owner, edit, "Owner edit");
                 helper.assertTrue(
+                        f.library.auditEntries().size() == 1
+                                && f.library
+                                        .auditEntries()
+                                        .getFirst()
+                                        .action()
+                                        .getPath()
+                                        .equals("rename_preset"),
+                        "Rejected administrator edit must not add an owner audit entry");
+                helper.assertTrue(
                         f.library
                                 .findPreset(PRESET)
                                 .orElseThrow()

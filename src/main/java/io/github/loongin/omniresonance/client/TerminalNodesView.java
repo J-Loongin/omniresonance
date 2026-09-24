@@ -524,11 +524,16 @@ final class TerminalNodesView {
     }
 
     private int actionColumns() {
-        return layout.detail().width() >= 340 ? 4 : 2;
+        return layout.detail().width() >= 340 ? 4 : layout.detail().width() >= 140 ? 2 : 1;
     }
 
     private int detailTop() {
-        return actionColumns() == 4 ? 34 : 60;
+        int count = page != null
+                        && page.selected() != null
+                        && !page.selected().node().enabled()
+                ? 3
+                : 4;
+        return ((count + actionColumns() - 1) / actionColumns()) * 26 + 8;
     }
 
     private void buildDetail() {
@@ -538,12 +543,11 @@ final class TerminalNodesView {
         for (int slot = 0; slot < operations.length; slot++) {
             int i = operations[slot];
             final int action = i;
-            int column = actionColumns() == 4 ? slot : i % 2;
-            int row = actionColumns() == 4 ? 0 : i / 2;
+            int column = slot % actionColumns();
+            int row = slot / actionColumns();
+            int count = Math.min(actionColumns(), operations.length - row * actionColumns());
             var bounds = TerminalActionLayout.toolbarButton(
-                    new TerminalLayout.Rect(rect.x(), rect.y() + row * 26, rect.width(), 36),
-                    actionColumns() == 4 ? operations.length : 2,
-                    column);
+                    new TerminalLayout.Rect(rect.x(), rect.y() + row * 26, rect.width(), 36), count, column);
             Component label = text(
                     i == 0
                             ? (node.enabled() ? "disable" : "enable")
@@ -839,7 +843,10 @@ final class TerminalNodesView {
         if (page != null && page.available()) {
             {
                 var r = layout.list();
-                if (search.expanded() && !catalog.ready() && !catalogFailed && ticks - catalogStartedTick > 6)
+                if (search.expanded()
+                        && !catalog.ready()
+                        && !catalogFailed
+                        && TerminalInteractionPolicy.loadingVisible(ticks - catalogStartedTick))
                     lines(g, List.of(text("loading")), r.x() + 8, r.y() + 8, r.width() - 16);
                 TerminalTheme.renderScrollbar(
                         g,
@@ -885,7 +892,7 @@ final class TerminalNodesView {
                         1,
                         detailScroll);
             }
-        } else if (ticks > 6)
+        } else if (TerminalInteractionPolicy.loadingVisible(ticks))
             lines(
                     g,
                     List.of(text(page == null ? "loading" : "unavailable")),

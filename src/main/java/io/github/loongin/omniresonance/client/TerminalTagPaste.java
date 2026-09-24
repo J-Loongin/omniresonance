@@ -16,7 +16,7 @@ final class TerminalTagPaste {
         if (candidate == null
                 || candidate.tags().size() != 1
                 || !candidate.text().equals(text)
-                || !text.equals(candidate.tags().getFirst())) return null;
+                || !text.equals(TerminalTagClipboard.searchText(candidate.tags().getFirst()))) return null;
         try {
             var type = ResourceLocation.tryParse(candidate.resourceType());
             var tag = ResourceLocation.tryParse(candidate.tags().getFirst());

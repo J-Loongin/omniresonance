@@ -143,6 +143,7 @@ class NetworkAdministrationDataTest {
                 new UUID(801, 1), new ManagedName("Tunnel"), new UUID(801, 2), new ManagedName("Channel"), 128);
         CompoundTag legacy = original.save(new CompoundTag(), RegistryAccess.EMPTY);
         legacy.putInt("schema_version", 4);
+        legacy.remove("audit_entries");
         legacy.remove("bucket_created_mask");
         legacy.remove("management_revision");
         legacy.remove("recovery");
@@ -152,7 +153,7 @@ class NetworkAdministrationDataTest {
         CompoundTag saved = loaded.save(new CompoundTag(), RegistryAccess.EMPTY);
         assertEquals(before, legacy);
         assertFalse(loaded.isDirty());
-        assertEquals(9, saved.getInt("schema_version"));
+        assertEquals(10, saved.getInt("schema_version"));
         assertEquals(0L, saved.getLong("management_revision"));
         for (String key : before.getAllKeys()) {
             if (!key.equals("schema_version")) {
@@ -165,6 +166,7 @@ class NetworkAdministrationDataTest {
     void currentSchemaRejectsMissingWrongTypeAndNegativeManagementRevision() {
         CompoundTag current = NetworkSavedData.create(metadata(Set.of())).save(new CompoundTag(), RegistryAccess.EMPTY);
         current.putInt("schema_version", 5);
+        current.remove("audit_entries");
         current.remove("bucket_created_mask");
         current.remove("recovery");
         for (String value : List.of("missing", "wrong_type", "negative")) {

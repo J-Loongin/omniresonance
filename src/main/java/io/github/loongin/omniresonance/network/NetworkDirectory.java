@@ -138,6 +138,30 @@ public final class NetworkDirectory {
         }
     }
 
+    /** Read-only bounded administrative index view. Callers must enforce operator permission; never grants a network role. */
+    public DiagnosticListing diagnosticList(@Nullable UUID owner, int limit) {
+        requireOwningThread();
+        if (limit < 1 || limit > 128) throw new IllegalArgumentException("Invalid diagnostic limit");
+        Collection<NetworkMetadata> source = owner == null
+                ? networks.values()
+                : byOwner.getOrDefault(owner, java.util.Collections.emptyNavigableSet());
+        var rows = new ArrayList<NetworkMetadata>(Math.min(limit, source.size()));
+        for (var value : source) {
+            if (rows.size() == limit) break;
+            rows.add(value);
+        }
+        rows.sort(ORDER);
+        return new DiagnosticListing(rows, source.size());
+    }
+
+    public record DiagnosticListing(List<NetworkMetadata> entries, int total) {
+        public DiagnosticListing {
+            entries = List.copyOf(entries);
+            if (entries.size() > 128 || total < entries.size())
+                throw new IllegalArgumentException("Invalid diagnostic listing");
+        }
+    }
+
     /** Returns an immutable ordered snapshot; caller inputs stay owned, no mutation/simulation occurs. */
     public List<NetworkMetadata> ownedBy(UUID owner) {
         requireOwningThread();

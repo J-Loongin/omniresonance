@@ -112,11 +112,13 @@ final class ItemTransferEngineTest {
         assertTrue(recovery.isEmpty());
     }
 
-    @Test
-    void supports65556InOneExtendedApiRequest() {
-        var r = transfer(65556);
-        assertEquals(65556, r.moved());
-        assertEquals(65556, source.maximumRequest);
+    @org.junit.jupiter.api.Tag("scale")
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {6400, 65556})
+    void largeLogicalRequestsUseOneNativeExtractionAndInsertion(int amount) {
+        var r = transfer(amount);
+        assertEquals(amount, r.moved());
+        assertEquals(amount, source.maximumRequest);
         assertEquals(1, source.extractionCalls);
         assertEquals(1, target.insertionCalls);
     }

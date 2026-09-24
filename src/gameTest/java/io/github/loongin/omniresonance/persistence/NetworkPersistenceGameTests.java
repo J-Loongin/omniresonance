@@ -99,7 +99,7 @@ public final class NetworkPersistenceGameTests {
             CompoundTag wrapper =
                     NbtIo.readCompressed(directory.resolve(expectedFiles.getFirst()), NbtAccounter.unlimitedHeap());
             helper.assertTrue(
-                    wrapper.getCompound("data").getInt("schema_version") == 9, "Standard SavedData wrapper missing");
+                    wrapper.getCompound("data").getInt("schema_version") == 10, "Standard SavedData wrapper missing");
             helper.assertTrue(wrapper.contains("DataVersion"), "Standard data version missing");
             SavedNetworkRepository reloaded = new SavedNetworkRepository(storage(helper, directory), directory);
             NetworkDirectory reloadedIndex = new NetworkDirectory(reloaded.loadNetworks());

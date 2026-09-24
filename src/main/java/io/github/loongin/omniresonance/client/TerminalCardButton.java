@@ -10,12 +10,16 @@ import net.minecraft.network.chat.Component;
 final class TerminalCardButton extends TerminalClickButton {
     private final Component mark;
     private final Component description;
+    private final net.minecraft.client.gui.components.Tooltip fullTooltip;
+    private boolean tooltipVisible;
 
     TerminalCardButton(
             TerminalLayout.Rect bounds, Component mark, Component title, Component description, OnPress onPress) {
         super(bounds.x(), bounds.y(), bounds.width(), bounds.height(), TerminalText.title(title), onPress);
         this.mark = TerminalText.body(mark);
         this.description = TerminalText.body(description);
+        fullTooltip = net.minecraft.client.gui.components.Tooltip.create(
+                TerminalText.body(title.copy().append("\n").append(description)));
     }
 
     @Override
@@ -41,20 +45,41 @@ final class TerminalCardButton extends TerminalClickButton {
         Font font = TerminalText.font(Minecraft.getInstance());
         int titleY = getY() + Math.max(5, getHeight() / 3 - 5);
         int textColor = active ? TerminalTheme.TEXT : TerminalTheme.MUTED;
-        graphics.drawString(font, mark, getX() + 7, titleY, active ? TerminalTheme.ACCENT : TerminalTheme.MUTED, false);
+        if (getWidth() >= 120)
+            graphics.drawString(
+                    font, mark, getX() + 7, titleY, active ? TerminalTheme.ACCENT : TerminalTheme.MUTED, false);
         String title = TerminalText.ellipsize(
                 getMessage().getString(),
-                Math.max(0, getWidth() - 32),
+                Math.max(0, getWidth() - (getWidth() >= 120 ? 32 : 14)),
                 value -> font.width(TerminalText.title(Component.literal(value))));
-        graphics.drawString(font, TerminalText.title(Component.literal(title)), getX() + 25, titleY, textColor, false);
+        graphics.drawString(
+                font,
+                TerminalText.title(Component.literal(title)),
+                getX() + (getWidth() >= 120 ? 25 : 7),
+                titleY,
+                textColor,
+                false);
+        String shownDescription = TerminalText.ellipsize(font, description.getString(), Math.max(0, getWidth() - 14));
+        boolean needsTooltip = needsTooltip(
+                getMessage().getString(), title, description.getString(), shownDescription, getHeight() >= 38);
+        if (needsTooltip != tooltipVisible) {
+            tooltipVisible = needsTooltip;
+            setTooltip(needsTooltip ? fullTooltip : null);
+        }
         if (getHeight() >= 38) {
             graphics.drawString(
                     font,
-                    TerminalText.ellipsize(font, description.getString(), Math.max(0, getWidth() - 14)),
+                    shownDescription,
                     getX() + 7,
                     Math.min(getY() + getHeight() - 13, titleY + 14),
                     TerminalTheme.MUTED,
                     false);
         }
+    }
+
+    static boolean needsTooltip(
+            String title, String shownTitle, String description, String shownDescription, boolean descriptionVisible) {
+        return !title.equals(shownTitle)
+                || !description.isEmpty() && (!descriptionVisible || !description.equals(shownDescription));
     }
 }

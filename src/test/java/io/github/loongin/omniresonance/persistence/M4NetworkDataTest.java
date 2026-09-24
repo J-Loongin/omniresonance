@@ -109,6 +109,7 @@ final class M4NetworkDataTest {
         NetworkSavedData data = data();
         CompoundTag legacy = data.save(new CompoundTag(), RegistryAccess.EMPTY);
         legacy.putInt("schema_version", 8);
+        legacy.remove("audit_entries");
         legacy.remove("bucket_created_mask");
         CompoundTag domain =
                 legacy.getList("domain_configurations", Tag.TAG_COMPOUND).getCompound(0);
@@ -125,7 +126,7 @@ final class M4NetworkDataTest {
         assertFalse(loaded.isDirty());
         assertEquals(before, legacy);
         CompoundTag upgraded = loaded.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(9, upgraded.getInt("schema_version"));
+        assertEquals(10, upgraded.getInt("schema_version"));
         assertEquals(upgraded, NetworkSavedData.load(NETWORK, upgraded).save(new CompoundTag(), RegistryAccess.EMPTY));
     }
 

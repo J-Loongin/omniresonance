@@ -43,6 +43,94 @@ import org.slf4j.LoggerFactory;
  */
 public final class NetworkTerminalService {
     private static final Logger LOGGER = LoggerFactory.getLogger(NetworkTerminalService.class);
+    private @Nullable NetworkDiagnosticsService diagnostics;
+    /** Installs the server-owned read model before terminal sessions are exposed; performs no storage access. */
+    public void installDiagnostics(NetworkDiagnosticsService service) {
+        requireServerThread();
+        if (diagnostics != null || closed) throw new IllegalStateException("Diagnostics already installed or closed");
+        diagnostics = java.util.Objects.requireNonNull(service);
+    }
+    /** Owner-thread count of pending sync work only; does not open an inventory view or activate storage. */
+    public int pendingSyncTasks(UUID network) {
+        requireServerThread();
+        return inventorySync == null ? 0 : inventorySync.pendingTasks(network);
+    }
+
+    /** Trusted server adapter lookup; commands and UI must enforce their own permission boundary. */
+    public @Nullable NetworkDiagnosticsService diagnostics() {
+        requireServerThread();
+        return closed ? null : diagnostics;
+    }
+
+    private BiConsumer<ServerPlayer, io.github.loongin.omniresonance.networking.NetworkStatusFrame> statusSender =
+            (player, frame) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, frame);
+
+    public void installStatusSender(
+            BiConsumer<ServerPlayer, io.github.loongin.omniresonance.networking.NetworkStatusFrame> sender) {
+        requireServerThread();
+        if (!sessions.isEmpty()) throw new IllegalStateException("Status sessions already active");
+        statusSender = Objects.requireNonNull(sender);
+    }
+
+    /** Authenticated read-only subscription; network identity and role always come from the terminal session. */
+    public void status(ServerPlayer player, io.github.loongin.omniresonance.networking.NetworkStatusRequest request) {
+        requireServerThread();
+        var session = sessions.get(player.getUUID());
+        if (closed
+                || diagnostics == null
+                || session == null
+                || session.player != player
+                || !session.viewId.equals(request.view())
+                || !session.id.equals(request.session())) return;
+        if (!request.open()) {
+            if (request.generation() == session.statusGeneration) session.statusActive = false;
+            return;
+        }
+        if (request.generation() <= session.statusGeneration) return;
+        session.statusGeneration = request.generation();
+        session.statusSequence = 0;
+        session.statusActive = true;
+        session.chunkActive = false;
+        if (nodeDirectory != null) nodeDirectory.closePlayer(player);
+        if (inventorySync != null) inventorySync.cancel(player.getUUID());
+        if (storageAccess != null) storageAccess.close(player.getUUID());
+        session.inventoryActive = false;
+        if (gameTick() >= session.nextStatusTick) publishStatus(session);
+    }
+
+    private void publishStatus(Session session) {
+        io.github.loongin.omniresonance.network.NetworkDiagnosticsSnapshot snapshot = null;
+        try {
+            requireLayer(session, Layer.NETWORK);
+            UUID network = requireSelectedNetwork(session);
+            topology().inspectNetwork(session.player, network);
+            snapshot = diagnostics.inspect(network).orElse(null);
+        } catch (RuntimeException unavailable) {
+            session.statusActive = false;
+        }
+        if (snapshot == null) session.statusActive = false;
+        String version = net.neoforged.fml.ModList.get()
+                .getModContainerById("omniresonance")
+                .orElseThrow()
+                .getModInfo()
+                .getVersion()
+                .toString();
+        statusSender.accept(
+                session.player,
+                new io.github.loongin.omniresonance.networking.NetworkStatusFrame(
+                        session.id, session.statusGeneration, ++session.statusSequence, snapshot, version));
+        session.nextStatusTick = gameTick() + 20;
+    }
+
+    private void clearStatus(Session session) {
+        if (!session.statusActive) return;
+        session.statusActive = false;
+        statusSender.accept(
+                session.player,
+                new io.github.loongin.omniresonance.networking.NetworkStatusFrame(
+                        session.id, session.statusGeneration, ++session.statusSequence, null, ""));
+    }
+
     private final MinecraftServer server;
     private @Nullable io.github.loongin.omniresonance.filter.ItemFilterService filters;
     private final NetworkDirectory directory;
@@ -362,6 +450,7 @@ public final class NetworkTerminalService {
         settings = initialConfig.loaded()
                 ? Objects.requireNonNull(initialConfig.settings(), "settings")
                 : ServerSettings.defaults();
+        creation.configureAudit(settings.auditEntriesPerScope());
     }
 
     /** Installs the matching owner-library authority once before sessions exist; no player data is created. */
@@ -415,6 +504,7 @@ public final class NetworkTerminalService {
             }
             session.lastSequence = request.sequence();
             if (!(request instanceof NetworkTerminalRequest.Heartbeat)) {
+                clearStatus(session);
                 session.chunkActive = false;
                 if (nodeDirectory != null) nodeDirectory.closePlayer(sender);
             }
@@ -435,6 +525,7 @@ public final class NetworkTerminalService {
             }
             if (request instanceof NetworkTerminalRequest.Create create) {
                 NetworkMetadata created = creation.create(sender.getUUID(), create.name(), settings.networksPerOwner());
+                creation.recordCreation(sender, created);
                 return new NetworkTerminalResponse.Success(
                         request.viewId(),
                         session.id,
@@ -506,6 +597,7 @@ public final class NetworkTerminalService {
             settings = state.settings();
             configurationRevision = state.revision();
         }
+        if (!closed) creation.configureAudit(settings.auditEntriesPerScope());
         if (!closed && administration != null) administration.applyConfiguration(state);
     }
 
@@ -557,7 +649,8 @@ public final class NetworkTerminalService {
                 },
                 ledgers,
                 recovery,
-                sender);
+                sender,
+                creation::recordNetwork);
     }
 
     /** Main-thread protocol entry; the storage coordinator owns replay and native inventory validation. */
@@ -643,6 +736,7 @@ public final class NetworkTerminalService {
     /** Advances owned member/settings clocks; no per-tick roster enumeration or synchronization occurs. */
     public void tick() {
         requireServerThread();
+        if (!closed) creation.configureAudit(settings.auditEntriesPerScope());
         if (!closed && navigation != null) navigation.tick(settings.navigation());
         if (!closed && nodeDirectory != null) nodeDirectory.tick();
         if (!closed && administration != null) administration.tick();
@@ -650,6 +744,7 @@ public final class NetworkTerminalService {
         if (!closed && networkSettings != null) networkSettings.tick();
         if (!closed)
             for (Session session : sessions.values()) {
+                if (session.statusActive && gameTick() >= session.nextStatusTick) publishStatus(session);
                 tickFilterTransfer(session);
                 if (session.sampleSequence > 0 && gameTick() - session.sampleStartedTick >= 200) {
                     long sequence = session.sampleSequence;
@@ -880,6 +975,7 @@ public final class NetworkTerminalService {
     }
 
     private void cancelSessionEdit(ServerPlayer player, Session session) {
+        clearStatus(session);
         session.chunkActive = false;
         if (inventorySync != null) inventorySync.cancel(player.getUUID());
         if (storageAccess != null) storageAccess.close(player.getUUID());
@@ -1948,6 +2044,8 @@ public final class NetworkTerminalService {
     }
 
     private static final class Session {
+        private boolean statusActive;
+        private long statusGeneration, statusSequence, nextStatusTick;
         private final ServerPlayer player;
         private final UUID viewId;
         private final UUID id;

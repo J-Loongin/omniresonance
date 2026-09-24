@@ -34,7 +34,31 @@ import org.lwjgl.glfw.GLFW;
  * automatically. Closing releases at most the matching server session and does not imply cancellation of an already
  * submitted create intent.
  */
-final class NetworkSetupScreen extends Screen {
+final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
+    private boolean renderingBackdrop;
+
+    @Override
+    public @Nullable RecipeGhostTarget.Target ghostTarget() {
+        if (disconnected
+                || closeSent
+                || pendingOperation != PendingOperation.NONE
+                || networkContext.open
+                || topologyDiscardConfirmation
+                || createOverlay) return null;
+        return filterView.ghostTarget();
+    }
+
+    @Override
+    public boolean acceptGhost(RecipeGhostTarget.Target target, RecipeGhostTarget.Ingredient ingredient) {
+        return target.equals(ghostTarget()) && filterView.acceptGhost(target, ingredient);
+    }
+
+    @Override
+    public RecipeGhostTarget.Area recipeGuiBounds() {
+        var bounds = layout.window();
+        return new RecipeGhostTarget.Area(bounds.x(), bounds.y(), bounds.width(), bounds.height());
+    }
+
     private static final int CONTROL_HEIGHT = 20;
     private static final int ROW_HEIGHT = 22;
     private static final int PANEL_HEADING_HEIGHT = 14;
@@ -45,6 +69,40 @@ final class NetworkSetupScreen extends Screen {
     private final ModalBackdrop modalBackdrop = new ModalBackdrop();
     private final boolean retryOnboardingSkipped;
     private final UUID viewId = UUID.randomUUID();
+
+    private @Nullable TerminalStatusView statusView;
+    private long statusGeneration;
+
+    void receiveStatus(io.github.loongin.omniresonance.networking.NetworkStatusFrame frame) {
+        if (statusView != null) statusView.accept(frame);
+    }
+
+    private void openStatus() {
+        if (!(topologyState instanceof NetworkTerminalState.NetworkRoot root)
+                || sessionId == null
+                || pendingOperation != PendingOperation.NONE) return;
+        closeChunkOverview();
+        closeInventory();
+        statusGeneration = Math.incrementExact(statusGeneration);
+        statusView = new TerminalStatusView(
+                sessionId,
+                root.network().id(),
+                statusGeneration,
+                value -> minecraft.keyboardHandler.setClipboard(value));
+        networkContext.readOnly(true);
+        client.sendStatus(new io.github.loongin.omniresonance.networking.NetworkStatusRequest(
+                viewId, sessionId, statusGeneration, true));
+        rebuildIfActive();
+    }
+
+    private void closeStatus() {
+        if (statusView == null) return;
+        if (sessionId != null)
+            client.sendStatus(new io.github.loongin.omniresonance.networking.NetworkStatusRequest(
+                    viewId, sessionId, statusGeneration, false));
+        statusView = null;
+        networkContext.readOnly(false);
+    }
 
     private TerminalLayout layout = TerminalLayout.calculate(320, 240);
     private TerminalLayout.Rect listBounds = new TerminalLayout.Rect(0, 0, 0, 0);
@@ -145,6 +203,7 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void closeChunkOverview() {
+        closeStatus();
         if (nodesView != null) {
             client.sendChunkOverview(new io.github.loongin.omniresonance.networking.ChunkOverviewRequest(
                     viewId,
@@ -173,6 +232,16 @@ final class NetworkSetupScreen extends Screen {
 
     void receiveInventory(io.github.loongin.omniresonance.networking.DomainInventoryFrame frame) {
         if (inventoryView != null) inventoryView.accept(frame);
+    }
+
+    boolean domainInventoryOpen() {
+        return inventoryView != null;
+    }
+
+    private boolean consumeDomainCloseKey(int keyCode, int scanCode) {
+        if (inventoryView == null || !client.isDomainKey(keyCode, scanCode)) return false;
+        client.domainShortcutClosed();
+        return true;
     }
 
     private void openInventory() {
@@ -264,20 +333,39 @@ final class NetworkSetupScreen extends Screen {
     private @Nullable TerminalFilterView.Action.SaveFull pendingFilterSave;
     private final TerminalFilterView filterView = new TerminalFilterView(this::rebuildIfActive);
 
+    private final DomainShortcutNavigation domainShortcut;
+
     NetworkSetupScreen(NetworkTerminalClient client) {
+        this(client, false);
+    }
+
+    NetworkSetupScreen(NetworkTerminalClient client, boolean domainRequested) {
         this(
                 client,
                 new TerminalInteractionPolicy.RetrySnapshot(
-                        "", TerminalInteractionPolicy.DraftState.clear(), client.firstPromptDismissed()));
+                        "", TerminalInteractionPolicy.DraftState.clear(), client.firstPromptDismissed()),
+                domainRequested);
     }
 
     NetworkSetupScreen(NetworkTerminalClient client, TerminalInteractionPolicy.RetrySnapshot retrySnapshot) {
+        this(client, retrySnapshot, false);
+    }
+
+    NetworkSetupScreen(
+            NetworkTerminalClient client,
+            TerminalInteractionPolicy.RetrySnapshot retrySnapshot,
+            boolean domainRequested) {
         super(Component.translatable("omniresonance.terminal.title"));
         this.client = Objects.requireNonNull(client, "client");
+        domainShortcut = new DomainShortcutNavigation(domainRequested);
         TerminalInteractionPolicy.RetrySnapshot snapshot = Objects.requireNonNull(retrySnapshot, "retrySnapshot");
         retryOnboardingSkipped = snapshot.onboardingSkipped();
         draft = snapshot.draft();
         draftState = snapshot.draftState();
+    }
+
+    boolean domainShortcutPending() {
+        return domainShortcut.pending();
     }
 
     boolean matchesView(UUID candidate) {
@@ -285,6 +373,7 @@ final class NetworkSetupScreen extends Screen {
     }
 
     void disconnected() {
+        domainShortcut.clear();
         closeChunkOverview();
         closeInventory();
         clearFilterTransfer();
@@ -457,6 +546,12 @@ final class NetworkSetupScreen extends Screen {
         }
         if (response instanceof NetworkTerminalResponse.ViewState view) {
             NetworkTerminalState previous = topologyState;
+            if (statusView != null
+                    && (!(view.state() instanceof NetworkTerminalState.NetworkRoot nextRoot)
+                            || !(previous instanceof NetworkTerminalState.NetworkRoot previousRoot)
+                            || !nextRoot.network()
+                                    .id()
+                                    .equals(previousRoot.network().id()))) closeStatus();
             topologyState = view.state();
             networkContext.apply(topologyState);
             memberView.apply(topologyState);
@@ -482,10 +577,19 @@ final class NetworkSetupScreen extends Screen {
                 return;
             }
             if (continueMemberCandidates()) return;
+            switch (domainShortcut.resolve(topologyState, pendingOperation != PendingOperation.NONE)) {
+                case OPEN -> {
+                    openInventory();
+                    return;
+                }
+                case UNAVAILABLE -> error = Component.translatable("omniresonance.terminal.home.domain.unavailable");
+                case NONE -> {}
+            }
             rebuildIfActive();
             return;
         }
         NetworkTerminalResponse.Success success = (NetworkTerminalResponse.Success) response;
+        closeStatus();
         topologyState = null;
         networkContext.apply(topologyState);
         filterView.apply(null);
@@ -568,12 +672,14 @@ final class NetworkSetupScreen extends Screen {
         return retryOnboardingSkipped || client.firstPromptDismissed();
     }
 
+    static TerminalLayout managementLayout(int width, int height) {
+        return TerminalLayout.terminal(width, height);
+    }
+
     @Override
     protected void init() {
         font = TerminalText.font(Objects.requireNonNull(minecraft, "minecraft"));
-        layout = inventoryView == null
-                ? TerminalLayout.calculate(width, height)
-                : DomainInventoryLayout.window(width, height);
+        layout = inventoryView == null ? managementLayout(width, height) : DomainInventoryLayout.window(width, height);
         networkContext.apply(topologyState);
         networkContext.buttons.clear();
         modalBackdrop.clear();
@@ -629,15 +735,22 @@ final class NetworkSetupScreen extends Screen {
     protected void setInitialFocus() {
         if (confirmation || topologyDiscardConfirmation) {
             super.setInitialFocus();
+        } else if (inventoryView != null) {
+            focusInitialEditor(true, nameField, this::setFocused);
         } else if (memberView.searchField() != null && memberView.searchField().active) {
             setInitialFocus(memberView.searchField());
         } else if (filterView.searchField() != null && filterView.searchField().active) {
             setInitialFocus(filterView.searchField());
         } else if (nameField != null && nameField.active) {
-            setInitialFocus(nameField);
+            focusInitialEditor(false, nameField, this::setFocused);
         } else {
             super.setInitialFocus();
         }
+    }
+
+    static void focusInitialEditor(
+            boolean inventoryOpen, @Nullable EditBox editor, java.util.function.Consumer<GuiEventListener> focus) {
+        focus.accept(inventoryOpen ? null : editor);
     }
 
     private void configureBodyBounds() {
@@ -667,13 +780,16 @@ final class NetworkSetupScreen extends Screen {
         crumbLeft = topBar.x();
 
         int right = topBar.right();
-        TerminalHeaderLayout.Action action =
-                inventoryView != null || chunkOverview != null || nodesView != null || filterView.managementOpen()
-                        ? TerminalHeaderLayout.Action.NONE
-                        : TerminalInteractionPolicy.topBarAction(
-                                page != null,
-                                topologyState,
-                                minecraft != null && minecraft.player != null ? minecraft.player.getUUID() : null);
+        TerminalHeaderLayout.Action action = inventoryView != null
+                        || chunkOverview != null
+                        || nodesView != null
+                        || statusView != null
+                        || filterView.managementOpen()
+                ? TerminalHeaderLayout.Action.NONE
+                : TerminalInteractionPolicy.topBarAction(
+                        page != null,
+                        topologyState,
+                        minecraft != null && minecraft.player != null ? minecraft.player.getUUID() : null);
         TerminalHeaderLayout.ActionLayout header = TerminalHeaderLayout.atRightEdge(
                 topBar, action != TerminalHeaderLayout.Action.NONE || nodesView != null);
         if (action != TerminalHeaderLayout.Action.NONE) buildTopBarAction(action, header.action());
@@ -990,6 +1106,10 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void buildTopologyWidgets() {
+        if (statusView != null) {
+            statusView.build(font, layout.content(), this::addRenderableWidget);
+            return;
+        }
         TerminalLayout.Rect content = layout.content();
         if (nodesView != null) {
             nodesView.build(
@@ -1045,7 +1165,7 @@ final class NetworkSetupScreen extends Screen {
             boolean domainUnavailable = module.equals("domain")
                     && topologyState instanceof NetworkTerminalState.NetworkRoot root
                     && root.domainUnavailable();
-            boolean implemented = !module.equals("status");
+            boolean implemented = true;
             TerminalCardButton card = new TerminalCardButton(
                     cards.get(index),
                     Component.translatable("omniresonance.terminal.home." + module + ".mark"),
@@ -1060,9 +1180,14 @@ final class NetworkSetupScreen extends Screen {
                                         case "tunnels" -> "omniresonance.terminal.home.tunnels.meta";
                                         case "admins" -> "omniresonance.terminal.home.admins.meta";
                                         case "settings" -> "omniresonance.terminal.home.settings.meta";
+                                        case "status" -> "omniresonance.status.meta";
                                         default -> "omniresonance.terminal.home.unavailable";
                                     }),
                     ignored -> {
+                        if (module.equals("status")) {
+                            openStatus();
+                            return;
+                        }
                         if (module.equals("nodes")) {
                             openChunkOverview(true);
                             return;
@@ -1898,6 +2023,12 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void navigateBack() {
+        if (statusView != null) {
+            if (statusView.back()) return;
+            closeStatus();
+            rebuildIfActive();
+            return;
+        }
         if (nodesView != null) {
             if (nodesView.back()) return;
             closeChunkOverview();
@@ -1965,6 +2096,7 @@ final class NetworkSetupScreen extends Screen {
             rebuildIfActive();
             return;
         }
+        if (filterView.closeLocalLayer()) return;
         if (filterView.closeSearch()) return;
         if (closeLocalTopologyLayer(networkContext, filterView, this::rebuildIfActive)) return;
         if (!networkContext.open && memberView.closeLocalLayer()) return;
@@ -2062,6 +2194,7 @@ final class NetworkSetupScreen extends Screen {
     @Override
     public void removed() {
         if (suspendedForConfiguration) return;
+        domainShortcut.clear();
         closeChunkOverview();
         closeInventory();
         sendCloseOnce();
@@ -2085,7 +2218,8 @@ final class NetworkSetupScreen extends Screen {
                 keyCode,
                 scanCode,
                 modifiers,
-                () -> (minecraft != null
+                () -> consumeDomainCloseKey(keyCode, scanCode)
+                        || (minecraft != null
                                 && TerminalInteractionPolicy.inventoryShortcut(
                                         minecraft.options.keyInventory, getFocused(), keyCode, scanCode))
                         || client.isTerminalKey(keyCode, scanCode),
@@ -2137,6 +2271,11 @@ final class NetworkSetupScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (inventoryView != null && client.isDomainMouseKey(button)) {
+            client.domainShortcutClosed();
+            requestShortcutClose();
+            return true;
+        }
         if (nodesView != null)
             return dispatchNodeClick(() -> nodesView, () -> super.mouseClicked(mouseX, mouseY, button));
         networkContext.apply(topologyState);
@@ -2183,6 +2322,7 @@ final class NetworkSetupScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (statusView != null) return statusView.wheel(mouseX, mouseY, scrollY);
         if (nodesView != null) return nodesView.wheel(mouseX, mouseY, scrollY);
         if (chunkOverview != null) return chunkOverview.wheel(mouseX, mouseY, scrollY);
         if (inventoryView != null) return inventoryView.wheel(mouseX, mouseY, scrollY);
@@ -2256,6 +2396,7 @@ final class NetworkSetupScreen extends Screen {
         if (inventoryView != null) inventoryView.tick();
         if (chunkOverview != null) chunkOverview.tick();
         if (nodesView != null) nodesView.tick();
+        if (statusView != null) statusView.tick();
         tickFilterTransfer();
         memberView.tick(clientTicks);
         filterView.tick(clientTicks, pendingOperation != PendingOperation.NONE);
@@ -2278,7 +2419,7 @@ final class NetworkSetupScreen extends Screen {
 
     @Override
     public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        graphics.fill(0, 0, width, height, TerminalTheme.WORLD_DIM);
+        graphics.fill(0, 0, graphics.guiWidth(), graphics.guiHeight(), TerminalTheme.WORLD_DIM);
         if (inventoryView == null) TerminalTheme.renderWindow(graphics, layout);
         else DomainInventoryLayout.renderWindow(graphics, layout);
         renderTopBar(graphics);
@@ -2311,9 +2452,23 @@ final class NetworkSetupScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        renderDesign(graphics, mouseX, mouseY, partialTick);
+    }
+
+    void renderBackdrop(GuiGraphics graphics, float partialTick) {
+        renderingBackdrop = true;
+        try {
+            renderDesign(graphics, -1, -1, partialTick);
+        } finally {
+            renderingBackdrop = false;
+        }
+    }
+
+    private void renderDesign(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         boolean inspecting = inventoryView != null && inventoryView.popupOpen();
         super.render(graphics, inspecting ? -1 : mouseX, inspecting ? -1 : mouseY, partialTick);
         if (nodesView != null) nodesView.renderTooltip(graphics, mouseX, mouseY);
+        if (statusView != null) statusView.renderTooltip(graphics, mouseX, mouseY);
         if (inventoryView != null) {
             inventoryView.renderTooltip(graphics, font, layout.window(), mouseX, mouseY);
             inventoryView.renderCarried(graphics, font, mouseX, mouseY);
@@ -2333,6 +2488,14 @@ final class NetworkSetupScreen extends Screen {
                 if (confirmation) renderConfirmation(graphics);
                 else renderTopologyDiscardConfirmation(graphics);
             });
+    }
+
+    @Override
+    public void setTooltipForNextRenderPass(
+            java.util.List<net.minecraft.util.FormattedCharSequence> lines,
+            net.minecraft.client.gui.screens.inventory.tooltip.ClientTooltipPositioner positioner,
+            boolean replace) {
+        if (!renderingBackdrop) super.setTooltipForNextRenderPass(lines, positioner, replace);
     }
 
     private void renderTopBar(GuiGraphics graphics) {
@@ -2368,6 +2531,8 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private String topBarTitle() {
+        if (statusView != null)
+            return Component.translatable("omniresonance.terminal.home.status").getString();
         if (nodesView != null)
             return Component.translatable("omniresonance.terminal.home.nodes").getString();
         if (chunkOverview != null)
@@ -2392,6 +2557,10 @@ final class NetworkSetupScreen extends Screen {
     }
 
     private void renderBody(GuiGraphics graphics) {
+        if (statusView != null) {
+            statusView.render(graphics);
+            return;
+        }
         if (nodesView != null) {
             nodesView.render(graphics);
             return;

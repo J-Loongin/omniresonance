@@ -53,6 +53,12 @@ final class ResourceDirectSchedulerTest {
     }
 
     static final class Env implements ResourceDirectScheduler.Environment {
+        TransferTelemetry observer;
+
+        public TransferTelemetry telemetry() {
+            return observer;
+        }
+
         int filterSteps;
         long filterVersion;
         boolean filterPending;
@@ -119,6 +125,37 @@ final class ResourceDirectSchedulerTest {
             SchedulerResourcePort p = new SchedulerResourcePort(type, size, amount, moves);
             ports.computeIfAbsent(new UUID(0, node), x -> new HashMap<>()).put(type, p);
             return p;
+        }
+    }
+
+    @Test
+    void realSchedulerDistinguishesSlowCallsFromUncertainTargetMutation() {
+        for (boolean slow : new boolean[] {true, false}) {
+            Env env = new Env();
+            env.types = List.of(ResourceTypes.ITEM);
+            env.observer = new TransferTelemetry(TYPES);
+            var source = env.put(3, ResourceTypes.ITEM, 1, 10);
+            var target = env.put(4, ResourceTypes.ITEM, 1, 0);
+            target.throwInsert = !slow;
+            var scheduler = new ResourceDirectScheduler(env);
+            scheduler.replaceNetwork(NETWORK, List.of(config(3, input(5, 10)), config(4, output(10, 10))), 0);
+            var clock = new java.util.concurrent.atomic.AtomicLong();
+            var budget = slow ? new TransferWorkBudget(1000, Long.MAX_VALUE, 1, clock::getAndIncrement) : budget(1000);
+            scheduler.tick(0, ServerSettings.defaults(), budget);
+            var incident = env.observer.snapshot(NETWORK, 0).incident();
+            assertEquals(new UUID(0, 3), incident.node().id());
+            assertEquals(CHANNEL, incident.channelId());
+            assertEquals(ResourceTypes.ITEM, incident.type());
+            assertEquals(
+                    slow ? TransferIncident.Reason.SLOW_CALL : TransferIncident.Reason.UNKNOWN_MUTATION,
+                    incident.reason());
+            if (slow) {
+                assertEquals(10, source.amounts[0]);
+                assertEquals(0, target.amounts[0]);
+            } else {
+                assertEquals(new UUID(0, 4), incident.peer().id());
+                assertEquals(ResourceTransferEngine.Stage.TARGET_INSERT, incident.stage());
+            }
         }
     }
 
@@ -559,6 +596,48 @@ final class ResourceDirectSchedulerTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Tag("scale")
+    void oneThousandActiveConfigurationsFinishFairlyUnderASharedCallBudget() {
+        Env env = new Env();
+        env.types = List.of(ResourceTypes.ITEM);
+        var configs = new ArrayList<ResourceDirectScheduler.Configuration>();
+        for (int pair = 0; pair < 500; pair++) {
+            int source = 3 + pair * 2, target = source + 1;
+            env.put(source, ResourceTypes.ITEM, 1, 1);
+            env.put(target, ResourceTypes.ITEM, 1, 0);
+            UUID channel = new UUID(99, pair);
+            configs.add(new ResourceDirectScheduler.Configuration(
+                    NETWORK, new UUID(0, source), channel, 0, input(1, 1000), WorkingFaces.attachedFace()));
+            configs.add(new ResourceDirectScheduler.Configuration(
+                    NETWORK, new UUID(0, target), channel, 0, output(1, 1000), WorkingFaces.attachedFace()));
+        }
+        var scheduler = new ResourceDirectScheduler(env);
+        scheduler.replaceNetwork(NETWORK, configs, 0);
+        long totalCalls = 0, maximumCalls = 0;
+        int ticks = 0;
+        for (; ticks < 1000 && env.moves.size() < 500; ticks++) {
+            var work = budget(64);
+            scheduler.tick(ticks, ServerSettings.defaults(), work);
+            assertTrue(work.calls() <= 64 + ResourceTransferEngine.MAXIMUM_GREEDY_CALLS);
+            maximumCalls = Math.max(maximumCalls, work.calls());
+            totalCalls += work.calls();
+        }
+        assertEquals(500, env.moves.size(), "Every equal-priority channel must make progress");
+        for (int pair = 0; pair < 500; pair++) {
+            assertEquals(0, env.ports.get(new UUID(0, 3 + pair * 2)).get(ResourceTypes.ITEM).amounts[0]);
+            assertEquals(1, env.ports.get(new UUID(0, 4 + pair * 2)).get(ResourceTypes.ITEM).amounts[0]);
+        }
+        assertTrue(env.recovery.isEmpty());
+        org.slf4j.LoggerFactory.getLogger(ResourceDirectSchedulerTest.class)
+                .info(
+                        "Scale acceptance: activeConfigurations=1000, channels=500, ticks={}, totalCalls={}, maxCallsPerTick={}, budget=64",
+                        ticks,
+                        totalCalls,
+                        maximumCalls);
+    }
+
+    @Test
+    @org.junit.jupiter.api.Tag("scale")
     void tenThousandSleepingConfigurationsDoNoNativeWorkAndBoundActiveAdmission() {
         Env e = new Env();
         e.types = List.of(ResourceTypes.ITEM);

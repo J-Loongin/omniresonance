@@ -37,6 +37,10 @@ public final class DomainOutputScheduler {
     }
 
     public interface Environment {
+        default @Nullable TransferTelemetry telemetry() {
+            return null;
+        }
+
         List<ResourceLocation> types();
 
         boolean active(Configuration config);
@@ -275,7 +279,7 @@ public final class DomainOutputScheduler {
             else t.pending = null;
         } catch (RuntimeException failure) {
             LOGGER.error("Domain output work failed (node={}, type={})", nodeId, t.type, failure);
-            finish(s, t, tick, settings, true);
+            finish(s, t, tick, settings, true, TransferIncident.Reason.EXCEPTION, ResourceTransferEngine.Stage.NONE);
         } finally {
             n.current = null;
             n.busy = false;
@@ -383,7 +387,14 @@ public final class DomainOutputScheduler {
             return no();
         } catch (RuntimeException failure) {
             LOGGER.error("Domain output candidate failed (node={}, type={})", c.nodeId(), t.type, failure);
-            finish(s, t, n.tick, n.settings, true);
+            finish(
+                    s,
+                    t,
+                    n.tick,
+                    n.settings,
+                    true,
+                    TransferIncident.Reason.EXCEPTION,
+                    ResourceTransferEngine.Stage.NONE);
             return new DomainOutputOrder.Attempt(DomainOutputOrder.State.FAILED, 0);
         } finally {
             if (b.slowCalls() > slowBefore && t.failureTick != n.tick) {
@@ -418,6 +429,8 @@ public final class DomainOutputScheduler {
                 n.settings.recoveryLimits(),
                 budget);
         if (result.moved() > 0) {
+            if (environment.telemetry() != null)
+                environment.telemetry().moved(c.networkId(), t.type, n.tick, result.moved());
             t.window.moved(n.tick, result.moved(), c.policy().rate(t.type));
             t.moved = true;
             t.faceCursor = (face + 1) % 6;
@@ -430,14 +443,29 @@ public final class DomainOutputScheduler {
         if (result.failure() != ResourceTransferEngine.Failure.NONE
                         && result.failure() != ResourceTransferEngine.Failure.REFUSED
                 || budget.slowCalls() > slowBefore) {
-            LOGGER.error(
-                    "Domain output commit failed (node={}, type={}, stage={}, uncertainRequest={})",
-                    c.nodeId(),
-                    t.type,
-                    result.unknownStage(),
-                    result.unknownRequested(),
-                    result.cause());
-            finish(s, t, n.tick, n.settings, true);
+            if (result.failure() == ResourceTransferEngine.Failure.NONE
+                    || result.failure() == ResourceTransferEngine.Failure.REFUSED)
+                LOGGER.warn("Slow domain output commit call (node={}, type={})", c.nodeId(), t.type);
+            else {
+                LOGGER.error(
+                        "Domain output commit failed (node={}, type={}, stage={}, uncertainRequest={})",
+                        c.nodeId(),
+                        t.type,
+                        result.unknownStage(),
+                        result.unknownRequested(),
+                        result.cause());
+            }
+            finish(
+                    s,
+                    t,
+                    n.tick,
+                    n.settings,
+                    true,
+                    result.failure() == ResourceTransferEngine.Failure.NONE
+                                    || result.failure() == ResourceTransferEngine.Failure.REFUSED
+                            ? TransferIncident.Reason.SLOW_CALL
+                            : TransferIncident.reason(result.failure()),
+                    result.unknownStage());
             return new DomainOutputOrder.Attempt(DomainOutputOrder.State.FAILED, result.moved());
         }
         if (t.window.available(n.tick, c.policy().rate(t.type)) == 0) finish(s, t, n.tick, n.settings, false);
@@ -501,8 +529,27 @@ public final class DomainOutputScheduler {
     }
 
     private void finish(State s, Type t, long tick, ServerSettings settings, boolean failure) {
+        finish(s, t, tick, settings, failure, TransferIncident.Reason.SLOW_CALL, ResourceTransferEngine.Stage.NONE);
+    }
+
+    private void finish(
+            State s,
+            Type t,
+            long tick,
+            ServerSettings settings,
+            boolean failure,
+            TransferIncident.Reason reason,
+            ResourceTransferEngine.Stage stage) {
         long delay = s.config.policy().intervalTicks();
         if (failure) {
+            if (environment.telemetry() != null)
+                environment
+                        .telemetry()
+                        .failure(
+                                s.config.networkId(),
+                                tick,
+                                "domain_output",
+                                TransferIncident.of(s.config.nodeId(), null, null, t.type, reason, stage));
             t.failureTick = tick;
             if (s.failures < Integer.MAX_VALUE) s.failures++;
             if (s.failures >= settings.scheduler().failureThreshold()) {
@@ -544,6 +591,19 @@ public final class DomainOutputScheduler {
             }
         }
         return null;
+    }
+
+    /** Read-only node metadata counters; never resolves capabilities, opens storage or advances a cursor. */
+    public TransferTelemetry.QueueCounts queueCounts(UUID node, long tick, ServerSettings settings) {
+        checkThread();
+        State state = states.get(node);
+        if (state == null) return new TransferTelemetry.QueueCounts(0, 0);
+        long next = due(state);
+        boolean backoff = state.failures > 0;
+        for (var type : state.types)
+            if (state.config.policy().scope().includes(type.type))
+                backoff |= type.emptyChecks >= settings.scheduler().emptyChecksBeforeSleep();
+        return new TransferTelemetry.QueueCounts(next <= tick ? 1 : 0, next > tick && backoff ? 1 : 0);
     }
 
     private static long due(State s) {

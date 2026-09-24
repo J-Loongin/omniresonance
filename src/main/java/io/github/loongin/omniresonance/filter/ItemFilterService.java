@@ -255,6 +255,10 @@ public final class ItemFilterService {
             if (!value.isEmpty()) throw rejected(Reason.INVALID_REQUEST);
             Objects.requireNonNull(owner)
                     .removePreset(Objects.requireNonNull(edit.presetId()), owner.presetLibraryRevision());
+            repository.auditOwner(
+                    edit.ownerId(),
+                    io.github.loongin.omniresonance.persistence.AuditEntry.of(
+                            "delete_preset", actor, edit.presetId(), ""));
             committed(actor, edit);
             return null;
         }
@@ -314,6 +318,19 @@ public final class ItemFilterService {
         if (owner == null) owner = repository.createOwner(edit.ownerId(), null);
         owner.putPreset(
                 next, owner.presetLibraryRevision(), limits.filterPresetsPerOwner(), limits.rulesPerFilterPreset());
+        repository.auditOwner(
+                edit.ownerId(),
+                io.github.loongin.omniresonance.persistence.AuditEntry.of(
+                        edit.operation() == PresetEditOperation.CREATE
+                                ? "create_preset"
+                                : edit.operation() == PresetEditOperation.COPY
+                                        ? "copy_preset"
+                                        : edit.operation() == PresetEditOperation.RENAME
+                                                ? "rename_preset"
+                                                : "edit_preset",
+                        actor,
+                        id,
+                        ""));
         committed(actor, edit);
         return id;
     }
@@ -417,6 +434,9 @@ public final class ItemFilterService {
         ServerSettings.FilterLimits limits = settings.get().filterLimits();
         owner.putPreset(
                 next, owner.presetLibraryRevision(), limits.filterPresetsPerOwner(), limits.rulesPerFilterPreset());
+        repository.auditOwner(
+                edit.ownerId(),
+                io.github.loongin.omniresonance.persistence.AuditEntry.of("edit_preset", actor, next.id(), ""));
         committed(actor, edit);
         return next.id();
     }

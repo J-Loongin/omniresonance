@@ -219,7 +219,11 @@ public final class NetworkAdministrationService implements AutoCloseable {
                 || (limit != -1 && data.administratorCount() >= limit)) throw rejected(Reason.QUOTA_REACHED);
         EditLockTable.Token token = acquire(actor, networkId);
         try {
-            return commit(data, target, true, data.managementRevision());
+            var updated = commit(data, target, true, data.managementRevision());
+            repository.auditNetwork(
+                    networkId,
+                    io.github.loongin.omniresonance.persistence.AuditEntry.of("add_administrator", actor, target, ""));
+            return updated;
         } finally {
             locks.release(token, actor.getUUID());
         }
@@ -242,7 +246,12 @@ public final class NetworkAdministrationService implements AutoCloseable {
         Objects.requireNonNull(edit, "edit");
         try {
             NetworkSavedData data = requireRemoval(actor, edit);
-            return commit(data, edit.target(), false, edit.revision());
+            var updated = commit(data, edit.target(), false, edit.revision());
+            repository.auditNetwork(
+                    edit.networkId(),
+                    io.github.loongin.omniresonance.persistence.AuditEntry.of(
+                            "remove_administrator", actor, edit.target(), ""));
+            return updated;
         } finally {
             locks.release(edit.token(), actor.getUUID());
         }

@@ -27,6 +27,21 @@ import org.jetbrains.annotations.Nullable;
  * or changing state, including inherited dirty marking and file saving through the guarded dirty methods.
  */
 public final class OwnerSavedData extends SavedData {
+    /** Returns a detached bounded snapshot on the owning server thread; no state changes or I/O occur. */
+    public java.util.List<AuditEntry> auditEntries() {
+        requireOwningThread();
+        return audit.snapshot();
+    }
+
+    /** Appends server-authored metadata on the owning thread after a confirmed action; zero retains history.
+     * Invalid input rejects before mutation. Marks only this shard dirty; performs no simulation or I/O.
+     */
+    public void appendAudit(AuditEntry entry, int capacity) {
+        requireOwningThread();
+        if (audit.append(entry, capacity)) super.setDirty(true);
+    }
+
+    private final AuditRing audit = new AuditRing();
     private final Thread owningThread = Thread.currentThread();
     private final UUID ownerId;
     private @Nullable UUID defaultNetworkId;
@@ -59,10 +74,14 @@ public final class OwnerSavedData extends SavedData {
      */
     public static OwnerSavedData load(UUID expectedOwnerId, CompoundTag tag) {
         int version = ManagedDataNbt.readSchemaVersion(tag);
-        if (version != 1 && version != 2 && version != 3)
+        if (version != 1 && version != 2 && version != 3 && version != 4)
             throw new IllegalArgumentException("Unsupported owner schema");
         ManagedDataNbt.validateSchemaAndFields(
-                tag, version, version == 1 ? ManagedDataNbt.OWNER_V1_FIELDS : ManagedDataNbt.OWNER_FIELDS);
+                tag,
+                version,
+                version == 1
+                        ? ManagedDataNbt.OWNER_V1_FIELDS
+                        : version <= 3 ? ManagedDataNbt.OWNER_V3_FIELDS : ManagedDataNbt.OWNER_FIELDS);
         UUID ownerId = ManagedDataNbt.readIdentity(tag, "owner_id", expectedOwnerId);
         UUID defaultNetworkId =
                 tag.contains("default_network_id") ? ManagedDataNbt.readUuid(tag, "default_network_id") : null;
@@ -97,6 +116,10 @@ public final class OwnerSavedData extends SavedData {
                 data.presetsByName.put(preset.name().uniquenessKey(), preset.id());
             }
             data.presetLibraryRevision = revision;
+        }
+        if (version >= 4) {
+            ManagedDataNbt.requireType(tag, "audit_entries", net.minecraft.nbt.Tag.TAG_LIST);
+            data.audit.restore(AuditNbt.decode((net.minecraft.nbt.ListTag) tag.get("audit_entries")));
         }
         return data;
     }
@@ -221,6 +244,7 @@ public final class OwnerSavedData extends SavedData {
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
         requireOwningThread();
         Objects.requireNonNull(tag, "tag");
+        tag.put("audit_entries", AuditNbt.encode(audit.snapshot()));
         tag.putInt("schema_version", ManagedDataNbt.OWNER_SCHEMA_VERSION);
         tag.putUUID("owner_id", ownerId);
         tag.putLong("preset_library_revision", presetLibraryRevision);

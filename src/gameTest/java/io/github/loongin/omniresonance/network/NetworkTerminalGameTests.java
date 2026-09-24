@@ -100,6 +100,12 @@ public final class NetworkTerminalGameTests {
             helper.assertTrue(
                     created.created().equals(created.page().preferred()), "First owned network is not preferred");
             failure(helper, service.handle(player, create), NetworkTerminalResponse.Reason.STALE_REQUEST);
+            var audit = fixture.repository.findOwner(OWNER).orElseThrow().auditEntries();
+            helper.assertTrue(
+                    audit.size() == 1
+                            && audit.getFirst().action().getPath().equals("create_network")
+                            && audit.getFirst().actor().equals(OWNER),
+                    "Creation replay must not duplicate the owner audit");
             helper.assertTrue(
                     fixture.directory.ownedCount(OWNER) == 1 && fixture.directory.ownedCount(OTHER) == 0,
                     "Replay or impersonation committed");

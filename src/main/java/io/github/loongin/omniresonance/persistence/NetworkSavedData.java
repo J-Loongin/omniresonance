@@ -172,6 +172,21 @@ public final class NetworkSavedData extends SavedData {
         }
     }
 
+    /** Returns a detached bounded snapshot on the owning server thread; no state changes or I/O occur. */
+    public java.util.List<AuditEntry> auditEntries() {
+        requireOwningThread();
+        return audit.snapshot();
+    }
+
+    /** Appends server-authored metadata on the owning thread after a confirmed action; zero retains history.
+     * Invalid input rejects before mutation. Marks only this shard dirty; performs no simulation or I/O.
+     */
+    public void appendAudit(AuditEntry entry, int capacity) {
+        requireOwningThread();
+        if (audit.append(entry, capacity)) super.setDirty(true);
+    }
+
+    private final AuditRing audit = new AuditRing();
     private final Thread owningThread = Thread.currentThread();
     private NetworkMetadata metadata;
     private final NavigableSet<UUID> administratorIds = new TreeSet<>();
@@ -238,6 +253,7 @@ public final class NetworkSavedData extends SavedData {
                     case 4 -> ManagedDataNbt.NETWORK_V4_FIELDS;
                     case 5 -> ManagedDataNbt.NETWORK_V5_FIELDS;
                     case 6, 7, 8 -> ManagedDataNbt.NETWORK_V8_FIELDS;
+                    case 9 -> ManagedDataNbt.NETWORK_V9_FIELDS;
                     case ManagedDataNbt.NETWORK_SCHEMA_VERSION -> ManagedDataNbt.NETWORK_FIELDS;
                     default -> throw new IllegalArgumentException("Unsupported network schema");
                 };
@@ -261,6 +277,10 @@ public final class NetworkSavedData extends SavedData {
             data.bucketCreatedMask = tag.getLong("bucket_created_mask");
         }
         if (schemaVersion >= 6) data.recovery.restore(RecoveryNbt.decode(tag));
+        if (schemaVersion >= 10) {
+            ManagedDataNbt.requireType(tag, "audit_entries", net.minecraft.nbt.Tag.TAG_LIST);
+            data.audit.restore(AuditNbt.decode((net.minecraft.nbt.ListTag) tag.get("audit_entries")));
+        }
         return data;
     }
 
@@ -1360,11 +1380,12 @@ public final class NetworkSavedData extends SavedData {
         return Optional.of(updated);
     }
 
-    /** Writes exact v5 fields into caller-owned tags without changing dirty state or performing I/O. */
+    /** Writes current-schema fields into caller-owned tags without changing dirty state or performing I/O. */
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
         requireOwningThread();
         Objects.requireNonNull(tag, "tag");
+        tag.put("audit_entries", AuditNbt.encode(audit.snapshot()));
         tag.putInt("schema_version", ManagedDataNbt.NETWORK_SCHEMA_VERSION);
         tag.putLong("bucket_created_mask", bucketCreatedMask);
         tag.putUUID("network_id", metadata.id());

@@ -199,7 +199,7 @@ final class ChunkOverviewView implements AutoCloseable {
     }
 
     void tick() {
-        if (loadingTicks < 6) loadingTicks++;
+        if (!TerminalInteractionPolicy.loadingVisible(loadingTicks)) loadingTicks++;
     }
 
     private static Component text(String key, Object... args) {
@@ -241,7 +241,7 @@ final class ChunkOverviewView implements AutoCloseable {
     void render(GuiGraphics graphics, Font font) {
         TerminalTheme.renderPanel(graphics, body);
         if (page == null || !page.available()) {
-            if (page != null || loadingTicks >= 6)
+            if (page != null || TerminalInteractionPolicy.loadingVisible(loadingTicks))
                 graphics.drawString(
                         font,
                         TerminalText.body(text(page == null ? "loading" : "unavailable")),

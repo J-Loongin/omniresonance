@@ -75,6 +75,12 @@ public final class DomainStorage {
         this.publishMask = Objects.requireNonNull(publishMask);
     }
 
+    /** Owning-thread read of already activated data only; no bucket loading, mutation, simulation or disk access. */
+    public long knownVariantCount() {
+        checkThread();
+        return state == State.AVAILABLE && ledger != null ? ledger.variantCount() : -1;
+    }
+
     /** Returns runtime availability on the owning thread without implicitly activating storage. */
     public State state() {
         checkThread();

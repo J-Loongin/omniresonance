@@ -23,9 +23,14 @@ final class TerminalTagClipboard {
 
     static void copy(String type, List<String> tags, java.util.function.Consumer<String> writer) {
         if (tags.isEmpty()) return;
-        String text = String.join("\n", tags);
+        String text =
+                tags.stream().map(TerminalTagClipboard::searchText).collect(java.util.stream.Collectors.joining("\n"));
         writer.accept(text);
         recent = new Candidate(type, tags, text);
+    }
+
+    static String searchText(String tag) {
+        return "#" + tag.substring(tag.indexOf(':') + 1);
     }
 
     static @Nullable Candidate recent() {

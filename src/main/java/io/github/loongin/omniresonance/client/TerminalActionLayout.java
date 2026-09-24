@@ -18,13 +18,6 @@ record TerminalActionLayout(TerminalLayout.Rect content, TerminalLayout.Rect sec
     static TerminalLayout.Rect button(TerminalLayout.Rect bounds, int count, int index) {
         if (count < 1 || count > 3 || index < 0 || index >= count)
             throw new IllegalArgumentException("Invalid action slot");
-        return toolbarButton(bounds, count, index);
-    }
-
-    /** Shared sizing for compact browsing toolbars with up to five parallel entries. */
-    static TerminalLayout.Rect toolbarButton(TerminalLayout.Rect bounds, int count, int index) {
-        if (count < 1 || count > 5 || index < 0 || index >= count)
-            throw new IllegalArgumentException("Invalid toolbar action slot");
         int width = Math.min(WIDTH, Math.max(0, (bounds.width() - INSET * 2 - GAP * (count - 1)) / count));
         int height = Math.min(HEIGHT, Math.max(0, bounds.height() - INSET * 2));
         return new TerminalLayout.Rect(
@@ -32,5 +25,16 @@ record TerminalActionLayout(TerminalLayout.Rect content, TerminalLayout.Rect sec
                 bounds.bottom() - INSET - height,
                 width,
                 height);
+    }
+    /** Equal columns fill a browsing toolbar; footer actions deliberately retain their fixed right anchor. */
+    static TerminalLayout.Rect toolbarButton(TerminalLayout.Rect bounds, int count, int index) {
+        if (count < 1 || count > 5 || index < 0 || index >= count)
+            throw new IllegalArgumentException("Invalid toolbar action slot");
+        int usable = Math.max(0, bounds.width() - INSET * 2 - GAP * (count - 1));
+        int start = usable * index / count;
+        int end = usable * (index + 1) / count;
+        int height = Math.min(HEIGHT, Math.max(0, bounds.height() - INSET * 2));
+        return new TerminalLayout.Rect(
+                bounds.x() + INSET + start + GAP * index, bounds.bottom() - INSET - height, end - start, height);
     }
 }

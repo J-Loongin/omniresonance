@@ -192,6 +192,12 @@ public final class NetworkSettingsGameTests {
             helper.assertTrue(edit.tunnelCount() == 1, "Wrong tunnel count");
             helper.assertTrue(edit.channelCount() == 1, "Wrong channel count");
             fixture.settings.delete(owner, edit);
+            var audit = fixture.repository.findOwner(OWNER).orElseThrow().auditEntries();
+            helper.assertTrue(
+                    audit.size() == 1
+                            && audit.getFirst().action().getPath().equals("delete_network")
+                            && audit.getFirst().target().equals(TARGET),
+                    "Deleted-network audit must survive in the owner shard");
             IOUtilities.waitUntilIOWorkerComplete();
             fixture.storage.save();
             IOUtilities.waitUntilIOWorkerComplete();

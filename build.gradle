@@ -27,7 +27,11 @@ repositories {
     maven {
         name = 'Modrinth'
         url = 'https://api.modrinth.com/maven'
-        content { includeModule('maven.modrinth', 'justenoughcharacters') }
+        content {
+            includeModule('maven.modrinth', 'justenoughcharacters')
+            includeModule('maven.modrinth', 'jei')
+            includeModule('maven.modrinth', 'emi')
+        }
     }
 }
 
@@ -156,8 +160,20 @@ def cleanGameTestWorld = tasks.register('cleanGameTestWorld', Delete) {
 }
 neoForge.runs.gameTestServer.systemProperty 'omniresonance.game_test_report',
         gameTestReport.get().asFile.absolutePath
+def profileGameTests = providers.gradleProperty('profileGameTests').map { it.toBoolean() }.getOrElse(false)
+def gameTestRecording = layout.buildDirectory.file('reports/performance/game-tests.jfr')
+if (profileGameTests) {
+    neoForge.runs.gameTestServer.jvmArguments.add(
+            '-XX:StartFlightRecording=name=omniresonance-game-tests,settings=profile,maxsize=64m,dumponexit=true,' +
+                    'jdk.InitialEnvironmentVariable#enabled=false,jdk.InitialSystemProperty#enabled=false,' +
+                    'jdk.JVMInformation#enabled=false,jdk.SystemProcess#enabled=false,filename=' +
+                    gameTestRecording.get().asFile.absolutePath)
+}
 tasks.named('runGameTestServer') {
     dependsOn cleanGameTestWorld
+    if (profileGameTests) {
+        doFirst { gameTestRecording.get().asFile.parentFile.mkdirs() }
+    }
     timeout = Duration.ofMinutes(5)
     doFirst {
         def report = gameTestReport.get().asFile
@@ -184,6 +200,8 @@ tasks.named('runGameTestServer') {
 
 dependencies {
     compileOnly('maven.modrinth:justenoughcharacters:XPKoy65e') { transitive = false }
+    compileOnly('maven.modrinth:jei:XCIrIXIV') { transitive = false }
+    compileOnly('maven.modrinth:emi:5sIPA1To') { transitive = false }
     testImplementation platform('org.junit:junit-bom:5.14.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -227,7 +245,11 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.named('test', Test) {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        if (providers.gradleProperty('scaleAcceptance').map { it.toBoolean() }.getOrElse(false)) {
+            includeTags 'scale'
+        }
+    }
     testLogging {
         events 'passed', 'skipped', 'failed'
         exceptionFormat = 'full'
@@ -273,6 +295,7 @@ def verifyModJar = tasks.register('verifyModJar') {
                 it.contains('/fixtures/') || it.contains('GameTests') ||
                         it.contains('TestStructureGenerator') || it.endsWith('.snbt') ||
                         it.startsWith('.cache/') || it.startsWith('me/towdium/') ||
+                        it.startsWith('mezz/jei/') || it.startsWith('dev/emi/') ||
                         (it.endsWith('.jar') &&
                                 (it.toLowerCase(Locale.ROOT).contains('pinin') ||
                                         it.toLowerCase(Locale.ROOT).contains('jecharacters')))
@@ -288,6 +311,50 @@ def verifyModJar = tasks.register('verifyModJar') {
         }
     }
 }
+def releaseVersion = project.version.toString()
+def validateReleaseTag = tasks.register('validateReleaseTag') {
+    group = 'verification'
+    description = 'Rejects a requested release tag unless it exactly matches the configured semantic version.'
+    def tag = providers.gradleProperty('releaseTag')
+    inputs.property 'modVersion', releaseVersion
+    inputs.property 'releaseTag', tag.getOrElse('')
+    doLast {
+        def current = releaseVersion
+        def numeric = '(?:0|[1-9][0-9]*)'
+        def prerelease = '(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+        def semanticVersion = numeric + '\\.' + numeric + '\\.' + numeric +
+                '(?:-' + prerelease + '(?:\\.' + prerelease + ')*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?'
+        if (!(current ==~ semanticVersion)) {
+            throw new GradleException('Release version is not a supported semantic version: ' + current)
+        }
+        if (tag.isPresent() && tag.get() != 'v' + current) {
+            throw new GradleException('Release tag must match v' + current)
+        }
+    }
+}
+
+tasks.register('prepareReleaseBundle', Sync) {
+    group = 'distribution'
+    description = 'Builds a local JAR/source/license bundle with SHA-256 checksums; never publishes it.'
+    dependsOn validateReleaseTag, verifyModJar, tasks.named('sourcesJar')
+    from tasks.named('jar', Jar).flatMap { it.archiveFile }
+    from tasks.named('sourcesJar', Jar).flatMap { it.archiveFile }
+    from 'LICENSE'
+    into layout.buildDirectory.dir('release')
+    doLast {
+        def root = destinationDir
+        def artifacts = root.listFiles().findAll { it.isFile() && it.name != 'SHA256SUMS' }.sort { it.name }
+        def checksums = artifacts.collect { artifact ->
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            new java.security.DigestInputStream(new FileInputStream(artifact), digest).withCloseable { stream ->
+                stream.transferTo(OutputStream.nullOutputStream())
+            }
+            java.util.HexFormat.of().formatHex(digest.digest()) + '  ' + artifact.name
+        }
+        new File(root, 'SHA256SUMS').setText(checksums.join('\n') + '\n', 'UTF-8')
+    }
+}
+
 tasks.named('check') {
     dependsOn verifyModJar
 }

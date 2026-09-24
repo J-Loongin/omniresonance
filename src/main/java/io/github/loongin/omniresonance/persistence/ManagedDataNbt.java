@@ -17,8 +17,8 @@ import net.minecraft.nbt.Tag;
 
 /** Strict versioned checks shared by managed SavedData codecs; inputs are never retained or modified. */
 final class ManagedDataNbt {
-    static final int NETWORK_SCHEMA_VERSION = 9;
-    static final int OWNER_SCHEMA_VERSION = 3;
+    static final int NETWORK_SCHEMA_VERSION = 10;
+    static final int OWNER_SCHEMA_VERSION = 4;
     static final Set<String> NETWORK_V3_FIELDS = Set.of(
             "schema_version",
             "network_id",
@@ -45,9 +45,11 @@ final class ManagedDataNbt {
             "domain_configurations");
     static final Set<String> NETWORK_V5_FIELDS = currentNetworkFields();
     static final Set<String> NETWORK_V8_FIELDS = withFields(NETWORK_V5_FIELDS, "recovery");
-    static final Set<String> NETWORK_FIELDS = withFields(NETWORK_V8_FIELDS, "bucket_created_mask");
+    static final Set<String> NETWORK_V9_FIELDS = withFields(NETWORK_V8_FIELDS, "bucket_created_mask");
+    static final Set<String> NETWORK_FIELDS = withFields(NETWORK_V9_FIELDS, "audit_entries");
     static final Set<String> OWNER_V1_FIELDS = Set.of("schema_version", "owner_id", "default_network_id");
-    static final Set<String> OWNER_FIELDS = withFields(OWNER_V1_FIELDS, "filter_presets", "preset_library_revision");
+    static final Set<String> OWNER_V3_FIELDS = withFields(OWNER_V1_FIELDS, "filter_presets", "preset_library_revision");
+    static final Set<String> OWNER_FIELDS = withFields(OWNER_V3_FIELDS, "audit_entries");
 
     private static Set<String> withFields(Set<String> initial, String... added) {
         Set<String> result = new HashSet<>(initial);
