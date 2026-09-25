@@ -72,6 +72,8 @@ public record NetworkStatusFrame(
                 b.writeUtf(m.type().toString(), 128).writeLong(m.amount()).writeBoolean(m.saturated());
             b.writeBoolean(t.incident() != null);
             if (t.incident() != null) writeIncident(b, t.incident());
+            b.writeBoolean(r.exchange() != null);
+            if (r.exchange() != null) ExchangeDiagnosticsCodec.write(b, r.exchange());
         }
 
         public NetworkStatusFrame decode(FriendlyByteBuf b) {
@@ -121,7 +123,8 @@ public record NetworkStatusFrame(
                                     b.readBoolean() ? readIncident(b) : null),
                             due,
                             backoff,
-                            sync));
+                            sync,
+                            b.readBoolean() ? ExchangeDiagnosticsCodec.read(b) : null));
                 }
             }
             if (b.isReadable()) throw new IllegalArgumentException("Trailing status bytes");

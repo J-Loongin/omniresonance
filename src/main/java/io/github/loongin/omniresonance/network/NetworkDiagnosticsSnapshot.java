@@ -29,7 +29,18 @@ public record NetworkDiagnosticsSnapshot(
             io.github.loongin.omniresonance.transfer.TransferTelemetry.Snapshot transfers,
             int due,
             int backoff,
-            int syncTasks) {
+            int syncTasks,
+
+            @org.jetbrains.annotations.Nullable
+            io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Snapshot exchange) {
+        public RuntimeStats(
+                io.github.loongin.omniresonance.transfer.TransferTelemetry.Snapshot transfers,
+                int due,
+                int backoff,
+                int syncTasks) {
+            this(transfers, due, backoff, syncTasks, null);
+        }
+
         public RuntimeStats {
             Objects.requireNonNull(transfers);
             if (due < 0 || backoff < 0 || syncTasks < 0) throw new IllegalArgumentException("Invalid runtime counts");
@@ -184,6 +195,33 @@ public record NetworkDiagnosticsSnapshot(
                 moved.add(row);
             }
             json.add("moved_20_ticks", moved);
+            if (runtime.exchange() != null) {
+                var e = runtime.exchange();
+                var exchange = new JsonObject();
+                exchange.addProperty("available", e.available());
+                exchange.addProperty("observed", e.observed());
+                exchange.addProperty("window_ticks", 20);
+                exchange.addProperty("sent_commits", e.sent());
+                exchange.addProperty("received_commits", e.received());
+                exchange.addProperty("at_least", e.lowerBound());
+                if (e.incident() != null) {
+                    var incident = e.incident();
+                    var failure = new JsonObject();
+                    failure.addProperty("channel_id", incident.channel().toString());
+                    failure.addProperty("channel_name", incident.channelName());
+                    failure.addProperty("source_network", incident.source().toString());
+                    failure.addProperty("source_name", incident.sourceName());
+                    failure.addProperty("target_network", incident.target().toString());
+                    failure.addProperty("target_name", incident.targetName());
+                    if (incident.type() != null)
+                        failure.addProperty("resource_type", incident.type().toString());
+                    failure.addProperty("game_tick", incident.tick());
+                    failure.addProperty("stage", incident.stage().name().toLowerCase(java.util.Locale.ROOT));
+                    failure.addProperty("reason", incident.reason().name().toLowerCase(java.util.Locale.ROOT));
+                    exchange.add("incident", failure);
+                }
+                json.add("exchange", exchange);
+            }
         }
         String encoded = json.toString();
         if (encoded.getBytes(StandardCharsets.UTF_8).length > 65536)

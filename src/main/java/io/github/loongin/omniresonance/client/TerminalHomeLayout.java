@@ -4,10 +4,10 @@ package io.github.loongin.omniresonance.client;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Pure fixed-window geometry for the seven terminal home modules. */
+/** Pure fixed-window geometry for the terminal home modules. */
 final class TerminalHomeLayout {
     static final List<String> MODULES =
-            List.of("nodes", "tunnels", "domain", "filters", "admins", "status", "settings");
+            List.of("nodes", "tunnels", "domain", "filters", "admins", "status", "exchange", "settings");
 
     private TerminalHomeLayout() {}
 

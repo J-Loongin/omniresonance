@@ -15,6 +15,12 @@ import org.jetbrains.annotations.Nullable;
  * never a client-only class reference. Registration itself does not access worlds or create networks.
  */
 public final class NetworkPayloads {
+    private static volatile @Nullable Consumer<ExchangeFrame> exchangeReceiver;
+
+    public static void installExchangeReceiver(Consumer<ExchangeFrame> receiver) {
+        exchangeReceiver = Objects.requireNonNull(receiver);
+    }
+
     private static volatile @Nullable Consumer<NetworkTerminalResponse> clientReceiver;
     private static volatile @Nullable Consumer<DomainInventoryFrame> inventoryReceiver;
 
@@ -62,7 +68,7 @@ public final class NetworkPayloads {
     public static void register(RegisterPayloadHandlersEvent event, NetworkRuntimeRegistry registry) {
         Objects.requireNonNull(registry, "registry");
         NodeMenuPayloads.installTerminalTransferHandler(registry::handleTerminalTransfer);
-        PayloadRegistrar registrar = event.registrar("21").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("26").executesOn(HandlerThread.MAIN);
         registrar.playToClient(NetworkStatusFrame.TYPE, NetworkStatusFrame.STREAM_CODEC, (frame, context) -> {
             var receiver = statusReceiver;
             if (receiver == null) throw new IllegalStateException("Status receiver missing");
@@ -108,6 +114,15 @@ public final class NetworkPayloads {
             var receiver = inventoryReceiver;
             if (receiver == null) throw new IllegalStateException("Inventory client receiver was not installed");
             receiver.accept(frame);
+        });
+        registrar.playToServer(ExchangeRequest.TYPE, ExchangeRequest.STREAM_CODEC, (request, context) -> {
+            if (!(context.player() instanceof ServerPlayer player))
+                throw new IllegalStateException("Exchange requires server player");
+            context.reply(registry.handleExchange(player, request));
+        });
+        registrar.playToClient(ExchangeFrame.TYPE, ExchangeFrame.STREAM_CODEC, (frame, context) -> {
+            if (exchangeReceiver == null) throw new IllegalStateException("Exchange receiver unavailable");
+            exchangeReceiver.accept(frame);
         });
         registrar.playToServer(NetworkTerminalRequest.TYPE, NetworkTerminalRequest.STREAM_CODEC, (request, context) -> {
             if (!(context.player() instanceof ServerPlayer sender)) {

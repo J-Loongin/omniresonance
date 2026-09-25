@@ -36,7 +36,10 @@ class NetworkDiagnosticsSnapshotTest {
                         10, 0, 0, java.util.List.of(), 0, "direct_transfer", 9, incident),
                 0,
                 0,
-                0);
+                0,
+                new io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Snapshot(true, true, 2, 4, false, null));
+        org.junit.jupiter.api.Assertions.assertEquals(
+                stats.exchange(), NetworkDiagnosticsService.enrich(data, stats).exchange());
         var enriched = NetworkDiagnosticsService.enrich(data, stats).transfers().incident();
         org.junit.jupiter.api.Assertions.assertEquals(
                 "Known node", enriched.node().name());

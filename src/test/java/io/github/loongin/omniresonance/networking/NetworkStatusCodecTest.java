@@ -28,7 +28,28 @@ class NetworkStatusCodecTest {
         var snapshot = new io.github.loongin.omniresonance.network.NetworkDiagnosticsSnapshot(
                         new UUID(1, 1), new UUID(2, 2), 11, 1, 2, 3, 1, "not_loaded", -1, 0, 0, 0, 0, 0, -1, 500)
                 .withRuntime(new io.github.loongin.omniresonance.network.NetworkDiagnosticsSnapshot.RuntimeStats(
-                        metrics, 0, 0, 0));
+                        metrics,
+                        0,
+                        0,
+                        0,
+                        new io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Snapshot(
+                                true,
+                                true,
+                                2,
+                                4,
+                                false,
+                                new io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Incident(
+                                        new UUID(10, 1),
+                                        new UUID(11, 1),
+                                        new UUID(11, 2),
+                                        io.github.loongin.omniresonance.transfer.ResourceTypes.FLUID,
+                                        9,
+                                        io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Stage.TRANSFER,
+                                        io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Reason
+                                                .UNCERTAIN_TRANSFER,
+                                        "Water",
+                                        "Source",
+                                        "Target"))));
         var frame = new NetworkStatusFrame(new UUID(3, 3), 1, 1, snapshot, "test");
         var buffer = new FriendlyByteBuf(Unpooled.buffer());
         try {

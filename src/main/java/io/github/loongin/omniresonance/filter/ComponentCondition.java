@@ -117,6 +117,11 @@ public final class ComponentCondition {
         SELECTED
     }
 
+    /** Returns the immutable matching mode without copying component data. */
+    public Mode mode() {
+        return isIdOnly() ? Mode.ID_ONLY : full != null ? Mode.FULL : Mode.SELECTED;
+    }
+
     /** Pure detached persistence snapshot; never authorizes client-supplied component data. */
     public PersistenceSnapshot persistenceSnapshot() {
         List<SelectedComponent> values = new ArrayList<>();

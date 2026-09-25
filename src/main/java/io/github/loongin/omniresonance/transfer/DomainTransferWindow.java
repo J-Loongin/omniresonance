@@ -13,14 +13,14 @@ public final class DomainTransferWindow {
     private long nextRunTick;
 
     /** Nonmutating owner-thread allowance; reloads retain spent credit, and overdue time does not accumulate it. */
-    public long available(long tick, int rate) {
+    public long available(long tick, long rate) {
         checkThread();
         if (tick < 0 || rate <= 0) throw new IllegalArgumentException("Invalid active domain window query");
         return tick < nextRunTick ? 0 : Math.max(0, rate - spent);
     }
 
     /** Debits proven positive movement on the owner thread; rejected input leaves quota and deadline unchanged. */
-    public void moved(long tick, long amount, int rate) {
+    public void moved(long tick, long amount, long rate) {
         if (amount <= 0 || amount > available(tick, rate))
             throw new IllegalArgumentException("Movement exceeds active domain allowance");
         spent = Math.addExact(spent, amount);

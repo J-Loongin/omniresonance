@@ -2,26 +2,30 @@
 package io.github.loongin.omniresonance.bootstrap;
 
 import io.github.loongin.omniresonance.transfer.TransferWorkBudget;
-import java.util.Objects;
+import java.util.List;
 import java.util.function.Consumer;
 
-/** Server-thread auxiliary rotation. Pairs alternate order every two calls to avoid lockstep with transfer's toggle. */
+/** Server-thread auxiliary rotation; each starting group lasts two calls to avoid lockstep with the outer toggle. */
 final class TerminalAuxiliaryWork implements Consumer<TransferWorkBudget> {
-    private final Consumer<TransferWorkBudget> sample;
-    private final Consumer<TransferWorkBudget> inventory;
+    private final List<Consumer<TransferWorkBudget>> groups;
     private int phase;
 
     TerminalAuxiliaryWork(Consumer<TransferWorkBudget> sample, Consumer<TransferWorkBudget> inventory) {
-        this.sample = Objects.requireNonNull(sample);
-        this.inventory = Objects.requireNonNull(inventory);
+        groups = List.of(inventory, sample);
+    }
+
+    TerminalAuxiliaryWork(
+            Consumer<TransferWorkBudget> sample,
+            Consumer<TransferWorkBudget> inventory,
+            Consumer<TransferWorkBudget> exchange) {
+        groups = List.of(inventory, sample, exchange);
     }
 
     @Override
     public void accept(TransferWorkBudget budget) {
-        boolean inventoryFirst = phase < 2;
-        phase = (phase + 1) & 3;
-        if (inventoryFirst) inventory.accept(budget);
-        sample.accept(budget);
-        if (!inventoryFirst) inventory.accept(budget);
+        int first = phase / 2;
+        phase = (phase + 1) % (groups.size() * 2);
+        for (int i = 0; i < groups.size(); i++)
+            groups.get((first + i) % groups.size()).accept(budget);
     }
 }

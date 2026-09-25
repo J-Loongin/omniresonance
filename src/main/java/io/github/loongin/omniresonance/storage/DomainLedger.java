@@ -37,6 +37,12 @@ public final class DomainLedger {
     private boolean available = true;
     private @org.jetbrains.annotations.Nullable java.util.function.Consumer<ResourceVariantKey> retired;
 
+    /** Owner-thread immutable identity for binding an activated ledger to authoritative network metadata. */
+    public UUID networkId() {
+        checkOwner();
+        return networkId;
+    }
+
     /** Immutable absolute inventory event; zero removes the runtime ID and revisions are monotonically increasing. */
     public record Change(long sequence, ResourceVariantKey key, long amount, long revision) {}
 
@@ -283,6 +289,86 @@ public final class DomainLedger {
         entry.reservations++;
         reservations++;
         return Optional.of(new Withdrawal(entry, amount));
+    }
+
+    /**
+     * Transfers up to maximum of one complete variant between distinct activated networks on their owner thread.
+     * The caller owns permission, filter, rate and work-budget admission. This is execution, never simulation:
+     * target reservation may create a bucket before extraction. Quantity work is independent of resource count,
+     * with O(log variants) sequence maintenance and key-byte hashing only on new-key admission.
+     * Capacity/quota/withdrawal refusal returns zero; partial capacity clamps the move before extraction.
+     * No external capability, asynchronous action or forced save occurs. Both handles settle in this call.
+     * Bucket preparation failure propagates before extraction. Unexpected mutation failure quarantines both ledgers
+     * and throws UncertainTransfer; callers must retain evidence and stop, never infer a refund or retry.
+     */
+    public long transferTo(DomainLedger target, ResourceVariantKey key, long maximum, long variantLimit) {
+        checkThread();
+        Objects.requireNonNull(target);
+        Objects.requireNonNull(key);
+        target.checkThread();
+        if (networkId.equals(target.networkId) || maximum < 0 || variantLimit < -1)
+            throw new IllegalArgumentException("Invalid domain transfer identity or amount");
+        if (maximum == 0) return 0;
+        long amount = Math.min(maximum, amount(key));
+        if (amount == 0) return 0;
+        amount = Math.min(amount, target.insertCapacity(key, variantLimit));
+        if (amount == 0) return 0;
+        Optional<Deposit> capacity = target.reserveDeposit(key, amount, variantLimit);
+        if (capacity.isEmpty()) return 0;
+        try (Deposit deposit = capacity.orElseThrow()) {
+            // Bucket registration is the only callback before ownership moves; it may invalidate either domain.
+            if (!available || !target.available) return 0;
+            try {
+                Optional<Withdrawal> extracted = withdraw(key, amount);
+                if (extracted.isEmpty()) return 0;
+                try (Withdrawal withdrawal = extracted.orElseThrow()) {
+                    deposit.commit(amount);
+                }
+                return amount;
+            } catch (RuntimeException failure) {
+                invalidate();
+                target.invalidate();
+                throw new UncertainTransfer(networkId, target.networkId, key, amount, failure);
+            }
+        }
+    }
+
+    /** Internal diagnostic evidence for an unknown mutation result; never authorizes compensation or automatic retry. */
+    public static final class UncertainTransfer extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+        private final UUID sourceNetwork;
+        private final UUID targetNetwork;
+        private final ResourceVariantKey key;
+        private final long attemptedAmount;
+
+        private UncertainTransfer(
+                UUID sourceNetwork,
+                UUID targetNetwork,
+                ResourceVariantKey key,
+                long attemptedAmount,
+                RuntimeException cause) {
+            super("Domain transfer outcome is uncertain; both ledgers quarantined", cause);
+            this.sourceNetwork = sourceNetwork;
+            this.targetNetwork = targetNetwork;
+            this.key = key;
+            this.attemptedAmount = attemptedAmount;
+        }
+
+        public UUID sourceNetwork() {
+            return sourceNetwork;
+        }
+
+        public UUID targetNetwork() {
+            return targetNetwork;
+        }
+
+        public ResourceVariantKey key() {
+            return key;
+        }
+
+        public long attemptedAmount() {
+            return attemptedAmount;
+        }
     }
 
     /**

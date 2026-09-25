@@ -60,6 +60,9 @@ public final class NetworkTerminalClient {
         NeoForge.EVENT_BUS.addListener(this::onLoggingOut);
         NeoForge.EVENT_BUS.addListener(this::onTagsUpdated);
         NetworkPayloads.installClientReceiver(this::receive);
+        NetworkPayloads.installExchangeReceiver(frame -> {
+            if (Minecraft.getInstance().screen instanceof ExchangeScreen screen) screen.accept(frame);
+        });
         NetworkPayloads.installStatusReceiver(frame -> {
             if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveStatus(frame);
         });
@@ -204,6 +207,7 @@ public final class NetworkTerminalClient {
         TerminalTagClipboard.clear();
         firstPromptDismissed = false;
         Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.screen instanceof ExchangeScreen exchange) exchange.disconnected();
         if (minecraft.screen instanceof NetworkSetupScreen screen) {
             screen.disconnected();
         }
@@ -213,6 +217,12 @@ public final class NetworkTerminalClient {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.screen instanceof NetworkSetupScreen screen && screen.matchesView(response.viewId())) {
             screen.applyResponse(response);
+            return;
+        }
+        if (minecraft.screen instanceof ExchangeScreen exchange
+                && exchange.terminalParent().matchesView(response.viewId())) {
+            exchange.terminalParent().applyResponse(response);
+            exchange.disconnected();
             return;
         }
         if (minecraft.screen instanceof ResonanceNodeScreen child

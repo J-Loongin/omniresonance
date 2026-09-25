@@ -35,6 +35,49 @@ class TerminalStatusPresentationTest {
     }
 
     @Test
+    void exchangeOverviewIsOneSummaryAndDetailsIdentifyBothNetworksWithoutFakeNodes() {
+        var incident = new io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Incident(
+                new UUID(10, 1),
+                new UUID(11, 1),
+                new UUID(11, 2),
+                io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM,
+                15,
+                io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Stage.DECODE,
+                io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Reason.DECODE_FAILED,
+                "Iron",
+                "Main",
+                "Peer");
+        var s = snapshot("available", 0)
+                .withRuntime(new NetworkDiagnosticsSnapshot.RuntimeStats(
+                        new TransferTelemetry.Snapshot(20, 0, 0, List.of(), 0, "", -1),
+                        0,
+                        0,
+                        0,
+                        new io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Snapshot(
+                                true, true, 4, 2, false, incident)));
+        var overview = TerminalStatusPresentation.overview(s);
+        assertEquals(
+                1,
+                overview.stream()
+                        .filter(r -> r.label().getContents() instanceof TranslatableContents t
+                                && t.getKey().equals("omniresonance.status.exchange.title"))
+                        .count());
+        var detail = TerminalStatusPresentation.details(s);
+        assertTrue(detail.stream().anyMatch(r -> r.value().getString().equals("Main")));
+        assertTrue(detail.stream().anyMatch(r -> r.value().getString().equals("Peer")));
+        assertTrue(detail.stream().anyMatch(r -> r.value().getString().equals("Iron")));
+        org.junit.jupiter.api.Assertions.assertFalse(detail.stream()
+                .anyMatch(r -> r.label().getContents() instanceof TranslatableContents t
+                        && t.getKey().equals("omniresonance.status.incident.node")));
+        var export = com.google.gson.JsonParser.parseString(s.export("test"))
+                .getAsJsonObject()
+                .getAsJsonObject("exchange");
+        assertEquals(4, export.get("sent_commits").getAsLong());
+        assertEquals(
+                "Iron", export.getAsJsonObject("incident").get("channel_name").getAsString());
+    }
+
+    @Test
     void slowIncidentShowsItsNodeAndCauseInsteadOfCallingItATransferFailure() {
         var position = net.minecraft.core.GlobalPos.of(
                 net.minecraft.world.level.Level.OVERWORLD, new net.minecraft.core.BlockPos(1, 70, 2));

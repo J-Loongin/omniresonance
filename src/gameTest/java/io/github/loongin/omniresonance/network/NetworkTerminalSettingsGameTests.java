@@ -1865,6 +1865,258 @@ public final class NetworkTerminalSettingsGameTests {
         }
     }
 
+    @GameTest(template = "bootstrap")
+    public static void exchangeUsesLiveTerminalSessionAndCompletesBothOwnerApprovals(GameTestHelper helper)
+            throws Exception {
+        try (var f = new Fixture(helper)) {
+            var controller = new io.github.loongin.omniresonance.exchange.ExchangeTerminalController(
+                    helper.getLevel().getServer(), f.repository, f.directory, ServerSettings::defaults, () -> {});
+            f.terminal.installExchange(controller, f.repository);
+            var sender = player(helper, OWNER);
+            var receiver = player(helper, OTHER_OWNER);
+            var admin = player(helper, ADMINISTRATOR);
+            f.open(sender, OWNER_VIEW, OWNER_SESSION);
+            f.open(receiver, OTHER_VIEW, ADMIN_SESSION);
+            f.open(admin, ADMIN_VIEW, OTHER_SESSION);
+            f.terminal.handle(sender, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK));
+            f.terminal.handle(
+                    receiver, new NetworkTerminalRequest.OpenNetwork(OTHER_VIEW, ADMIN_SESSION, 1, UNRELATED));
+            f.terminal.handle(admin, new NetworkTerminalRequest.OpenNetwork(ADMIN_VIEW, OTHER_SESSION, 1, NETWORK));
+            var a = new ExchangePeer(f.terminal, sender, OWNER_VIEW, OWNER_SESSION);
+            var b = new ExchangePeer(f.terminal, receiver, OTHER_VIEW, ADMIN_SESSION);
+            var c = new ExchangePeer(f.terminal, admin, ADMIN_VIEW, OTHER_SESSION);
+            helper.assertTrue(
+                    a.send(0, new byte[0]).kind() == io.github.loongin.omniresonance.networking.ExchangeFrame.META,
+                    "Source metadata missing");
+            helper.assertTrue(b.send(0, new byte[0]).owner(), "Receiving owner lost");
+            helper.assertTrue(!c.send(0, new byte[0]).owner(), "Administrator elevated to owner");
+            helper.assertTrue(f.repository.exchangeRepository().find().isEmpty(), "Read created exchange authority");
+            helper.assertTrue(
+                    c.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.IssueCode())
+                                    .kind()
+                            == 0,
+                    "Administrator created code");
+            var codeFrame = b.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.IssueCode());
+            helper.assertTrue(
+                    codeFrame.kind() == io.github.loongin.omniresonance.networking.ExchangeFrame.CODE,
+                    "Receive code failed");
+            var data =
+                    new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.wrappedBuffer(codeFrame.body()));
+            String code;
+            try {
+                data.readUUID();
+                data.readLong();
+                data.readLong();
+                code = data.readUtf(22);
+            } finally {
+                data.release();
+            }
+            var terms = new io.github.loongin.omniresonance.exchange.ExchangeTermsDraft(
+                    io.github.loongin.omniresonance.transfer.ResourceScope.all(),
+                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                    new io.github.loongin.omniresonance.exchange.ExchangeTermsDraft.None(),
+                    64,
+                    java.util.Map.of(),
+                    3);
+            helper.assertTrue(
+                    a.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.Propose(code, terms))
+                                    .kind()
+                            == 0,
+                    "Obsolete unpaired mutation accepted");
+            var pairing = a.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.Pair(code));
+            helper.assertTrue(
+                    pairing.kind() == io.github.loongin.omniresonance.networking.ExchangeFrame.CHANNELS,
+                    "Pair request failed");
+            var pairBody =
+                    new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.wrappedBuffer(pairing.body()));
+            io.github.loongin.omniresonance.networking.ExchangeTunnelView pair;
+            try {
+                pair = io.github.loongin.omniresonance.networking.ExchangeTunnelView.read(pairBody);
+            } finally {
+                pairBody.release();
+            }
+            helper.assertTrue(
+                    c.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.ApprovePair(
+                                            pair.id(), pair.revision()))
+                                    .kind()
+                            == 0,
+                    "Administrator approved pairing");
+            helper.assertTrue(
+                    b.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.ApprovePair(
+                                            pair.id(), pair.revision()))
+                                    .kind()
+                            == io.github.loongin.omniresonance.networking.ExchangeFrame.CHANNELS,
+                    "Pair approval failed");
+            helper.assertTrue(
+                    f.repository
+                            .exchangeRepository()
+                            .find()
+                            .orElseThrow()
+                            .agreementsFor(NETWORK)
+                            .isEmpty(),
+                    "Pair created an implicit transfer channel");
+            var proposed = a.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.CreateChannel(
+                    pair.id(),
+                    pair.revision() + 1,
+                    new io.github.loongin.omniresonance.exchange.ExchangeChannelDraft(
+                            new ManagedName("Iron"), true, terms)));
+
+            helper.assertTrue(
+                    proposed.kind() == io.github.loongin.omniresonance.networking.ExchangeFrame.DETAIL,
+                    "Proposal failed");
+            var body =
+                    new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.wrappedBuffer(proposed.body()));
+            io.github.loongin.omniresonance.networking.ExchangeRuleView view;
+            try {
+                view = io.github.loongin.omniresonance.networking.ExchangeRuleView.read(body);
+            } finally {
+                body.release();
+            }
+            helper.assertTrue(view.sourceApproved() && !view.targetApproved(), "Proposal bypassed receiving approval");
+            helper.assertTrue(
+                    c.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.Change(
+                                            view.id(),
+                                            view.revision(),
+                                            io.github.loongin.omniresonance.networking.ExchangeIntent.Action.APPROVE))
+                                    .kind()
+                            == 0,
+                    "Admin approved rule");
+            var approved = b.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.Change(
+                    view.id(),
+                    view.revision(),
+                    io.github.loongin.omniresonance.networking.ExchangeIntent.Action.APPROVE));
+            helper.assertTrue(
+                    approved.kind() == io.github.loongin.omniresonance.networking.ExchangeFrame.DETAIL,
+                    "Receiving approval failed");
+            var authority = f.repository.exchangeRepository().find().orElseThrow();
+            helper.assertTrue(
+                    authority
+                            .agreement(view.id())
+                            .orElseThrow()
+                            .consent()
+                            .permitsExecution(
+                                    f.directory.find(NETWORK).orElseThrow(),
+                                    f.directory.find(UNRELATED).orElseThrow()),
+                    "Approval did not reach authority");
+            helper.assertTrue(f.terminal.exchange(receiver, b.last).kind() == 0, "Replayed mutation accepted");
+            helper.assertTrue(
+                    f.terminal.exchange(player(helper, OTHER_OWNER), b.last).kind() == 0,
+                    "Replacement player inherited session");
+            var revisedTerms = new io.github.loongin.omniresonance.exchange.ExchangeTermsDraft(
+                    terms.scope(),
+                    terms.filterMode(),
+                    new io.github.loongin.omniresonance.exchange.ExchangeTermsDraft.KeepApproved(),
+                    32,
+                    java.util.Map.of(),
+                    7);
+            var revisedIntent = new io.github.loongin.omniresonance.networking.ExchangeIntent.ReviseChannel(
+                    view.id(),
+                    authority.agreement(view.id()).orElseThrow().consent().revision(),
+                    new io.github.loongin.omniresonance.exchange.ExchangeChannelDraft(
+                            new ManagedName("Iron"), true, revisedTerms));
+            var encoded = new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
+            byte[] upload;
+            try {
+                io.github.loongin.omniresonance.networking.ExchangeIntentCodec.encode(encoded, revisedIntent);
+                upload = new byte[encoded.readableBytes()];
+                encoded.readBytes(upload);
+            } finally {
+                encoded.release();
+            }
+            helper.assertTrue(a.send(7, upload.length, new byte[0]).kind() == 9, "Upload reservation failed");
+            int split = upload.length / 2;
+            helper.assertTrue(
+                    a.send(8, 0, java.util.Arrays.copyOfRange(upload, 0, split)).kind() == 9,
+                    "First upload fragment failed");
+            helper.assertTrue(
+                    a.send(8, split, java.util.Arrays.copyOfRange(upload, split, upload.length))
+                                    .kind()
+                            == 9,
+                    "Second upload fragment failed");
+            helper.assertTrue(
+                    authority.agreement(view.id()).orElseThrow().terms().intervalTicks() == 3,
+                    "Upload modified authority before commit");
+            helper.assertTrue(a.send(9, new byte[0]).kind() == 3, "Uploaded revision commit failed");
+            helper.assertTrue(
+                    authority.agreement(view.id()).orElseThrow().terms().intervalTicks() == 7, "Committed terms lost");
+            helper.assertTrue(
+                    !authority
+                            .agreement(view.id())
+                            .orElseThrow()
+                            .consent()
+                            .permitsExecution(
+                                    f.directory.find(NETWORK).orElseThrow(),
+                                    f.directory.find(UNRELATED).orElseThrow()),
+                    "Revision retained both approvals");
+            a.send(3, new byte[0]);
+            helper.assertTrue(
+                    a.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.ListRules(false))
+                                    .kind()
+                            == 0,
+                    "Closed child page remained usable");
+            helper.assertTrue(
+                    f.menus.transfers().reservedBytes() == 0, "Exchange left reserved bytes after completion");
+            for (int i = 0; i < 4; i++)
+                f.menus
+                        .transfers()
+                        .beginUpload(
+                                new UUID(889, i),
+                                new UUID(890, i),
+                                new UUID(891, i),
+                                16777216,
+                                helper.getLevel().getGameTime());
+            int before = authority.invitations().size();
+            var committedWithoutReply =
+                    b.action(new io.github.loongin.omniresonance.networking.ExchangeIntent.IssueCode());
+            helper.assertTrue(
+                    new String(committedWithoutReply.body(), java.nio.charset.StandardCharsets.UTF_8)
+                            .equals("committed"),
+                    "Post-commit response failure was presented as retryable");
+            helper.assertTrue(authority.invitations().size() == before + 1, "Reply failure lost the committed code");
+            for (int i = 0; i < 4; i++) f.menus.transfers().cancelSession(new UUID(889, i), new UUID(890, i));
+            controller.close();
+            helper.succeed();
+        }
+    }
+
+    private static final class ExchangePeer {
+        private final NetworkTerminalService terminal;
+        private final ServerPlayer player;
+        private final UUID view, session, generation = UUID.randomUUID();
+        private long sequence = 1;
+        private io.github.loongin.omniresonance.networking.ExchangeRequest last;
+
+        ExchangePeer(NetworkTerminalService terminal, ServerPlayer player, UUID view, UUID session) {
+            this.terminal = terminal;
+            this.player = player;
+            this.view = view;
+            this.session = session;
+        }
+
+        io.github.loongin.omniresonance.networking.ExchangeFrame send(int kind, byte[] body) {
+            return send(kind, 0, body);
+        }
+
+        io.github.loongin.omniresonance.networking.ExchangeFrame send(int kind, int offset, byte[] body) {
+            last = new io.github.loongin.omniresonance.networking.ExchangeRequest(
+                    view, session, generation, ++sequence, kind, offset, body);
+            return terminal.exchange(player, last);
+        }
+
+        io.github.loongin.omniresonance.networking.ExchangeFrame action(
+                io.github.loongin.omniresonance.networking.ExchangeIntent intent) {
+            var b = new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
+            try {
+                io.github.loongin.omniresonance.networking.ExchangeIntentCodec.encode(b, intent);
+                byte[] bytes = new byte[b.readableBytes()];
+                b.readBytes(bytes);
+                return send(1, bytes);
+            } finally {
+                b.release();
+            }
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         private final Path path;
         private final SavedNetworkRepository repository;

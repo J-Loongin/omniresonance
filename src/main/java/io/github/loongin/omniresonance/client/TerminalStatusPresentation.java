@@ -58,6 +58,7 @@ final class TerminalStatusPresentation {
                     Tone.WARNING,
                     text("recovery_help"),
                     false));
+        exchange(rows, s, false);
         history(rows, s);
         return List.copyOf(rows);
     }
@@ -124,7 +125,66 @@ final class TerminalStatusPresentation {
             history(rows, s);
             incidentDetails(rows, s);
         }
+        exchange(rows, s, true);
         return List.copyOf(rows);
+    }
+
+    private static void exchange(List<Row> rows, NetworkDiagnosticsSnapshot s, boolean detailed) {
+        if (s.runtime() == null || s.runtime().exchange() == null) return;
+        var e = s.runtime().exchange();
+        if (detailed) section(rows, "exchange.section");
+        Component value = !e.available()
+                ? text("exchange.unavailable")
+                : !e.observed()
+                        ? text("exchange.unobserved")
+                        : text(e.lowerBound() ? "exchange.counts_lower" : "exchange.counts", e.sent(), e.received());
+        rows.add(new Row(
+                text("exchange.title"),
+                value,
+                !e.available() ? Tone.ERROR : e.sent() > 0 || e.received() > 0 ? Tone.ACCENT : Tone.MUTED,
+                text("exchange.counts_help"),
+                false));
+        var i = e.incident();
+        if (i == null) return;
+        rows.add(new Row(
+                text("exchange.failure"),
+                text(
+                        "exchange.failure_summary",
+                        i.channelName().isEmpty() ? text("unknown") : Component.literal(i.channelName()),
+                        text("exchange.reason." + i.reason().name().toLowerCase(Locale.ROOT))),
+                Tone.WARNING,
+                text("exchange.failure_help"),
+                false));
+        if (!detailed) return;
+        add(
+                rows,
+                "incident.channel",
+                i.channelName().isEmpty()
+                        ? Component.literal(i.channel().toString())
+                        : Component.literal(i.channelName()),
+                "incident.metadata_help");
+        add(
+                rows,
+                "exchange.source",
+                Component.literal(i.sourceName().isEmpty() ? i.source().toString() : i.sourceName()),
+                "incident.metadata_help");
+        add(
+                rows,
+                "exchange.target",
+                Component.literal(i.targetName().isEmpty() ? i.target().toString() : i.targetName()),
+                "incident.metadata_help");
+        add(rows, "incident.resource", i.type() == null ? text("unknown") : type(i.type()), "recent_help");
+        add(
+                rows,
+                "incident.reason",
+                text("exchange.reason." + i.reason().name().toLowerCase(Locale.ROOT)),
+                "exchange.failure_help");
+        add(
+                rows,
+                "incident.stage",
+                text("exchange.stage." + i.stage().name().toLowerCase(Locale.ROOT)),
+                "incident.stage_help");
+        add(rows, "incident.time", text("incident.age", Math.max(0, s.gameTick() - i.tick())), "incident.time_help");
     }
 
     private static void storage(List<Row> rows, NetworkDiagnosticsSnapshot s) {

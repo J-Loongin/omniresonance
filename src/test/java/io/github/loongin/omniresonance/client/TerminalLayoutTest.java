@@ -138,7 +138,7 @@ final class TerminalLayoutTest {
     }
 
     @Test
-    void terminalHomeUsesSevenCardsAfterLoadingIsMergedIntoNodes() {
+    void terminalHomeAddsExchangeWithoutLeavingAnEmptyLeadingColumn() {
         TerminalLayout.Rect wide = TerminalLayout.calculate(640, 360).content();
         TerminalLayout.Rect compact = TerminalLayout.calculate(320, 240).content();
         java.util.List<TerminalLayout.Rect> wideCards = TerminalHomeLayout.cards(wide, false);
@@ -146,17 +146,17 @@ final class TerminalLayoutTest {
 
         assertTrue(!TerminalHomeLayout.MODULES.contains("loading"));
         assertTrue(TerminalHomeLayout.MODULES.contains("nodes"));
-        assertEquals(7, wideCards.size());
-        assertEquals(7, compactCards.size());
+        assertEquals(8, wideCards.size());
+        assertEquals(8, compactCards.size());
         assertEquals(wideCards.get(0).y(), wideCards.get(1).y());
         assertEquals(wideCards.get(0).y(), wideCards.get(2).y());
         assertTrue(wideCards.get(3).y() > wideCards.get(0).y());
         assertEquals(compactCards.get(0).y(), compactCards.get(1).y());
         assertTrue(compactCards.get(2).y() > compactCards.get(0).y());
-        assertTrue(Math.abs((wideCards.getLast().x() + wideCards.getLast().right()) - (wide.x() + wide.right())) <= 1);
-        assertTrue(Math.abs(
-                        (compactCards.getLast().x() + compactCards.getLast().right()) - (compact.x() + compact.right()))
-                <= 1);
+        assertTrue(Math.abs((wideCards.get(6).x() + wideCards.getLast().right()) - (wide.x() + wide.right())) <= 1);
+        assertTrue(
+                Math.abs((compactCards.get(6).x() + compactCards.getLast().right()) - (compact.x() + compact.right()))
+                        <= 1);
         for (TerminalLayout.Rect card : compactCards) {
             assertTrue(card.x() >= compact.x() && card.right() <= compact.right());
             assertTrue(card.y() >= compact.y() && card.bottom() <= compact.bottom());

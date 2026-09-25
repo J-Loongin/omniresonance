@@ -20,7 +20,8 @@ public record ServerSettings(
         DirectStorageAccess directStorageAccess,
         ChunkLoading chunkLoading,
         Navigation navigation,
-        int auditEntriesPerScope) {
+        int auditEntriesPerScope,
+        Exchange exchange) {
     public ServerSettings {
         ServerConfig.validateNetworksPerOwner(networksPerOwner);
         ServerConfig.validateTunnelsPerNetwork(tunnelsPerNetwork);
@@ -36,6 +37,77 @@ public record ServerSettings(
         java.util.Objects.requireNonNull(chunkLoading, "chunkLoading");
         java.util.Objects.requireNonNull(navigation, "navigation");
         ServerConfig.validateM2("audit.entries_per_scope", auditEntriesPerScope);
+        java.util.Objects.requireNonNull(exchange, "exchange");
+    }
+
+    /** Preserves existing construction while exchange uses the centrally registered defaults. */
+    public ServerSettings(
+            int networksPerOwner,
+            int tunnelsPerNetwork,
+            int channelsPerTunnel,
+            int channelBindingsPerDirectNode,
+            int administratorsPerNetwork,
+            Scheduler scheduler,
+            FilterLimits filterLimits,
+            RecoveryLimits recoveryLimits,
+            long storageVariantLimitPerNetwork,
+            TerminalSync terminalSync,
+            DirectStorageAccess directStorageAccess,
+            ChunkLoading chunkLoading,
+            Navigation navigation,
+            int auditEntriesPerScope) {
+        this(
+                networksPerOwner,
+                tunnelsPerNetwork,
+                channelsPerTunnel,
+                channelBindingsPerDirectNode,
+                administratorsPerNetwork,
+                scheduler,
+                filterLimits,
+                recoveryLimits,
+                storageVariantLimitPerNetwork,
+                terminalSync,
+                directStorageAccess,
+                chunkLoading,
+                navigation,
+                auditEntriesPerScope,
+                Exchange.defaults());
+    }
+
+    /** Immutable exchange admission and history policy; lowering admission never revokes existing rules. */
+    public record Exchange(
+            int rulesPerNetwork,
+            int invitesPerNetwork,
+            int rulesServer,
+            int historyServer,
+            int tunnelsPerNetwork,
+            int tunnelsServer) {
+        public Exchange(int rulesPerNetwork, int invitesPerNetwork, int rulesServer, int historyServer) {
+            this(
+                    rulesPerNetwork,
+                    invitesPerNetwork,
+                    rulesServer,
+                    historyServer,
+                    (Integer) ServerConfig.defaultM2("exchange.tunnels_per_network"),
+                    (Integer) ServerConfig.defaultM2("exchange.tunnels_server"));
+        }
+
+        public Exchange {
+            ServerConfig.validateM2("exchange.rules_per_network", rulesPerNetwork);
+            ServerConfig.validateM2("exchange.invites_per_network", invitesPerNetwork);
+            ServerConfig.validateM2("exchange.rules_server", rulesServer);
+            ServerConfig.validateM2("exchange.history_server", historyServer);
+            ServerConfig.validateM2("exchange.tunnels_per_network", tunnelsPerNetwork);
+            ServerConfig.validateM2("exchange.tunnels_server", tunnelsServer);
+        }
+
+        public static Exchange defaults() {
+            return new Exchange(
+                    (Integer) ServerConfig.defaultM2("exchange.rules_per_network"),
+                    (Integer) ServerConfig.defaultM2("exchange.invites_per_network"),
+                    (Integer) ServerConfig.defaultM2("exchange.rules_server"),
+                    (Integer) ServerConfig.defaultM2("exchange.history_server"));
+        }
     }
 
     public ServerSettings(

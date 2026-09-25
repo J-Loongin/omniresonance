@@ -16,6 +16,28 @@ public interface RecipeGhostTarget {
 
     record Target(UUID network, UUID preset, Area area) {}
 
+    /** Immutable display snapshot; retains no screen, inventory or live layout references. */
+    record Geometry(Area area, int screenWidth, int screenHeight) {}
+
+    /**
+     * Client-thread adapter snapshot. Before screen initialization, returns null without reading layout. Otherwise
+     * samples bounds exactly once and returns detached native coordinates; does not resize UI or modify resources.
+     */
+    static @Nullable Geometry geometry(int width, int height, java.util.function.Supplier<Area> bounds) {
+        if (width < 1 || height < 1 || width >= 1000000000 || height >= 1000000000) return null;
+        var area = bounds.get();
+        if (area == null
+                || area.width() < 1
+                || area.height() < 1
+                || area.width() >= 1000000000
+                || area.height() >= 1000000000
+                || area.x() <= -1000000000
+                || area.x() >= 1000000000
+                || area.y() <= -1000000000
+                || area.y() >= 1000000000) return null;
+        return new Geometry(area, width, height);
+    }
+
     record Ingredient(ResourceLocation type, ResourceLocation id) {
         public Ingredient {
             if (!type.equals(ResourceTypes.ITEM) && !type.equals(ResourceTypes.FLUID))

@@ -81,6 +81,12 @@ public final class DomainStorage {
         return state == State.AVAILABLE && ledger != null ? ledger.variantCount() : -1;
     }
 
+    /** Reads only the already activated ledger on its owning thread; never scans or loads bucket files. */
+    public Optional<DomainLedger> activatedLedger() {
+        checkThread();
+        return state == State.AVAILABLE ? Optional.ofNullable(ledger) : Optional.empty();
+    }
+
     /** Returns runtime availability on the owning thread without implicitly activating storage. */
     public State state() {
         checkThread();

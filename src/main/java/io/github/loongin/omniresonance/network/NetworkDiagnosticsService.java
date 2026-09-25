@@ -108,7 +108,11 @@ public final class NetworkDiagnosticsService {
                 old.reason(),
                 old.stage());
         return new NetworkDiagnosticsSnapshot.RuntimeStats(
-                stats.transfers().withIncident(incident), stats.due(), stats.backoff(), stats.syncTasks());
+                stats.transfers().withIncident(incident),
+                stats.due(),
+                stats.backoff(),
+                stats.syncTasks(),
+                stats.exchange());
     }
 
     private static io.github.loongin.omniresonance.transfer.TransferIncident.Endpoint endpoint(

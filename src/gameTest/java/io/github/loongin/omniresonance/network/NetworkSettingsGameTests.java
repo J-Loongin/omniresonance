@@ -391,6 +391,95 @@ public final class NetworkSettingsGameTests {
         }
     }
 
+    @GameTest(template = "bootstrap")
+    public static void exchangesRevalidateDeletionAndRetainTerminatedHistory(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER);
+            var edit = fixture.settings.beginDeletion(owner, TARGET);
+            var exchanges = io.github.loongin.omniresonance.persistence.ExchangeSavedData.create(
+                    new io.github.loongin.omniresonance.persistence.ExchangeSavedData.Limits(4, 4));
+            fixture.storage.set(io.github.loongin.omniresonance.persistence.ExchangeSavedData.STORAGE_ID, exchanges);
+            UUID invite = new UUID(910, 1), agreement = new UUID(910, 2);
+            var source = fixture.directory.find(FIRST).orElseThrow();
+            var target = fixture.directory.find(TARGET).orElseThrow();
+            exchanges.issue(invite, OWNER, target, 0);
+            exchanges.propose(
+                    agreement,
+                    invite,
+                    OWNER,
+                    source,
+                    target,
+                    0,
+                    1,
+                    new io.github.loongin.omniresonance.exchange.ExchangeTerms(
+                            io.github.loongin.omniresonance.transfer.ResourceScope.all(),
+                            io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                            null,
+                            64,
+                            Map.of(),
+                            1));
+            boolean blocked = false;
+            try {
+                fixture.settings.delete(owner, edit);
+            } catch (NetworkSettingsService.Rejected expected) {
+                helper.assertTrue(
+                        expected.reason() == NetworkSettingsService.Reason.HAS_EXCHANGES,
+                        "Wrong exchange deletion rejection");
+                blocked = true;
+            }
+            helper.assertTrue(blocked, "A proposal added after confirmation did not prevent deletion");
+            rejected(
+                    helper,
+                    NetworkSettingsService.Reason.HAS_EXCHANGES,
+                    () -> fixture.settings.beginDeletion(owner, TARGET));
+            boolean repositoryBlocked = false;
+            try {
+                fixture.repository.removeNetwork(TARGET);
+            } catch (IllegalStateException expected) {
+                repositoryBlocked = true;
+            }
+            helper.assertTrue(repositoryBlocked, "Direct repository deletion bypassed exchange guard");
+            helper.assertTrue(fixture.directory.find(TARGET).isPresent(), "Blocked deletion removed authority");
+            exchanges.act(
+                    agreement,
+                    io.github.loongin.omniresonance.persistence.ExchangeSavedData.Action.REVOKE,
+                    io.github.loongin.omniresonance.exchange.ExchangeConsent.Side.SOURCE,
+                    OWNER,
+                    source,
+                    target,
+                    0);
+            fixture.settings.delete(owner, fixture.settings.beginDeletion(owner, TARGET));
+            helper.assertTrue(fixture.directory.find(TARGET).isEmpty(), "Terminated exchange still blocked deletion");
+            helper.assertTrue(
+                    exchanges.agreementsFor(FIRST).contains(agreement)
+                            && exchanges
+                                    .agreement(agreement)
+                                    .orElseThrow()
+                                    .consent()
+                                    .revoked(),
+                    "Counterparty history was removed");
+            helper.succeed();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void unreadableExchangeShardPreventsNetworkDeletion(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            Path file = fixture.path.resolve(
+                    io.github.loongin.omniresonance.persistence.ExchangeSavedData.STORAGE_ID + ".dat");
+            byte[] broken = new byte[] {1, 2, 3};
+            Files.write(file, broken);
+            rejected(
+                    helper,
+                    NetworkSettingsService.Reason.STORAGE_UNVERIFIED,
+                    () -> fixture.settings.beginDeletion(player(helper, OWNER), TARGET));
+            helper.assertTrue(fixture.directory.find(TARGET).isPresent(), "Unverifiable exchange deleted network");
+            helper.assertTrue(
+                    java.util.Arrays.equals(broken, Files.readAllBytes(file)), "Deletion check overwrote failed shard");
+            helper.succeed();
+        }
+    }
+
     private static ServerPlayer player(GameTestHelper helper, UUID id) {
         return new FakePlayer(helper.getLevel(), new GameProfile(id, "Settings" + id.getLeastSignificantBits()));
     }

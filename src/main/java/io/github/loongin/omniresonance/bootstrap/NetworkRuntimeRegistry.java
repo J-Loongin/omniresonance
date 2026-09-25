@@ -3,6 +3,7 @@ package io.github.loongin.omniresonance.bootstrap;
 
 import io.github.loongin.omniresonance.config.ServerConfig;
 import io.github.loongin.omniresonance.config.ServerSettings;
+import io.github.loongin.omniresonance.exchange.ExchangeRuntime;
 import io.github.loongin.omniresonance.network.NetworkAdministrationService;
 import io.github.loongin.omniresonance.network.NetworkCreationService;
 import io.github.loongin.omniresonance.network.NetworkDirectory;
@@ -65,9 +66,12 @@ public final class NetworkRuntimeRegistry {
             @Nullable NodeMenuService nodeMenus,
             @Nullable NetworkTopologyService topology,
             @Nullable ResourceDirectRuntime directTransfers,
-            @Nullable io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime chunkLoading) {
+            @Nullable io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime chunkLoading,
+            @Nullable ExchangeRuntime exchanges) {
         RuntimeComponents {
             Objects.requireNonNull(terminal, "terminal");
+            if (exchanges != null && directTransfers == null)
+                throw new IllegalArgumentException("Exchange requires the shared transfer budget");
             if (nodeManagement != null && nodes == null) {
                 throw new IllegalArgumentException("Node management requires node authority");
             }
@@ -77,6 +81,17 @@ public final class NetworkRuntimeRegistry {
             if (topology != null && nodeManagement == null) {
                 throw new IllegalArgumentException("Topology management requires the shared node-management locks");
             }
+        }
+
+        RuntimeComponents(
+                NetworkTerminalService terminal,
+                @Nullable NodeAuthorityService nodes,
+                @Nullable NodeManagementService nodeManagement,
+                @Nullable NodeMenuService nodeMenus,
+                @Nullable NetworkTopologyService topology,
+                @Nullable ResourceDirectRuntime directTransfers,
+                @Nullable io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime chunkLoading) {
+            this(terminal, nodes, nodeManagement, nodeMenus, topology, directTransfers, chunkLoading, null);
         }
 
         RuntimeComponents(
@@ -116,6 +131,14 @@ public final class NetworkRuntimeRegistry {
                 @Nullable NodeMenuService nodeMenus) {
             this(terminal, nodes, nodeManagement, nodeMenus, null);
         }
+    }
+
+    public io.github.loongin.omniresonance.networking.ExchangeFrame handleExchange(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.ExchangeRequest request) {
+        requireServerThread(player.server);
+        return server == player.server && runtime != null
+                ? runtime.terminal().exchange(player, request)
+                : io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.error(request, "session_expired");
     }
 
     /** Main-thread status dispatch for the currently published server only; stale runtimes are never reused. */
@@ -320,6 +343,7 @@ public final class NetworkRuntimeRegistry {
             return;
         }
         if (runtime != null) {
+            if (runtime.exchanges() != null) runtime.exchanges().close();
             if (runtime.chunkLoading() != null) runtime.chunkLoading().close();
             if (runtime.directTransfers() != null) runtime.directTransfers().close();
             if (runtime.nodeMenus() != null) {
@@ -381,6 +405,7 @@ public final class NetworkRuntimeRegistry {
             if (currentTagGeneration != appliedTagGeneration) {
                 appliedTagGeneration = currentTagGeneration;
                 if (runtime.directTransfers() != null) runtime.directTransfers().tagsChanged();
+                if (runtime.exchanges() != null) runtime.exchanges().tagsChanged();
             }
             if (runtime.directTransfers() != null)
                 runtime.directTransfers().tick(event.getServer().overworld().getGameTime(), config.latest());
@@ -575,7 +600,11 @@ public final class NetworkRuntimeRegistry {
                 id -> repository.domainStorage(id).activate().orElse(null),
                 directTransfers::recovery,
                 (player, response) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, response));
-        directTransfers.installSampleWork(new TerminalAuxiliaryWork(filters::sampleStep, terminal::inventoryStep));
+        ExchangeRuntime exchanges = new ExchangeRuntime(
+                server, repository, networks, topology::settingsSnapshot, directTransfers::openFilterTag);
+        terminal.installExchange(exchanges.terminalController(), repository);
+        directTransfers.installSampleWork(
+                new TerminalAuxiliaryWork(filters::sampleStep, terminal::inventoryStep, exchanges::step));
         var chunkLoading = new io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime(
                 server, repository, networks, nodes, authority, initial);
         var diagnostics = new io.github.loongin.omniresonance.network.NetworkDiagnosticsService(
@@ -586,7 +615,8 @@ public final class NetworkRuntimeRegistry {
                     directTransfers.telemetrySnapshot(network),
                     counts.due(),
                     counts.backoff(),
-                    terminal.pendingSyncTasks(network));
+                    terminal.pendingSyncTasks(network),
+                    exchanges.diagnostics(network, server.overworld().getGameTime()));
         });
         terminal.installDiagnostics(diagnostics);
         nodeManagement.installChunkAdmission(chunkLoading::admission);
@@ -610,7 +640,7 @@ public final class NetworkRuntimeRegistry {
                 chunkLoading,
                 (player, page) -> net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, page));
         return new RuntimeComponents(
-                terminal, authority, nodeManagement, nodeMenus, topology, directTransfers, chunkLoading);
+                terminal, authority, nodeManagement, nodeMenus, topology, directTransfers, chunkLoading, exchanges);
     }
 
     private static void requireServerThread(MinecraftServer server) {

@@ -54,6 +54,28 @@ public final class ManagementTransferPool implements AutoCloseable {
         }
     }
 
+    /** Reserves a validated upper bound before factory allocation, then releases unused capacity before delivery. */
+    public int beginBoundedDownload(
+            UUID player, UUID session, UUID transfer, int maximumLength, long nowTick, Supplier<byte[]> factory) {
+        Objects.requireNonNull(factory);
+        Entry entry = reserve(player, session, transfer, maximumLength, nowTick, false);
+        try {
+            inCallback = true;
+            byte[] bytes = Objects.requireNonNull(factory.get());
+            if (bytes.length < 1 || bytes.length > maximumLength)
+                throw new IllegalArgumentException("Download exceeded reserved bound");
+            reservedBytes -= entry.length - bytes.length;
+            entry.length = bytes.length;
+            entry.bytes = bytes.clone();
+            return bytes.length;
+        } catch (RuntimeException | Error failure) {
+            release(player, entry);
+            throw failure;
+        } finally {
+            inCallback = false;
+        }
+    }
+
     /** Reserves and allocates on the owner thread; admission failures leave other transfers unchanged. */
     public void beginUpload(UUID player, UUID session, UUID transfer, int length, long nowTick) {
         Entry entry = reserve(player, session, transfer, length, nowTick, true);
@@ -246,7 +268,7 @@ public final class ManagementTransferPool implements AutoCloseable {
     private static final class Entry {
         final UUID session;
         final UUID transfer;
-        final int length;
+        int length;
         final long expiresTick;
         final boolean upload;
         int offset;

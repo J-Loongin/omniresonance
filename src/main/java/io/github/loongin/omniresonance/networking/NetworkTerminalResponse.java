@@ -317,7 +317,8 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
         ALREADY_ADMINISTRATOR(16),
         NOT_ADMINISTRATOR(17),
         HAS_NODES(18),
-        STORAGE_UNVERIFIED(19);
+        STORAGE_UNVERIFIED(19),
+        HAS_EXCHANGES(20);
         private final int wireCode;
 
         Reason(int wireCode) {
@@ -350,6 +351,7 @@ public sealed interface NetworkTerminalResponse extends CustomPacketPayload {
                 case 17 -> NOT_ADMINISTRATOR;
                 case 18 -> HAS_NODES;
                 case 19 -> STORAGE_UNVERIFIED;
+                case 20 -> HAS_EXCHANGES;
                 default -> throw new DecoderException("Unknown terminal failure reason");
             };
         }

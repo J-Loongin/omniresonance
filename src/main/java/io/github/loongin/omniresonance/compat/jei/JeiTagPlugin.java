@@ -28,7 +28,10 @@ public final class JeiTagPlugin implements IModPlugin {
             mezz.jei.api.registration.IGuiHandlerRegistration registration, Class<T> screenType) {
         registration.addGuiScreenHandler(screenType, screen -> {
             var bridge = (io.github.loongin.omniresonance.client.RecipeGhostTarget) screen;
-            var bounds = bridge.recipeGuiBounds();
+            var geometry = io.github.loongin.omniresonance.client.RecipeGhostTarget.geometry(
+                    screen.width, screen.height, bridge::recipeGuiBounds);
+            if (geometry == null) return null;
+            var bounds = geometry.area();
             return new mezz.jei.api.gui.handlers.IGuiProperties() {
                 public Class<? extends Screen> screenClass() {
                     return screenType;
@@ -51,11 +54,11 @@ public final class JeiTagPlugin implements IModPlugin {
                 }
 
                 public int screenWidth() {
-                    return screen.width;
+                    return geometry.screenWidth();
                 }
 
                 public int screenHeight() {
-                    return screen.height;
+                    return geometry.screenHeight();
                 }
             };
         });

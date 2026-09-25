@@ -29,7 +29,8 @@ public final class NetworkSettingsService implements AutoCloseable {
         INVALID_NAME,
         NAME_CONFLICT,
         HAS_NODES,
-        STORAGE_UNVERIFIED
+        STORAGE_UNVERIFIED,
+        HAS_EXCHANGES
     }
 
     /** Stable expected rejection without player-provided text or mutable authority. */
@@ -363,8 +364,10 @@ public final class NetworkSettingsService implements AutoCloseable {
             throw rejected(Reason.STORAGE_UNVERIFIED);
         }
         try {
+            if (repository.hasUnresolvedExchanges(data.metadata().id())) throw rejected(Reason.HAS_EXCHANGES);
             repository.requireEmptyNetworkStorage(data.metadata().id());
         } catch (IllegalArgumentException | IllegalStateException failure) {
+            if (failure instanceof Rejected rejected) throw rejected;
             throw rejected(Reason.STORAGE_UNVERIFIED);
         }
     }

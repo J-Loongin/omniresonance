@@ -122,7 +122,7 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         // Sparse occupancy is bounded by tracked nodes × selected faces × registered types; no lower global
         // admission ceiling is inferred from per-network authority limits, and nothing is preallocated.
         endpoints = new ResourceEndpointCache(server, adapters, Integer.MAX_VALUE);
-        filters = new ResourceFilterCache(this::readOwner, this::openTag);
+        filters = new ResourceFilterCache(this::readOwner, this::openFilterTag);
         domainInputs = new DomainInputScheduler(new DomainInputScheduler.Environment() {
             public TransferTelemetry telemetry() {
                 return telemetry;
@@ -894,7 +894,8 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         return filters.tagCount();
     }
 
-    private @Nullable java.util.Iterator<net.minecraft.resources.ResourceLocation> openTag(
+    /** Opens immutable-generation native tag membership on the server thread without eager enumeration or mutation. */
+    public @Nullable java.util.Iterator<net.minecraft.resources.ResourceLocation> openFilterTag(
             ResourceFilterCompiler.TagKey key) {
         requireThread();
         if (key.typeId().equals(ResourceTypes.ITEM))

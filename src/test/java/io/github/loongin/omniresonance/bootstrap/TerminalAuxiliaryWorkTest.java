@@ -11,6 +11,27 @@ import org.junit.jupiter.api.Test;
 
 class TerminalAuxiliaryWorkTest {
     @Test
+    void exchangeSharesCpuAndReceivesAFirstTurnAlongsideExistingWork() {
+        long[] clock = {0};
+        var order = new ArrayList<String>();
+        java.util.function.Function<String, Consumer<TransferWorkBudget>> group = name -> budget -> {
+            if (budget.canFit(0)) {
+                order.add(name);
+                clock[0] += 10;
+            }
+        };
+        var auxiliary =
+                new TerminalAuxiliaryWork(group.apply("sample"), group.apply("inventory"), group.apply("exchange"));
+        for (int tick = 0; tick < 6; tick++) {
+            var budget = new TransferWorkBudget(1, 10, 1, () -> clock[0]);
+            if ((tick & 1) == 0) auxiliary.accept(budget);
+            group.apply("transfer").accept(budget);
+            if ((tick & 1) != 0) auxiliary.accept(budget);
+        }
+        assertEquals(List.of("inventory", "transfer", "sample", "transfer", "exchange", "transfer"), order);
+    }
+
+    @Test
     void storageWritesAndSyncCannotLockstepWithTheTwoOuterRotations() {
         long[] clock = {0};
         var order = new ArrayList<String>();

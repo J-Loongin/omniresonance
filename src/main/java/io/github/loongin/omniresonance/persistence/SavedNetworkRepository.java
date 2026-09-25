@@ -56,6 +56,7 @@ public final class SavedNetworkRepository {
     private final Thread owningThread = Thread.currentThread();
     private final DimensionDataStorage storage;
     private final Path dataDirectory;
+    private final SavedExchangeRepository exchangeDeletionCheck;
     private final io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory adapters;
     private int auditCapacity =
             io.github.loongin.omniresonance.config.ServerSettings.defaults().auditEntriesPerScope();
@@ -186,6 +187,9 @@ public final class SavedNetworkRepository {
         this.registeredTypes = Set.copyOf(adapters.types());
         this.storage = Objects.requireNonNull(storage, "storage");
         this.dataDirectory = Objects.requireNonNull(dataDirectory, "dataDirectory");
+        // Inspection preserves every representable saved record; this reader never creates exchange authority.
+        this.exchangeDeletionCheck =
+                new SavedExchangeRepository(storage, dataDirectory, new ExchangeSavedData.Limits(262144, 262144));
     }
 
     /**
@@ -382,6 +386,24 @@ public final class SavedNetworkRepository {
         });
     }
 
+    /** Returns the single server-session exchange repository without reading or creating authority. */
+    public SavedExchangeRepository exchangeRepository() {
+        requireOwningThread();
+        return exchangeDeletionCheck;
+    }
+
+    /** Owner-thread deletion preflight. Unreadable exchange authority fails closed; reads never create a shard. */
+    public boolean hasUnresolvedExchanges(UUID networkId) {
+        requireOwningThread();
+        Objects.requireNonNull(networkId);
+        ExchangeSavedData data = exchangeDeletionCheck.find().orElse(null);
+        if (data == null) return false;
+        if (data.hasActiveTunnel(networkId)) return true;
+        for (UUID id : data.agreementsFor(networkId))
+            if (!data.agreement(id).orElseThrow().consent().revoked()) return true;
+        return false;
+    }
+
     /**
      * Verifies the main file kind and activates all declared domain buckets before proving inventory empty.
      * Missing/corrupt/unmarked storage and in-flight reservations fail closed. Reads and activation never
@@ -393,6 +415,8 @@ public final class SavedNetworkRepository {
         if (!loadedNetworks.containsKey(id)) {
             throw new IllegalArgumentException("Network is not loaded");
         }
+        if (hasUnresolvedExchanges(id))
+            throw new IllegalStateException("Unresolved exchanges prevent network deletion");
         String mainName = ManagedSavedDataNames.network(id);
         BasicFileAttributes main = attributes(dataDirectory.resolve(mainName + ".dat"));
         if (main != null && !main.isRegularFile()) {

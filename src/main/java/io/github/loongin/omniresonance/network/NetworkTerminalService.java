@@ -42,6 +42,81 @@ import org.slf4j.LoggerFactory;
  * All authoritative work is synchronous on the server thread, with no simulation or synchronous saves.
  */
 public final class NetworkTerminalService {
+    private @Nullable io.github.loongin.omniresonance.exchange.ExchangeTerminalWire exchangeWire;
+
+    public void installExchange(
+            io.github.loongin.omniresonance.exchange.ExchangeTerminalController controller,
+            SavedNetworkRepository repository) {
+        requireServerThread();
+        if (exchangeWire != null || !sessions.isEmpty())
+            throw new IllegalStateException("Exchange installation is not available");
+        exchangeWire = new io.github.loongin.omniresonance.exchange.ExchangeTerminalWire(
+                controller, repository, directory, pool());
+    }
+
+    /** Exchange shares the existing actual-player session and strict request sequence; network is never supplied by the payload. */
+    public io.github.loongin.omniresonance.networking.ExchangeFrame exchange(
+            ServerPlayer sender, io.github.loongin.omniresonance.networking.ExchangeRequest request) {
+        requireServerThread();
+        var session = sessions.get(sender.getUUID());
+        if (closed
+                || exchangeWire == null
+                || sender.server != server
+                || session == null
+                || session.player != sender
+                || !session.viewId.equals(request.view())
+                || !session.id.equals(request.session()))
+            return io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.error(request, "session_expired");
+        if (session.lastSequence == Long.MAX_VALUE || request.sequence() != session.lastSequence + 1)
+            return io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.error(request, "stale_request");
+        session.lastSequence = request.sequence();
+        try {
+            requireLayer(session, Layer.NETWORK);
+            UUID network = requireSelectedNetwork(session);
+            topology().inspectNetwork(sender, network);
+            if (request.kind() == io.github.loongin.omniresonance.networking.ExchangeRequest.OPEN) {
+                clearStatus(session);
+                session.chunkActive = false;
+                if (nodeDirectory != null) nodeDirectory.closePlayer(sender);
+                if (inventorySync != null) inventorySync.cancel(sender.getUUID());
+                if (storageAccess != null) storageAccess.close(sender.getUUID());
+                session.inventoryActive = false;
+                exchangeWire.close(sender, session.id);
+                session.exchange =
+                        new io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.State(request.generation());
+            } else if (session.exchange == null || !session.exchange.generation.equals(request.generation()))
+                return io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.error(request, "stale_request");
+            if (request.kind() == io.github.loongin.omniresonance.networking.ExchangeRequest.CLOSE) {
+                exchangeWire.close(sender, session.id);
+                session.exchange = null;
+                return io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.empty(
+                        request, io.github.loongin.omniresonance.networking.ExchangeFrame.DONE, false);
+            }
+            return exchangeWire.handle(sender, network, session.exchange, request, settings);
+        } catch (io.github.loongin.omniresonance.exchange.ExchangeManagementService.CommittedAuditFailure failure) {
+            closePlayer(sender);
+            return io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.error(request, "committed");
+        } catch (SecurityException | NetworkTopologyService.Rejected denied) {
+            exchangeWire.close(sender, session.id);
+            return io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.error(request, "no_access");
+        } catch (RuntimeException failure) {
+            exchangeWire.close(sender, session.id);
+            if (session.exchange != null && session.exchange.committed()) {
+                closePlayer(sender);
+                return io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.error(request, "committed");
+            }
+            String message = failure.getMessage();
+            String reason = message != null && (message.contains("quota") || message.contains("capacity"))
+                    ? "quota"
+                    : message != null && message.contains("already paired")
+                            ? "paired"
+                            : message != null && message.contains("Duplicate channel name")
+                                    ? "channel_name"
+                                    : "unavailable";
+            return io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.error(request, reason);
+        }
+    }
+
     private static final Logger LOGGER = LoggerFactory.getLogger(NetworkTerminalService.class);
     private @Nullable NetworkDiagnosticsService diagnostics;
     /** Installs the server-owned read model before terminal sessions are exposed; performs no storage access. */
@@ -504,6 +579,10 @@ public final class NetworkTerminalService {
             }
             session.lastSequence = request.sequence();
             if (!(request instanceof NetworkTerminalRequest.Heartbeat)) {
+                if (session.exchange != null && exchangeWire != null) {
+                    exchangeWire.close(sender, session.id);
+                    session.exchange = null;
+                }
                 clearStatus(session);
                 session.chunkActive = false;
                 if (nodeDirectory != null) nodeDirectory.closePlayer(sender);
@@ -767,6 +846,7 @@ public final class NetworkTerminalService {
         if (nodeDirectory != null) nodeDirectory.closePlayer(player);
         Session session = sessions.get(Objects.requireNonNull(player, "player").getUUID());
         if (session != null && session.player == player) {
+            if (exchangeWire != null) exchangeWire.close(player, session.id);
             cancelSessionEdit(player, session);
             sessions.remove(player.getUUID());
         }
@@ -776,6 +856,7 @@ public final class NetworkTerminalService {
     public void close() {
         requireServerThread();
         for (Session session : sessions.values()) {
+            if (exchangeWire != null) exchangeWire.close(session.player, session.id);
             cancelSessionEdit(session.player, session);
         }
         sessions.clear();
@@ -1133,6 +1214,7 @@ public final class NetworkTerminalService {
                 session.layer = Layer.NETWORK_SETTINGS;
                 if (rejected.reason() == NetworkSettingsService.Reason.STALE_REVISION
                         || rejected.reason() == NetworkSettingsService.Reason.LOCK_EXPIRED
+                        || rejected.reason() == NetworkSettingsService.Reason.HAS_EXCHANGES
                         || rejected.reason() == NetworkSettingsService.Reason.HAS_NODES
                         || rejected.reason() == NetworkSettingsService.Reason.STORAGE_UNVERIFIED) {
                     return new NetworkTerminalResponse.Failure(
@@ -1979,6 +2061,7 @@ public final class NetworkTerminalService {
             case INVALID_NAME -> NetworkTerminalResponse.Reason.INVALID_NAME;
             case NAME_CONFLICT -> NetworkTerminalResponse.Reason.NAME_CONFLICT;
             case HAS_NODES -> NetworkTerminalResponse.Reason.HAS_NODES;
+            case HAS_EXCHANGES -> NetworkTerminalResponse.Reason.HAS_EXCHANGES;
             case STORAGE_UNVERIFIED -> NetworkTerminalResponse.Reason.STORAGE_UNVERIFIED;
         };
     }
@@ -2044,6 +2127,7 @@ public final class NetworkTerminalService {
     }
 
     private static final class Session {
+        private @Nullable io.github.loongin.omniresonance.exchange.ExchangeTerminalWire.State exchange;
         private boolean statusActive;
         private long statusGeneration, statusSequence, nextStatusTick;
         private final ServerPlayer player;

@@ -130,6 +130,18 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                 layout.compact());
     }
 
+    io.github.loongin.omniresonance.networking.ExchangeRequest sendExchange(
+            java.util.UUID generation, int kind, int offset, byte[] body) {
+        var request = new io.github.loongin.omniresonance.networking.ExchangeRequest(
+                viewId, requireSessionId(), generation, nextSequence++, kind, offset, body);
+        net.neoforged.neoforge.network.PacketDistributor.sendToServer(request);
+        return request;
+    }
+
+    boolean exchangeCloseKey(int key, int scan) {
+        return client.isTerminalKey(key, scan);
+    }
+
     void suspendForConfiguration() {
         suspendedForConfiguration = true;
         if (nodesView != null) nodesView.suspendHeaderSearch();
@@ -1181,9 +1193,16 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                                         case "admins" -> "omniresonance.terminal.home.admins.meta";
                                         case "settings" -> "omniresonance.terminal.home.settings.meta";
                                         case "status" -> "omniresonance.status.meta";
+                                        case "exchange" -> "omniresonance.exchange.meta";
                                         default -> "omniresonance.terminal.home.unavailable";
                                     }),
                     ignored -> {
+                        if (module.equals("exchange")
+                                && topologyState instanceof NetworkTerminalState.NetworkRoot root) {
+                            suspendForConfiguration();
+                            minecraft.setScreen(new ExchangeScreen(this, root.network()));
+                            return;
+                        }
                         if (module.equals("status")) {
                             openStatus();
                             return;

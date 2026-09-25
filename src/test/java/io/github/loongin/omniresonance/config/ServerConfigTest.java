@@ -27,6 +27,28 @@ class ServerConfigTest {
     private static final String ADMINISTRATORS_KEY = "network_limits.administrators_per_network";
 
     @Test
+    void exchangeDefaultsAndReloadUseOneValidatedSnapshot() {
+        ServerConfig config = new ServerConfig();
+        var values = loadNative(config, 32);
+        var initial = config.captureLoading(true).settings().exchange();
+        assertEquals(32, initial.rulesPerNetwork());
+        assertEquals(8, initial.invitesPerNetwork());
+        assertEquals(1024, initial.rulesServer());
+        assertEquals(256, initial.historyServer());
+        values.set("exchange.rules_per_network", 4);
+        values.set("exchange.invites_per_network", 2);
+        values.set("exchange.rules_server", 16);
+        values.set("exchange.history_server", 0);
+        config.spec().afterReload();
+        var updated = config.captureReloading(true).settings().exchange();
+        assertEquals(new ServerSettings.Exchange(4, 2, 16, 0), updated);
+        assertEquals(32, initial.rulesPerNetwork());
+        assertThrows(IllegalArgumentException.class, () -> new ServerSettings.Exchange(-1, 2, 16, 0));
+        assertThrows(IllegalArgumentException.class, () -> new ServerSettings.Exchange(4, 2, 16, 262145));
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> new ServerSettings.Exchange(0, 0, 0, 0));
+    }
+
+    @Test
     void chunkLoadingHasNativeDefaultsAndReloadableZeroOrUnlimitedQuotas() {
         var config = new ServerConfig();
         var values = loadNative(config, 32);

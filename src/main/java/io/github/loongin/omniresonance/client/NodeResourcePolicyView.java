@@ -142,14 +142,11 @@ final class NodeResourcePolicyView {
                     {Field.REDSTONE, Field.FACES}
                 };
         int columns = wide ? 3 : 2;
-        int unit = (row.width() - (columns - 1) * 6) / columns;
         var cells = new java.util.ArrayList<Cell>();
         int column = 0;
         for (Field field : fields[index]) {
             int span = wide && field == Field.PRESET ? 2 : 1;
-            int x = row.x() + column * (unit + 6);
-            int width = column + span == columns ? row.right() - x : span * unit + (span - 1) * 6;
-            cells.add(new Cell(field, new TerminalLayout.Rect(x, row.y() + 10, width, 20)));
+            cells.add(new Cell(field, TerminalFormGrid.control(row, columns, column, span)));
             column += span;
         }
         return cells;
