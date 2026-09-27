@@ -35,7 +35,7 @@ final class OmniAeInterfaceData implements DataProvider {
     public CompletableFuture<?> run(CachedOutput cache) {
         var tasks = new ArrayList<CompletableFuture<?>>();
         String name = "ae_domain_interface";
-        var model = new JsonObject();
+        var model = object("parent", "minecraft:block/block");
         var textures = object("particle", "omniresonance:block/resonance_transfer_node_top");
         textures.addProperty("case", "omniresonance:block/resonance_transfer_node_top");
         textures.addProperty("port", "minecraft:block/white_concrete");

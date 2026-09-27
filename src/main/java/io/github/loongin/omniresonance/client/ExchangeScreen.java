@@ -492,7 +492,10 @@ final class ExchangeScreen extends Screen {
         selectedTypes.clear();
         selectedTypes.addAll(baseline.scope().resourceTypeIds());
         filter = baseline.filter();
-        filterName = detail.filterName() == null ? "" : detail.filterName();
+        filterName = detail.filterName() == null
+                ? ""
+                : io.github.loongin.omniresonance.filter.BuiltInPresets.label(detail.filterId(), detail.filterName())
+                        .getString();
         mode = baseline.filterMode();
         defaultRate = baseline.defaultRate();
         interval = baseline.intervalTicks();
@@ -760,7 +763,11 @@ final class ExchangeScreen extends Screen {
             if (editingExisting)
                 content.add(new Row(text("keep_filter"), () -> {
                     filter = new ExchangeTermsDraft.KeepApproved();
-                    filterName = detail.filterName() == null ? "" : detail.filterName();
+                    filterName = detail.filterName() == null
+                            ? ""
+                            : io.github.loongin.omniresonance.filter.BuiltInPresets.label(
+                                            detail.filterId(), detail.filterName())
+                                    .getString();
                     dirty = true;
                     go(Page.EDIT);
                 }));
@@ -867,7 +874,10 @@ final class ExchangeScreen extends Screen {
         fields.add(List.of(
                 new DetailCell(
                         text("filter_label"),
-                        Component.literal(detail.filterName() == null ? label("filter_required") : detail.filterName()),
+                        detail.filterName() == null
+                                ? text("filter_required")
+                                : io.github.loongin.omniresonance.filter.BuiltInPresets.label(
+                                        detail.filterId(), detail.filterName()),
                         2,
                         () -> send(ExchangeRequest.FILTER, 0, bytes(b -> b.writeUUID(detail.id())))),
                 new DetailCell(

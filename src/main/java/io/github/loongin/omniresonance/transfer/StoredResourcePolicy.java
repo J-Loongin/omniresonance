@@ -54,9 +54,13 @@ public record StoredResourcePolicy(
      * it performs no simulation or mutation and retains no mutable state.
      */
     public record RawOverride(
-            @Nullable Integer rate,
+            @Nullable Long rate,
             @Nullable ResourceTransferPolicy.BatchMode batchMode,
             @Nullable Long batchSize) {
+        public RawOverride(int rate, @Nullable ResourceTransferPolicy.BatchMode batchMode, @Nullable Long batchSize) {
+            this(Long.valueOf(rate), batchMode, batchSize);
+        }
+
         public RawOverride {
             if (rate != null && rate < 1) throw new IllegalArgumentException("Rate must be positive");
             if (batchSize != null && batchSize < 1) throw new IllegalArgumentException("Batch must be positive");

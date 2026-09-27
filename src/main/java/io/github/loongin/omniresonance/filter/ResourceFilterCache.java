@@ -47,7 +47,10 @@ public final class ResourceFilterCache implements AutoCloseable {
         Key key = new Key(ownerId, presetId);
         Root root = roots.get(key);
         if (root == null) {
-            Owner owner = owners.computeIfAbsent(ownerId, id -> new Owner(load(id)));
+            var builtin = BuiltInPresets.find(presetId);
+            Owner owner = builtin == null
+                    ? owners.computeIfAbsent(ownerId, id -> new Owner(load(id)))
+                    : new Owner(new ResourceFilterCompiler.OwnerSnapshot(ownerId, Map.of(presetId, builtin.preset())));
             root = new Root(key, owner);
             roots.put(key, root);
             owner.keys.add(key);
@@ -63,7 +66,7 @@ public final class ResourceFilterCache implements AutoCloseable {
         roots.remove(key);
         releaseTags(root);
         root.owner.keys.remove(key);
-        if (root.owner.keys.isEmpty()) owners.remove(key.ownerId());
+        if (root.owner.keys.isEmpty()) owners.remove(key.ownerId(), root.owner);
     }
 
     public ResourceDirectScheduler.FilterView view(Key key) {

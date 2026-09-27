@@ -54,6 +54,10 @@ public final class NetworkTerminalClient {
     public NetworkTerminalClient(IEventBus modBus) {
         nodeClient = new ResonanceNodeClient(modBus);
         if (net.neoforged.fml.ModList.get().isLoaded("ae2")) {
+            modBus.addListener(
+                    (net.neoforged.fml.event.lifecycle.FMLClientSetupEvent event) -> event.enqueueWork(() -> {
+                        io.github.loongin.omniresonance.compat.ae2.ResonanceKeyRenderer.register();
+                    }));
             io.github.loongin.omniresonance.compat.ae2.Ae2InterfacePayloads.receiver(frame -> {
                 var mc = Minecraft.getInstance();
                 if (frame.initial()) {

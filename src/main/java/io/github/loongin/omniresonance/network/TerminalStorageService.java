@@ -162,10 +162,12 @@ public final class TerminalStorageService implements AutoCloseable {
                 view.player.inventoryMenu.broadcastChanges();
                 view.menuState = view.player.inventoryMenu.getStateId();
                 view.cursor = view.player.inventoryMenu.getCarried().copy();
-                view.slot = view.player
-                        .getInventory()
-                        .getItem(request.inventorySlot())
-                        .copy();
+                view.slot = request.inventorySlot() < 0
+                        ? ItemStack.EMPTY
+                        : view.player
+                                .getInventory()
+                                .getItem(request.inventorySlot())
+                                .copy();
                 pending.addLast(player);
                 send(view, request.sequence(), status, moved);
                 continue;

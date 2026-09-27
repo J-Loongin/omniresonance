@@ -24,6 +24,7 @@ final class TerminalResourceRuleDraft {
     UUID reference, sampleToken;
     ComponentCondition source = ComponentCondition.idOnly();
     boolean dirty;
+    private boolean explicitInput;
     private @Nullable ComponentCondition cachedSource;
     private CompoundTag cachedComponents = new CompoundTag();
     private java.util.List<String> cachedKeys = java.util.List.of();
@@ -54,8 +55,9 @@ final class TerminalResourceRuleDraft {
     }
 
     boolean pasteTag(@Nullable TerminalTagClipboard.Candidate candidate, String value) {
-        var match = TerminalTagPaste.read(candidate, value);
+        var match = TerminalTagPaste.copiedTag(candidate, value);
         if (match == null) return false;
+        explicitInput = false;
         type = match.typeId();
         selector = 1;
         text = "#" + ((ResourceFilterRule.TagSelector) match.selector()).tagId();
@@ -69,18 +71,75 @@ final class TerminalResourceRuleDraft {
 
     void editText(String value) {
         text = value;
-        if (selector < 3 && value.startsWith("#")) selector = 1;
+        explicitInput = TerminalRuleInput.explicitSyntax(value);
+        if (explicitInput) {
+            try {
+                var parsed = TerminalRuleInput.explicit(value);
+                if (parsed != null) {
+                    if (!type.equals(parsed.typeId())) resetComponents();
+                    type = parsed.typeId();
+                    selector = parsed.selector() instanceof ResourceFilterRule.TagSelector
+                            ? 1
+                            : parsed.selector() instanceof ResourceFilterRule.Glob
+                                    ? 2
+                                    : parsed.selector() instanceof ResourceFilterRule.WholeType ? 3 : 0;
+                }
+            } catch (IllegalArgumentException incomplete) {
+                // Keep the in-progress text; intent() rejects it before submission.
+            }
+        } else {
+            if (selector == 3
+                    && !io.github.loongin.omniresonance.bootstrap.ResourceAdapters.scalarType(type)
+                    && !value.isBlank()) selector = 0;
+            if (selector < 3 && value.startsWith("#")) selector = 1;
+        }
         dirty = true;
     }
 
+    void changeType(ResourceLocation next) {
+        boolean wasScalar = io.github.loongin.omniresonance.bootstrap.ResourceAdapters.scalarType(type);
+        if (explicitInput) text = TerminalRuleInput.body(text);
+        explicitInput = false;
+        if (!type.equals(next)) resetComponents();
+        type = next;
+        if (io.github.loongin.omniresonance.bootstrap.ResourceAdapters.scalarType(type)) {
+            selector = 3;
+            text = "";
+        } else if (wasScalar) {
+            selector = 0;
+            text = "";
+        }
+        dirty = true;
+    }
+
+    private void resetComponents() {
+        source = ComponentCondition.idOnly();
+        mode = ComponentCondition.Mode.ID_ONLY;
+        sampleToken = null;
+        selected.clear();
+    }
+
     void select(int value) {
+        if (explicitInput) text = TerminalRuleInput.body(text);
+        explicitInput = false;
         selector = value;
-        if (selector == 1 && !text.startsWith("#")) text = "#" + text;
+        if (selector == 3) text = "";
+        else if (selector == 1 && !text.startsWith("#")) text = "#" + text;
         else if (selector != 1 && text.startsWith("#")) text = text.substring(1);
     }
 
     ResourceRuleIntent intent() {
         if (selector == 4) return new ResourceRuleIntent.Reference(java.util.Objects.requireNonNull(reference));
+        if (explicitInput) {
+            var parsed = java.util.Objects.requireNonNull(TerminalRuleInput.explicit(text));
+            return new ResourceRuleIntent.Match(
+                    parsed.typeId(),
+                    parsed.selector(),
+                    mode,
+                    mode == ComponentCondition.Mode.SELECTED ? selected : Set.of(),
+                    sampleToken);
+        }
+        if (selector == 3 && !text.isBlank()) throw new IllegalArgumentException("Expected a typed resource rule");
         ResourceFilterRule.Selector choice =
                 switch (selector) {
                     case 0 -> ResourceFilterRule.Selector.exact(canonical(text));
@@ -115,6 +174,8 @@ final class TerminalResourceRuleDraft {
     }
 
     void sample(ResourceFilterRule.Match match, UUID token) {
+        if (explicitInput) text = TerminalRuleInput.body(text);
+        explicitInput = false;
         type = match.resourceTypeId();
         source = match.components();
         sampleToken = token;

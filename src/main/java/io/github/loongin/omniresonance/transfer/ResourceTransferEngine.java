@@ -76,7 +76,7 @@ public final class ResourceTransferEngine {
             Failure failure,
             boolean completeBatch,
             Stage unknownStage,
-            int unknownRequested,
+            long unknownRequested,
             @Nullable RuntimeException cause) {
         /**
          * Known extracted minus known returned; this is not authoritative net removal after an unknown
@@ -185,7 +185,7 @@ public final class ResourceTransferEngine {
             boolean admitted) {
         if (amount <= 0) return empty(Failure.REFUSED);
         if (!admitted && !budget.canStart()) return empty(Failure.WAITING_BUDGET);
-        int requested = (int) Math.min(Integer.MAX_VALUE, amount);
+        long requested = amount;
         try {
             if (!eligible(source, target, variant)) return empty(Failure.INVALID_ENDPOINT);
             if (!viewCurrent(source, sourceView, true, budget) || !viewCurrent(target, targetView, false, budget))
@@ -215,7 +215,7 @@ public final class ResourceTransferEngine {
     /**
      * Rebuilds promises and nonzero keep verification synchronously in this tick; paused preparation is
      * discarded. Quantities are nonnegative long and batch is positive, including batch greater than rate.
-     * Native aggregate requests are capped at int max before rounding, never truncated by a cast.
+     * Native long requests retain their range; int-only ports limit at their own external boundary.
      * Plans allocate only after budgeted observations and contain at most one entry per touched view.
      * WAITING_BUDGET always means zero extraction; no recovery reservation exists during simulations.
      */
@@ -230,8 +230,8 @@ public final class ResourceTransferEngine {
             TransferWorkBudget budget) {
         if (sourceAllowance < 0 || outputAllowance < 0 || keepCount < 0 || batchSize <= 0)
             throw new IllegalArgumentException("Invalid exact quantities");
-        long limit = Math.min(Integer.MAX_VALUE, Math.min(sourceAllowance, outputAllowance));
-        int requested = (int) rounded(limit, batchSize);
+        long limit = Math.min(sourceAllowance, outputAllowance);
+        long requested = rounded(limit, batchSize);
         if (requested == 0) return empty(Failure.REFUSED);
         if (!budget.canStart()) return empty(Failure.WAITING_BUDGET);
         Handle source = candidate.source, target = candidate.target;
@@ -253,12 +253,12 @@ public final class ResourceTransferEngine {
                     if (item == null || !item.variant().key().equals(variant.key())) continue;
                     stored = Math.addExact(stored, item.quantity());
                     if (candidate.selectsSource(view) && (!handler || observed.isEmpty()))
-                        observed.add(new Step(view, (int) Math.min(Integer.MAX_VALUE, item.quantity())));
+                        observed.add(new Step(view, item.quantity()));
                 }
-                requested = (int) rounded(Math.min(requested, Math.max(0, stored - keepCount)), batchSize);
+                requested = rounded(Math.min(requested, Math.max(0, stored - keepCount)), batchSize);
                 if (requested == 0) return empty(Failure.REFUSED);
             }
-            int supplied = 0;
+            long supplied = 0;
             int end = keepCount > 0
                     ? observed.size()
                     : candidate.sourceHints == null ? sourceViews : candidate.sourceHints.length;
@@ -276,20 +276,20 @@ public final class ResourceTransferEngine {
                 }
                 if (!budget.canStart()) return empty(Failure.WAITING_BUDGET);
                 if (!source.valid()) return empty(Failure.INVALID_ENDPOINT);
-                int request = requested - supplied;
-                int extracted = checked(source.port().extract(view, variant, request, true, budget), request);
+                long request = requested - supplied;
+                long extracted = checked(source.port().extract(view, variant, request, true, budget), request);
                 if (extracted > 0) {
                     inputs.add(new Step(view, extracted));
                     supplied += extracted;
                 }
                 if (handler) break;
             }
-            requested = (int) rounded(supplied, batchSize);
+            requested = rounded(supplied, batchSize);
             if (requested == 0) return empty(Failure.REFUSED);
             if (!budget.canStart()) return empty(Failure.WAITING_BUDGET);
             if (!target.valid()) return empty(Failure.INVALID_ENDPOINT);
             int targetViews = target.port().targetViews(budget);
-            int accepted = 0;
+            long accepted = 0;
             int targetStart = candidate.targetHints == null ? candidate.targetStartView : 0;
             int targetEnd = candidate.targetHints == null ? targetViews : candidate.targetHints.length;
             for (int index = targetStart; index < targetEnd && accepted < requested; index++) {
@@ -297,14 +297,14 @@ public final class ResourceTransferEngine {
                 if (view >= targetViews) return empty(Failure.INVALID_ENDPOINT);
                 if (!budget.canStart()) return empty(Failure.WAITING_BUDGET);
                 if (!target.valid()) return empty(Failure.INVALID_ENDPOINT);
-                int request = requested - accepted;
-                int inserted = checked(target.port().insert(view, variant, request, true, budget), request);
+                long request = requested - accepted;
+                long inserted = checked(target.port().insert(view, variant, request, true, budget), request);
                 if (inserted > 0) {
                     outputs.add(new Step(view, inserted));
                     accepted += inserted;
                 }
             }
-            requested = (int) rounded(accepted, batchSize);
+            requested = rounded(accepted, batchSize);
             if (requested == 0) return empty(Failure.REFUSED);
             trim(inputs, requested);
             trim(outputs, requested);
@@ -355,7 +355,7 @@ public final class ResourceTransferEngine {
             ResourceVariant variant,
             List<Step> inputs,
             List<Step> outputs,
-            int requested,
+            long requested,
             boolean exact,
             RecoveryBuffer recovery,
             ServerSettings.RecoveryLimits limits,
@@ -387,7 +387,7 @@ public final class ResourceTransferEngine {
                         state.failure = Failure.WAITING_BUDGET;
                         break;
                     }
-                    int actual;
+                    long actual;
                     long beforeExtractCalls = budget.calls();
                     try {
                         actual = checked(
@@ -409,9 +409,9 @@ public final class ResourceTransferEngine {
                 if (state.held > 0 && (!exact || state.extracted == requested && state.failure == Failure.NONE)) {
                     for (Step step : outputs) {
                         if (state.held == 0 || !state.current(target, step.view(), false, budget)) break;
-                        int offered = (int) Math.min(state.held, step.amount());
+                        long offered = Math.min(state.held, step.amount());
                         state.held -= offered;
-                        int accepted;
+                        long accepted;
                         long beforeInsertCalls = budget.calls();
                         try {
                             accepted = checked(
@@ -437,9 +437,9 @@ public final class ResourceTransferEngine {
                     int returnView =
                             source.port().extractionScope() == ResourcePort.ExtractionScope.HANDLER ? 0 : step.view();
                     if (!state.current(returnSource, returnView, false, budget)) break;
-                    int offered = (int) Math.min(state.held, step.amount());
+                    long offered = Math.min(state.held, step.amount());
                     state.held -= offered;
-                    int accepted;
+                    long accepted;
                     long beforeReturnCalls = budget.calls();
                     try {
                         accepted = checked(
@@ -483,7 +483,7 @@ public final class ResourceTransferEngine {
         return view < count && handle.valid();
     }
 
-    private static int checked(int amount, int requested) {
+    private static long checked(long amount, long requested) {
         if (amount < 0 || amount > requested) throw new IllegalArgumentException("Invalid resource port amount");
         return amount;
     }
@@ -492,12 +492,12 @@ public final class ResourceTransferEngine {
         return amount / batchSize * batchSize;
     }
 
-    private static void trim(List<Step> steps, int amount) {
-        int remaining = amount;
+    private static void trim(List<Step> steps, long amount) {
+        long remaining = amount;
         int count = 0;
         for (int index = 0; index < steps.size() && remaining > 0; index++) {
             Step step = steps.get(index);
-            int bounded = Math.min(step.amount(), remaining);
+            long bounded = Math.min(step.amount(), remaining);
             if (bounded != step.amount()) steps.set(index, new Step(step.view(), bounded));
             remaining -= bounded;
             count++;
@@ -523,7 +523,7 @@ public final class ResourceTransferEngine {
         return Arrays.copyOf(unique, count);
     }
 
-    private record Step(int view, int amount) {}
+    private record Step(int view, long amount) {}
 
     /** Per-call evidence and known holdings; never published, cached, or retained after return. */
     private static final class Commit {
@@ -560,14 +560,15 @@ public final class ResourceTransferEngine {
             cause = exception;
         }
 
-        Result unknown(RecoveryBuffer.Reservation reservation, Stage stage, int requested, RuntimeException exception) {
+        Result unknown(
+                RecoveryBuffer.Reservation reservation, Stage stage, long requested, RuntimeException exception) {
             failure = Failure.UNKNOWN_MUTATION;
             cause = exception;
             RecoveryBuffer.Placement placement = reservation.placeKnownRemainder(held);
             return result(placement.buffered(), placement.stored(), false, stage, requested);
         }
 
-        Result result(long buffered, long stored, boolean completeBatch, Stage stage, int requested) {
+        Result result(long buffered, long stored, boolean completeBatch, Stage stage, long requested) {
             return new Result(
                     extracted, moved, returned, buffered, stored, failure, completeBatch, stage, requested, cause);
         }

@@ -68,7 +68,7 @@ public final class NetworkPayloads {
     public static void register(RegisterPayloadHandlersEvent event, NetworkRuntimeRegistry registry) {
         Objects.requireNonNull(registry, "registry");
         NodeMenuPayloads.installTerminalTransferHandler(registry::handleTerminalTransfer);
-        PayloadRegistrar registrar = event.registrar("27").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("29").executesOn(HandlerThread.MAIN);
         registrar.playToClient(NetworkStatusFrame.TYPE, NetworkStatusFrame.STREAM_CODEC, (frame, context) -> {
             var receiver = statusReceiver;
             if (receiver == null) throw new IllegalStateException("Status receiver missing");

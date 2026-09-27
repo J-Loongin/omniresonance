@@ -160,6 +160,11 @@ public final class ItemFilterService {
 
     public @Nullable FilterPresetSummary summary(ServerPlayer actor, UUID networkId, UUID presetId) {
         NetworkMetadata network = requireNetwork(actor, networkId);
+        var builtIn = BuiltInPresets.find(presetId);
+        if (builtIn != null)
+            return BuiltInPresets.available(presetId, repository.registeredResourceTypes()::contains)
+                    ? summary(builtIn.preset(), false)
+                    : null;
         OwnerSavedData owner = owner(network.ownerId());
         ResourceFilterPreset preset =
                 owner == null ? null : owner.findPreset(presetId).orElse(null);
@@ -209,6 +214,7 @@ public final class ItemFilterService {
             String originalRule) {
         NetworkMetadata network = requireNetwork(actor, networkId);
         if ((operation == PresetEditOperation.CREATE) != (presetId == null)) throw rejected(Reason.INVALID_REQUEST);
+        if (BuiltInPresets.find(presetId) != null) throw rejected(Reason.NO_ACCESS);
         OwnerSavedData owner = owner(network.ownerId());
         ResourceFilterPreset preset = presetId == null ? null : preset(network.ownerId(), presetId);
         if ((operation == PresetEditOperation.ADD_RULE
@@ -265,6 +271,7 @@ public final class ItemFilterService {
         boolean creates =
                 edit.operation() == PresetEditOperation.CREATE || edit.operation() == PresetEditOperation.COPY;
         UUID id = creates ? Objects.requireNonNull(ids.get(), "preset id") : Objects.requireNonNull(edit.presetId());
+        if (BuiltInPresets.find(id) != null) throw rejected(Reason.UNAVAILABLE);
         ManagedName name;
         try {
             name = switch (edit.operation()) {
@@ -400,9 +407,8 @@ public final class ItemFilterService {
                 next = new ResourceFilterRule.Reference(ruleId, reference.presetId());
             } else {
                 ResourceRuleIntent.Match match = (ResourceRuleIntent.Match) intent;
-                if (!ResourceTypes.ITEM.equals(match.typeId())
-                        && !ResourceTypes.FLUID.equals(match.typeId())
-                        && !ResourceTypes.ENERGY.equals(match.typeId())) throw rejected(Reason.INVALID_REQUEST);
+                if (repository.resourceAdapters().find(match.typeId()).isEmpty())
+                    throw rejected(Reason.INVALID_REQUEST);
                 ComponentCondition trusted = old instanceof ResourceFilterRule.Match saved
                                 && saved.resourceTypeId().equals(match.typeId())
                         ? saved.components()
@@ -698,6 +704,7 @@ public final class ItemFilterService {
 
     private void requireEdit(ServerPlayer actor, Edit edit) {
         requireActor(actor);
+        if (BuiltInPresets.find(edit.presetId()) != null) throw rejected(Reason.NO_ACCESS);
         if (!locks.isHeld(edit.token(), actor.getUUID(), currentTick)
                 || !edit.token().objectId().equals(lockId(edit.ownerId(), edit.presetId())))
             throw rejected(Reason.LOCK_EXPIRED);
@@ -831,6 +838,12 @@ public final class ItemFilterService {
     }
 
     private ResourceFilterPreset preset(UUID ownerId, UUID presetId) {
+        var builtIn = BuiltInPresets.find(presetId);
+        if (builtIn != null) {
+            if (!BuiltInPresets.available(presetId, repository.registeredResourceTypes()::contains))
+                throw rejected(Reason.UNAVAILABLE);
+            return builtIn.preset();
+        }
         OwnerSavedData owner = owner(ownerId);
         if (owner == null) throw rejected(Reason.UNAVAILABLE);
         return owner.findPreset(presetId).orElseThrow(() -> rejected(Reason.UNAVAILABLE));

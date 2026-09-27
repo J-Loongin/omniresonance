@@ -38,11 +38,21 @@ public interface RecipeGhostTarget {
         return new Geometry(area, width, height);
     }
 
+    /** Detached hovered ingredient and its exact native screen hit box; no server inventory reference escapes. */
+    record Hover(Object value, Area area) {}
+
+    default @Nullable Hover recipeHover(double mouseX, double mouseY) {
+        return null;
+    }
+
     record Ingredient(ResourceLocation type, ResourceLocation id) {
         public Ingredient {
-            if (!type.equals(ResourceTypes.ITEM) && !type.equals(ResourceTypes.FLUID))
+            if (!type.equals(ResourceTypes.ENERGY)
+                    && !io.github.loongin.omniresonance.bootstrap.ResourceAdapters.registryType(type))
                 throw new IllegalArgumentException("Unsupported ghost resource type");
             java.util.Objects.requireNonNull(id);
+            if (type.equals(ResourceTypes.ENERGY) && !id.equals(ResourceTypes.ENERGY))
+                throw new IllegalArgumentException("Invalid FE ingredient identity");
         }
     }
     /** Returns immutable current target metadata, or null when editing is unavailable. */
@@ -62,6 +72,9 @@ public interface RecipeGhostTarget {
             return new Ingredient(ResourceTypes.ITEM, BuiltInRegistries.ITEM.getKey(stack.getItem()));
         if (value instanceof FluidStack stack && !stack.isEmpty())
             return new Ingredient(ResourceTypes.FLUID, BuiltInRegistries.FLUID.getKey(stack.getFluid()));
-        return null;
+        if (value == io.github.loongin.omniresonance.transfer.EnergyVariant.INSTANCE)
+            return new Ingredient(ResourceTypes.ENERGY, ResourceTypes.ENERGY);
+        var optional = io.github.loongin.omniresonance.bootstrap.ResourceAdapters.recipeVariant(value);
+        return optional == null ? null : new Ingredient(optional.key().typeId(), optional.resourceId());
     }
 }

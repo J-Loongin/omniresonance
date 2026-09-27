@@ -144,6 +144,9 @@ final class DomainInventoryQuery {
                     case "item" -> "minecraft:item";
                     case "fluid" -> "minecraft:fluid";
                     case "energy" -> "neoforge:energy";
+                    case "source" -> "ars_nouveau:source";
+                    case "soul" -> "industrialforegoingsouls:soul";
+                    case "chemical", "gas" -> "mekanism:chemical";
                     default -> value;
                 };
             } else if (field == '@' || field == '#' || field == '$' || field == '*') value = value.substring(1);

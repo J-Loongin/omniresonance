@@ -33,6 +33,12 @@ final class TerminalBucketLease implements AutoCloseable {
     static final class Search {
         private long cursor, ceiling = -1;
         private boolean exhausted;
+        private boolean noSpace;
+
+        boolean noSpace() {
+            return noSpace;
+        }
+
         private final ResourceAdapterDirectory adapters = ResourceAdapterDirectory.nativeDefaults();
 
         boolean exhausted() {
@@ -46,6 +52,18 @@ final class TerminalBucketLease implements AutoCloseable {
                 FluidVariant fluid,
                 BooleanSupplier authorized,
                 TransferWorkBudget budget) {
+            return acquire(player, ledger, fluid, authorized, budget, false);
+        }
+
+        @Nullable
+        TerminalBucketLease acquire(
+                ServerPlayer player,
+                DomainLedger ledger,
+                FluidVariant fluid,
+                BooleanSupplier authorized,
+                TransferWorkBudget budget,
+                boolean inventoryDestination) {
+            boolean singleOnly = inventoryDestination && player.getInventory().getFreeSlot() < 0;
             if (ledger.amount(fluid.key()) < 1000
                     || !player.inventoryMenu.getCarried().isEmpty()) {
                 exhausted = true;
@@ -53,7 +71,7 @@ final class TerminalBucketLease implements AutoCloseable {
             }
             for (int slot = 0; slot < 36; slot++) {
                 var stack = player.getInventory().getItem(slot);
-                if (!stack.is(Items.BUCKET)) continue;
+                if (!stack.is(Items.BUCKET) || singleOnly && stack.getCount() != 1) continue;
                 var snapshot = stack.copy();
                 if (!accepts(snapshot, fluid, budget)) continue;
                 if (!authorized.getAsBoolean()
@@ -65,6 +83,11 @@ final class TerminalBucketLease implements AutoCloseable {
                     return null;
                 }
                 return new TerminalBucketLease(player, stack, slot, null);
+            }
+            if (singleOnly) {
+                noSpace = true;
+                exhausted = true;
+                return null;
             }
             var ordinary = ItemVariant.from(new ItemStack(Items.BUCKET), player.registryAccess());
             if (ledger.amount(ordinary.key()) > 0)

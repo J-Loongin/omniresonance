@@ -25,9 +25,8 @@ public sealed interface ResourceFilterRule {
             Objects.requireNonNull(selector);
             Objects.requireNonNull(components);
             if (resourceTypeId.toString().length() > 128) throw new IllegalArgumentException("Type ID too long");
-            if (ResourceTypes.ENERGY.equals(resourceTypeId)
-                    && (!(selector instanceof WholeType) || !components.isIdOnly()))
-                throw new IllegalArgumentException("Energy supports only whole type");
+            if (ResourceTypes.scalar(resourceTypeId) && (!(selector instanceof WholeType) || !components.isIdOnly()))
+                throw new IllegalArgumentException("Scalar resources support only whole type");
             if (!components.isIdOnly() && !resourceTypeId.equals(components.typeId()))
                 throw new IllegalArgumentException("Component type mismatch");
         }

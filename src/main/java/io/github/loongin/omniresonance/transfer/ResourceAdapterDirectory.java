@@ -43,6 +43,14 @@ public final class ResourceAdapterDirectory {
     private final Map<ResourceLocation, Binding<?>> bindings = new LinkedHashMap<>();
     private final Map<ResourceLocation, BiFunction<ResourceVariantKey, HolderLookup.Provider, ResourceVariant>>
             decoders = new LinkedHashMap<>();
+    private final Map<
+                    ResourceLocation,
+                    BiFunction<HolderLookup.Provider, ResourceLocation, java.util.Iterator<ResourceLocation>>>
+            tagReaders = new LinkedHashMap<>();
+    private final Map<
+                    ResourceLocation,
+                    BiFunction<net.minecraft.world.item.ItemStack, HolderLookup.Provider, ResourcePort>>
+            carriers = new LinkedHashMap<>();
     private @Nullable List<ResourceLocation> types;
 
     public ResourceAdapterDirectory(int capacity) {
@@ -99,6 +107,64 @@ public final class ResourceAdapterDirectory {
         }
     }
 
+    /** Adds a registry tag reader during initialization; opening a tag is read-only and never scans members eagerly. */
+    public <T> void registerTagRegistry(
+            ResourceLocation type, net.minecraft.resources.ResourceKey<net.minecraft.core.Registry<T>> registry) {
+        if (types != null || !descriptors.containsKey(type) || tagReaders.containsKey(type))
+            throw new IllegalStateException("Invalid tag reader registration");
+        tagReaders.put(type, (provider, id) -> {
+            var values = provider.lookupOrThrow(registry)
+                    .get(net.minecraft.tags.TagKey.create(registry, id))
+                    .orElse(null);
+            if (values == null) return null;
+            var iterator = values.iterator();
+            return new java.util.Iterator<>() {
+                public boolean hasNext() {
+                    return iterator.hasNext();
+                }
+
+                public ResourceLocation next() {
+                    return iterator.next().unwrapKey().orElseThrow().location();
+                }
+            };
+        });
+    }
+
+    /** Opens immutable-generation tag membership on the registry-owning game thread; absence stays distinct from empty. */
+    public @Nullable java.util.Iterator<ResourceLocation> openTag(
+            ResourceLocation type, ResourceLocation id, HolderLookup.Provider provider) {
+        types();
+        var reader = tagReaders.get(type);
+        return reader == null ? null : reader.apply(provider, id);
+    }
+
+    /** Registers a stack-backed carrier whose capability mutates the borrowed stack's own data components. */
+    public <T> void registerCarrier(
+            ResourceLocation type,
+            net.neoforged.neoforge.capabilities.ItemCapability<T, Void> capability,
+            BiFunction<T, HolderLookup.Provider, ResourcePort> factory) {
+        if (types != null || !descriptors.containsKey(type) || carriers.containsKey(type))
+            throw new IllegalStateException("Invalid carrier registration");
+        carriers.put(type, (stack, provider) -> {
+            T handler = stack.getCapability(capability);
+            return handler == null ? null : factory.apply(handler, provider);
+        });
+    }
+
+    /** Ordered optional carrier types; snapshot ownership belongs to the caller, bounded by directory capacity. */
+    public List<ResourceLocation> carrierTypes() {
+        types();
+        return List.copyOf(carriers.keySet());
+    }
+
+    /** Discovers one borrowed carrier on the server thread. Caller counts the native lookup and owns settlement. */
+    public @Nullable ResourcePort carrier(
+            ResourceLocation type, net.minecraft.world.item.ItemStack stack, HolderLookup.Provider provider) {
+        types();
+        var factory = carriers.get(type);
+        return factory == null ? null : factory.apply(stack, provider);
+    }
+
     /** Freezes insertion order; repeated freeze is harmless and does not invoke factories. */
     public void freeze() {
         if (types == null) types = List.copyOf(descriptors.keySet());
@@ -145,6 +211,8 @@ public final class ResourceAdapterDirectory {
                         throw new IllegalArgumentException("Invalid stored energy identity");
                     return EnergyVariant.INSTANCE;
                 });
+        directory.registerTagRegistry(ResourceTypes.ITEM, net.minecraft.core.registries.Registries.ITEM);
+        directory.registerTagRegistry(ResourceTypes.FLUID, net.minecraft.core.registries.Registries.FLUID);
     }
 
     @Nullable

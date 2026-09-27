@@ -62,7 +62,10 @@ final class NodeItemPolicyView {
                 case 1 -> {
                     Component name = draft.presetId == null
                             ? text("no_preset")
-                            : draft.presetName == null ? text("missing_preset") : Component.literal(draft.presetName);
+                            : draft.presetName == null
+                                    ? text("missing_preset")
+                                    : io.github.loongin.omniresonance.filter.BuiltInPresets.label(
+                                            draft.presetId, draft.presetName);
                     button(add, row.x(), y, half, name, active, choosePreset);
                     button(
                             add,

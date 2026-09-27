@@ -76,6 +76,162 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
+    void typedPrefixesRebuildTheRealFormWithoutLosingTextFocusAndSubmitTypedRules() {
+        var layout = TerminalLayout.calculate(960, 540);
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var viewRef = new java.util.concurrent.atomic.AtomicReference<TerminalFilterView>();
+        var widgetsRef = new java.util.concurrent.atomic.AtomicReference<List<AbstractWidget>>();
+        var view = new TerminalFilterView(() -> widgetsRef.set(build(viewRef.get(), layout, edit, actions)));
+        viewRef.set(view);
+        view.apply(STATE);
+        view.apply(edit);
+        widgetsRef.set(build(view, layout, edit, actions));
+        TerminalTagClipboard.copy("minecraft:fluid", List.of("c:water"), ignored -> {});
+        var copiedField = (TerminalEditBox) widgetsRef.get().stream()
+                .filter(w -> key(w).endsWith(".selector_value"))
+                .findFirst()
+                .orElseThrow();
+        copiedField.setFocused(true);
+        copiedField.setValue("#water");
+        var restoredField = (TerminalEditBox) widgetsRef.get().stream()
+                .filter(w -> key(w).endsWith(".selector_value"))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(restoredField.isFocused());
+        assertEquals("#c:water", restoredField.getValue());
+        assertEquals(8, restoredField.getCursorPosition());
+        TerminalTagClipboard.clear();
+        for (String value : List.of("fluid:water", "gas:mekanism:hydrogen", "fluid:#minecraft:water")) {
+            var field = (TerminalEditBox) widgetsRef.get().stream()
+                    .filter(w -> key(w).endsWith(".selector_value"))
+                    .findFirst()
+                    .orElseThrow();
+            field.setFocused(true);
+            field.setValue(value);
+            var current = (TerminalEditBox) widgetsRef.get().stream()
+                    .filter(w -> key(w).endsWith(".selector_value"))
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(current.isFocused());
+            assertTrue(current.active);
+            assertEquals(value, current.getValue());
+            assertEquals(value.length(), current.getCursorPosition());
+        }
+        ((TerminalButton) widgetsRef.get().stream()
+                        .filter(w -> key(w).endsWith(".save"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        var intent = ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent();
+        assertEquals(TerminalRuleInput.explicit("fluid:#minecraft:water"), intent);
+    }
+
+    @Test
+    void typedClipboardCreatesOnlyAnUnsavedRuleThroughThePresetPage() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(STATE);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        build(view, layout, STATE, actions);
+        assertTrue(view.pasteTag(null, "energy"));
+        assertEquals(1, actions.size());
+        assertTrue(actions.getFirst() instanceof TerminalFilterView.Action.BeginFull);
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var widgets = build(view, layout, edit, actions);
+        ((TerminalButton) widgets.stream()
+                        .filter(w -> key(w).endsWith(".save"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        assertEquals(
+                TerminalRuleInput.explicit("energy"),
+                ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent());
+    }
+
+    @Test
+    void sourcePresetUsesWholeTypeWithoutTagOrComponentInputs() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(STATE);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        build(view, layout, STATE, actions);
+        assertTrue(view.pasteTag(null, "source"));
+        assertEquals(1, actions.size());
+        assertTrue(actions.getFirst() instanceof TerminalFilterView.Action.BeginFull);
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var widgets = build(view, layout, edit, actions);
+        assertFalse(widgets.stream().anyMatch(w -> key(w).endsWith(".selector_value")));
+        assertFalse(widgets.stream().anyMatch(w -> key(w).endsWith(".components_id_only")));
+        assertTrue(widgets.stream().filter(w -> key(w).endsWith(".selector_3")).noneMatch(w -> w.active));
+        ((TerminalButton) widgets.stream()
+                        .filter(w -> key(w).endsWith(".save"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        assertEquals(
+                TerminalRuleInput.explicit("source"),
+                ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent());
+    }
+
+    @Test
+    void soulPresetUsesWholeTypeWithoutTagOrComponentInputs() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(STATE);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        build(view, layout, STATE, actions);
+        assertTrue(view.pasteTag(null, "soul"));
+        assertEquals(1, actions.size());
+        assertTrue(actions.getFirst() instanceof TerminalFilterView.Action.BeginFull);
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var widgets = build(view, layout, edit, actions);
+        assertFalse(widgets.stream().anyMatch(w -> key(w).endsWith(".selector_value")));
+        assertFalse(widgets.stream().anyMatch(w -> key(w).endsWith(".components_id_only")));
+        assertTrue(widgets.stream().filter(w -> key(w).endsWith(".selector_3")).noneMatch(w -> w.active));
+        ((TerminalButton) widgets.stream()
+                        .filter(w -> key(w).endsWith(".save"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        assertEquals(
+                TerminalRuleInput.explicit("soul"), ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent());
+    }
+
+    @Test
+    void energyGhostDropCreatesAWholeEnergyRule() {
+        var view = new TerminalFilterView(() -> {});
+        view.apply(STATE);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.calculate(960, 540);
+        build(view, layout, STATE, actions);
+        assertTrue(view.acceptGhost(
+                view.ghostTarget(),
+                RecipeGhostTarget.ingredient(io.github.loongin.omniresonance.transfer.EnergyVariant.INSTANCE)));
+        var edit = new NetworkTerminalState.PresetEdit(
+                NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+        view.apply(edit);
+        var widgets = build(view, layout, edit, actions);
+        assertFalse(widgets.stream().anyMatch(w -> key(w).endsWith(".selector_value")));
+        ((TerminalButton) widgets.stream()
+                        .filter(w -> key(w).endsWith(".save"))
+                        .findFirst()
+                        .orElseThrow())
+                .onPress();
+        var intent = (io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match)
+                ((TerminalFilterView.Action.SaveFull) actions.getLast()).intent();
+        assertEquals(ResourceTypes.ENERGY, intent.typeId());
+        assertEquals(ResourceFilterRule.Selector.wholeType(), intent.selector());
+    }
+
+    @Test
     void pastingShortRecipeSearchIntoTheEditorRestoresTheTypedFullTag() {
         TerminalTagClipboard.clear();
         try {

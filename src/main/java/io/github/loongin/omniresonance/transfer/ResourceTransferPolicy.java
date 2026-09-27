@@ -35,7 +35,7 @@ public sealed interface ResourceTransferPolicy permits ResourceTransferPolicy.In
         return this instanceof Input ? TransferDirection.INPUT : TransferDirection.OUTPUT;
     }
 
-    default int rate(ResourceLocation resourceTypeId) {
+    default long rate(ResourceLocation resourceTypeId) {
         Objects.requireNonNull(resourceTypeId, "resourceTypeId");
         TypeOverride override = resourcePolicyOverrides().get(resourceTypeId);
         return override == null ? DEFAULT_RATE : override.rate();
@@ -160,11 +160,11 @@ public sealed interface ResourceTransferPolicy permits ResourceTransferPolicy.In
 
     /** Immutable per-type rate view shared by direction-specific overrides. */
     sealed interface TypeOverride permits InputOverride, OutputOverride {
-        int rate();
+        long rate();
     }
 
     /** Pure immutable input override; construction rejects non-positive rates or batches and null modes. */
-    record InputOverride(int rate, BatchMode batchMode, long batchSize) implements TypeOverride {
+    record InputOverride(long rate, BatchMode batchMode, long batchSize) implements TypeOverride {
         public InputOverride {
             if (rate < 1) throw new IllegalArgumentException("Rate must be positive");
             Objects.requireNonNull(batchMode, "batchMode");
@@ -177,7 +177,7 @@ public sealed interface ResourceTransferPolicy permits ResourceTransferPolicy.In
     }
 
     /** Pure immutable output override; construction rejects non-positive rates. */
-    record OutputOverride(int rate) implements TypeOverride {
+    record OutputOverride(long rate) implements TypeOverride {
         public OutputOverride {
             if (rate < 1) throw new IllegalArgumentException("Rate must be positive");
         }

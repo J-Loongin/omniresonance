@@ -33,6 +33,118 @@ public final class ExchangePersistenceGameTests {
     private ExchangePersistenceGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void optionalResourcesUseApprovedChannelFiltersAndLongRates(GameTestHelper helper)
+            throws IOException {
+        Path path = Files.createTempDirectory("omniresonance-optional-exchange-");
+        try {
+            var disk = storage(helper, path);
+            var repository = new SavedNetworkRepository(
+                    disk, path, io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create());
+            var a = new NetworkMetadata(new UUID(1701, 1), new UUID(1702, 1), new ManagedName("A"), 0, Set.of());
+            var b = new NetworkMetadata(new UUID(1701, 2), new UUID(1702, 2), new ManagedName("B"), 0, Set.of());
+            repository.createNetwork(a);
+            repository.createNetwork(b);
+            var networks = new io.github.loongin.omniresonance.network.NetworkDirectory(java.util.List.of(a, b));
+            var data = ExchangeSavedData.create(new ExchangeSavedData.Limits(20, 20));
+            UUID code = new UUID(1703, 1), pair = new UUID(1704, 1), channel = new UUID(1705, 1);
+            data.issue(code, b.ownerId(), b, 0);
+            data.proposePair(pair, code, a.ownerId(), a, b, 0, 1);
+            data.approvePair(pair, b.ownerId(), b, a, 0, 2);
+            disk.set(ExchangeSavedData.STORAGE_ID, data);
+            var chemicalType = net.minecraft.resources.ResourceLocation.parse("mekanism:chemical");
+            var chemical = new CompoundTag();
+            chemical.putString("id", "mekanism:hydrogen");
+            var keys = java.util.List.of(
+                    new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                            chemicalType,
+                            io.github.loongin.omniresonance.transfer.CanonicalResourceNbt.encode(chemical)),
+                    new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                            io.github.loongin.omniresonance.transfer.ResourceTypes.SOURCE, new byte[0]),
+                    new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                            io.github.loongin.omniresonance.transfer.ResourceTypes.SOUL, new byte[0]));
+            long rate = (long) Integer.MAX_VALUE + 100;
+            long initial = rate * 1000;
+            var terms = new ExchangeTerms(
+                    ResourceScope.all(),
+                    FilterMode.WHITELIST,
+                    io.github.loongin.omniresonance.exchange.fixtures.ExchangeFilters.resources(
+                            chemicalType,
+                            io.github.loongin.omniresonance.transfer.ResourceTypes.SOURCE,
+                            io.github.loongin.omniresonance.transfer.ResourceTypes.SOUL),
+                    rate,
+                    Map.of(),
+                    1);
+            data.createChannel(channel, pair, a.ownerId(), a, b, 1, new ManagedName("Optional resources"), true, terms);
+            data.approve(channel, ExchangeConsent.Side.TARGET, b.ownerId(), a, b, 0, 3);
+            var source = repository.domainStorage(a.id()).activate().orElseThrow();
+            var target = repository.domainStorage(b.id()).activate().orElseThrow();
+            for (var key : keys) {
+                try (var deposit = source.reserveDeposit(key, initial, -1).orElseThrow()) {
+                    deposit.commit(initial);
+                }
+            }
+            var denied = io.github.loongin.omniresonance.transfer.EnergyVariant.INSTANCE.key();
+            try (var deposit = source.reserveDeposit(denied, initial, -1).orElseThrow()) {
+                deposit.commit(initial);
+            }
+            long[] tick = {4};
+            try (var runtime = new io.github.loongin.omniresonance.exchange.ExchangeRuntime(
+                    helper.getLevel().getServer(),
+                    repository,
+                    networks,
+                    io.github.loongin.omniresonance.config.ServerSettings::defaults,
+                    ignored -> null,
+                    () -> tick[0])) {
+                for (int i = 0; i < 100; i++) {
+                    runtime.step(new io.github.loongin.omniresonance.transfer.TransferWorkBudget(
+                            64, 1000000000, 1000000, () -> 0));
+                    tick[0]++;
+                }
+                for (var key : keys) {
+                    long received = target.amount(key);
+                    boolean installed = repository.registeredResourceTypes().contains(key.typeId());
+                    helper.assertTrue(
+                            installed ? received >= rate && received % rate == 0 : received == 0,
+                            "Optional channel ignored adapter availability or narrowed its long rate: " + key.typeId());
+                    helper.assertTrue(
+                            source.amount(key) + received == initial,
+                            "Optional channel lost resources: " + key.typeId());
+                }
+                helper.assertTrue(
+                        source.amount(denied) == initial && target.amount(denied) == 0,
+                        "Optional resource whitelist admitted unrelated energy");
+                var before = keys.stream().map(target::amount).toList();
+                data.closePair(pair, a.ownerId(), a, 1);
+                for (int i = 0; i < 20; i++) {
+                    runtime.step(new io.github.loongin.omniresonance.transfer.TransferWorkBudget(
+                            64, 1000000000, 1000000, () -> 0));
+                    tick[0]++;
+                }
+                helper.assertTrue(
+                        before.equals(keys.stream().map(target::amount).toList()),
+                        "Closed optional channel kept transferring");
+                helper.assertTrue(runtime.failure() == null, "Optional channel runtime failed");
+            }
+            disk.save();
+            IOUtilities.waitUntilIOWorkerComplete();
+            var reloaded = new SavedNetworkRepository(
+                    storage(helper, path), path, io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create());
+            reloaded.loadNetworks();
+            var restoredSource = reloaded.domainStorage(a.id()).activate().orElseThrow();
+            var restoredTarget = reloaded.domainStorage(b.id()).activate().orElseThrow();
+            for (var key : keys) {
+                helper.assertTrue(
+                        restoredSource.amount(key) == source.amount(key)
+                                && restoredTarget.amount(key) == target.amount(key),
+                        "Optional exchange balances changed on reload");
+            }
+        } finally {
+            removeDirectory(path);
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void pairedChannelTransfersOfflineAndUnpairingStopsEveryFutureTransfer(GameTestHelper helper)
             throws IOException {
         Path path = Files.createTempDirectory("omniresonance-paired-runtime-");
@@ -429,6 +541,56 @@ public final class ExchangePersistenceGameTests {
         } finally {
             removeDirectory(directory);
         }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void retiredBuiltinExchangeSelectionIsRejectedAndSavedSnapshotsRemainReadable(GameTestHelper helper)
+            throws IOException {
+        Path directory = Files.createTempDirectory("omniresonance-exchange-builtin-test-");
+        try {
+            var repository = new SavedNetworkRepository(storage(helper, directory), directory);
+            var actor = new UUID(9301, 1);
+            var source = new NetworkMetadata(new UUID(9301, 2), actor, new ManagedName("Builtin source"), 0, Set.of());
+            repository.createNetwork(source);
+            var networks = new io.github.loongin.omniresonance.network.NetworkDirectory(java.util.List.of(source));
+            var resolver = new io.github.loongin.omniresonance.exchange.ExchangeDraftResolver(repository, networks);
+            var preset = io.github.loongin.omniresonance.filter.BuiltInPresets.ENTRIES
+                    .getFirst()
+                    .preset();
+            var draft = new io.github.loongin.omniresonance.exchange.ExchangeTermsDraft(
+                    ResourceScope.all(),
+                    FilterMode.WHITELIST,
+                    new io.github.loongin.omniresonance.exchange.ExchangeTermsDraft.OwnerPreset(preset.id(), 0),
+                    64,
+                    Map.of(),
+                    1);
+            expectFailure(() -> resolver.resolve(actor, source.id(), draft, null, -1));
+            var terms = new io.github.loongin.omniresonance.exchange.ExchangeTerms(
+                    ResourceScope.all(),
+                    FilterMode.WHITELIST,
+                    io.github.loongin.omniresonance.exchange.ExchangeFilterSnapshot.capture(
+                            preset.id(), Map.of(preset.id(), preset), 1, 1),
+                    64,
+                    Map.of(),
+                    1);
+            helper.assertTrue(
+                    terms.filter().presets().size() == 1
+                            && terms.filter().presets().get(preset.id()).equals(preset),
+                    "Builtin exchange rule was not captured as a complete immutable snapshot");
+            helper.assertTrue(repository.findOwner(actor).isEmpty(), "Builtin selection created an owner library");
+            var encoded = ExchangeStateNbt.encodeFilter(terms.filter());
+            helper.assertTrue(encoded != null, "Builtin approval snapshot cannot be persisted");
+            boolean denied = false;
+            try {
+                resolver.resolve(new UUID(9301, 3), source.id(), draft, null, -1);
+            } catch (SecurityException expected) {
+                denied = true;
+            }
+            helper.assertTrue(denied, "Builtin preset bypassed exchange ownership");
+        } finally {
+            removeDirectory(directory);
+        }
+        helper.succeed();
     }
 
     @GameTest(template = "bootstrap")

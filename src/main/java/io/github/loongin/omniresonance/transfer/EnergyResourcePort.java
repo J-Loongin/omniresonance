@@ -49,8 +49,9 @@ public final class EnergyResourcePort implements ResourcePort {
     }
 
     @Override
-    public int extract(
-            int sourceView, ResourceVariant variant, int amount, boolean simulate, TransferWorkBudget budget) {
+    public long extract(
+            int sourceView, ResourceVariant variant, long maximum, boolean simulate, TransferWorkBudget budget) {
+        int amount = ResourcePort.intRequest(maximum);
         validateView(sourceView);
         validateRequest(variant, amount);
         int extracted;
@@ -64,8 +65,9 @@ public final class EnergyResourcePort implements ResourcePort {
     }
 
     @Override
-    public int insert(
-            int targetView, ResourceVariant variant, int amount, boolean simulate, TransferWorkBudget budget) {
+    public long insert(
+            int targetView, ResourceVariant variant, long maximum, boolean simulate, TransferWorkBudget budget) {
+        int amount = ResourcePort.intRequest(maximum);
         validateView(targetView);
         validateRequest(variant, amount);
         int accepted;

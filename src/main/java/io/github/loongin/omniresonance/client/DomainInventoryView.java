@@ -38,7 +38,8 @@ import org.jetbrains.annotations.Nullable;
 final class DomainInventoryView implements AutoCloseable {
     private static final int CELL = DomainInventoryLayout.CELL;
     private final DomainInventoryReceiver receiver = new DomainInventoryReceiver();
-    private final ResourceAdapterDirectory adapters = ResourceAdapterDirectory.nativeDefaults();
+    private final ResourceAdapterDirectory adapters =
+            io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create();
     private final Map<Long, Metadata> metadata = new HashMap<>();
     private final List<AbstractWidget> cells = new ArrayList<>();
     private final DomainInventorySearch search;
@@ -72,6 +73,45 @@ final class DomainInventoryView implements AutoCloseable {
     private @Nullable Consumer<io.github.loongin.omniresonance.networking.TerminalStorageRequest> storageSender;
     private @Nullable io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status operationStatus;
 
+    @Nullable
+    RecipeGhostTarget.Hover recipeHover(double x, double y, net.minecraft.core.HolderLookup.Provider provider) {
+        if (tagPopup != null || !receiver.mirror().ready()) return null;
+        for (var widget : cells) {
+            if (!(widget instanceof Cell cell) || !cell.isMouseOver(x, y)) continue;
+            var row = receiver.mirror().entries().get(cell.id);
+            if (row == null || row.amount() <= 0) return null;
+            var decoded = adapters.decode(row.key(), provider).orElse(null);
+            Object value = decoded instanceof ItemVariant item
+                    ? item.stack(1)
+                    : decoded instanceof FluidVariant fluid
+                            ? fluid.stack(1000)
+                            : decoded == io.github.loongin.omniresonance.transfer.EnergyVariant.INSTANCE
+                                    ? decoded
+                                    : decoded
+                                                    instanceof
+                                                    io.github.loongin.omniresonance.transfer.RegisteredResourceVariant
+                                                            registered
+                                            ? registered.recipeIngredient()
+                                            : null;
+            return value == null
+                    ? null
+                    : new RecipeGhostTarget.Hover(
+                            value,
+                            new RecipeGhostTarget.Area(cell.getX(), cell.getY(), cell.getWidth(), cell.getHeight()));
+        }
+        var minecraft = Minecraft.getInstance();
+        int slot = geometry().inventorySlot(x, y);
+        if (slot >= 0 && minecraft != null && minecraft.player != null) {
+            var stack = minecraft.player.getInventory().getItem(slot);
+            if (!stack.isEmpty())
+                return new RecipeGhostTarget.Hover(
+                        stack.copyWithCount(1),
+                        new RecipeGhostTarget.Area(
+                                geometry().slotX(slot), geometry().slotY(slot), CELL, CELL));
+        }
+        return null;
+    }
+
     boolean popupOpen() {
         return tagPopup != null;
     }
@@ -94,6 +134,7 @@ final class DomainInventoryView implements AutoCloseable {
         var minecraft = Minecraft.getInstance();
         popupResourceType = info.type;
         tagPopup = new TerminalTagPopup(
+                info.type,
                 info.tags,
                 new TerminalLayout.Rect(hovered.getX(), hovered.getY(), hovered.getWidth(), hovered.getHeight()),
                 minecraft.getWindow().getGuiScaledWidth(),
@@ -549,10 +590,10 @@ final class DomainInventoryView implements AutoCloseable {
             tooltipWidth = width;
             var details = DomainInventoryTooltip.lines(
                     target.info.name,
-                    target.info.opaque ? List.of() : target.info.tooltipLines(false),
+                    target.info.opaque ? List.of() : target.info.briefTooltipLines(),
                     target.info.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM.toString()),
                     target.info.icon.isBarVisible(),
-                    !target.info.fluid.isEmpty(),
+                    target.info.bucketUnits,
                     target.info.opaque,
                     entry.amount(),
                     target.info.unit);
@@ -599,10 +640,16 @@ final class DomainInventoryView implements AutoCloseable {
         final String name, id, type, mod, unit;
         final ItemStack icon;
         final net.neoforged.neoforge.fluids.FluidStack fluid;
+        final @Nullable net.minecraft.resources.ResourceLocation texture;
+        final int tint;
+        final boolean bucketUnits;
         final boolean opaque;
         final List<String> tags;
         final DataComponentMap components;
-        private @Nullable List<String> tooltip, briefTooltip;
+        private @Nullable List<String> tooltip;
+        private @Nullable List<Component> briefTooltip;
+        final @Nullable io.github.loongin.omniresonance.transfer.RegisteredResourceVariant registeredVariant;
+        final String sourceName;
         private @Nullable String tooltipSearch;
         private final DomainInventoryQuery.Document document;
 
@@ -611,7 +658,10 @@ final class DomainInventoryView implements AutoCloseable {
             String type = entry.key().typeId().toString(), id = type, name = type, unit = "";
             ItemStack icon = new ItemStack(Items.BARRIER);
             var fluidIcon = net.neoforged.neoforge.fluids.FluidStack.EMPTY;
+            net.minecraft.resources.ResourceLocation texture = null;
+            int tint = 0xFFFFFF;
             boolean opaque = true;
+            io.github.loongin.omniresonance.transfer.RegisteredResourceVariant registeredVariant = null;
             DataComponentMap components = DataComponentMap.EMPTY;
             var tags = new ArrayList<String>();
             try {
@@ -639,14 +689,40 @@ final class DomainInventoryView implements AutoCloseable {
                             tags.add(iterator.next().location().toString());
                         components = stack.getComponents();
                         opaque = false;
+                    } else if (decoded
+                            instanceof io.github.loongin.omniresonance.transfer.RegisteredResourceVariant registered) {
+                        registeredVariant = registered;
+                        id = registered.resourceId().toString();
+                        name = registered.displayName().getString();
+                        texture = registered.texture();
+                        tint = registered.tint();
+                        unit = "B";
+                        for (var tag : registered.tags()) tags.add(tag.toString());
+                        icon = ItemStack.EMPTY;
+                        opaque = false;
+                    } else if (decoded
+                            instanceof io.github.loongin.omniresonance.transfer.ScalarResourceVariant scalar) {
+                        texture = scalar.texture();
+                        tint = scalar.tint();
+                        icon = texture == null
+                                ? new ItemStack(BuiltInRegistries.ITEM.get(scalar.iconItem()))
+                                : ItemStack.EMPTY;
+                        name = scalar.displayName().getString();
+                        id = type;
+                        unit = scalar.unit();
+                        opaque = false;
                     } else if (decoded != null && entry.key().typeId().equals(ResourceTypes.ENERGY)) {
-                        icon = new ItemStack(Items.REDSTONE);
+                        icon = ItemStack.EMPTY;
+                        texture = EnergyDisplay.TEXTURE;
+                        tint = EnergyDisplay.TINT;
                         name = NodeResourcePolicyView.text("type.energy").getString();
                         unit = "FE";
                         opaque = false;
                     }
                 }
             } catch (RuntimeException | LinkageError invalid) {
+                texture = null;
+                fluidIcon = net.neoforged.neoforge.fluids.FluidStack.EMPTY;
                 icon = new ItemStack(Items.BARRIER);
                 name = type;
                 id = type;
@@ -655,21 +731,25 @@ final class DomainInventoryView implements AutoCloseable {
                 components = DataComponentMap.EMPTY;
                 tags.clear();
             }
+            this.registeredVariant = registeredVariant;
             this.name = name;
             this.id = id;
             this.type = type;
             this.unit = unit;
             this.icon = icon;
             this.fluid = fluidIcon;
+            this.texture = texture;
+            this.tint = tint;
+            this.bucketUnits = !fluidIcon.isEmpty() || registeredVariant != null;
             this.opaque = opaque;
             this.tags = List.copyOf(tags);
             this.components = components;
             String namespace = id.substring(0, id.indexOf(':'));
-            mod = namespace + " "
-                    + net.neoforged.fml.ModList.get()
-                            .getModContainerById(namespace)
-                            .map(c -> c.getModInfo().getDisplayName())
-                            .orElse(namespace);
+            sourceName = net.neoforged.fml.ModList.get()
+                    .getModContainerById(namespace)
+                    .map(c -> c.getModInfo().getDisplayName())
+                    .orElse(namespace);
+            mod = namespace + " " + sourceName;
             document = new DomainInventoryQuery.Document(
                     name.toLowerCase(Locale.ROOT),
                     mod.toLowerCase(Locale.ROOT),
@@ -688,10 +768,9 @@ final class DomainInventoryView implements AutoCloseable {
             return document;
         }
 
-        List<String> tooltipLines(boolean expanded) {
-            if (expanded) return tooltipLines();
+        List<Component> briefTooltipLines() {
             if (briefTooltip == null) {
-                var normal = new ArrayList<String>();
+                var normal = new ArrayList<Component>();
                 try {
                     if (!opaque && type.equals(ResourceTypes.ITEM.toString())) {
                         var minecraft = Minecraft.getInstance();
@@ -699,12 +778,24 @@ final class DomainInventoryView implements AutoCloseable {
                                 Item.TooltipContext.of(minecraft.level),
                                 minecraft.player,
                                 TooltipFlag.Default.NORMAL)) {
-                            if (!line.getString().equals(name)) normal.add(line.getString());
+                            if (!line.getString().equals(name)) normal.add(line.copy());
+                            if (normal.size() >= 4) break;
+                        }
+                    } else if (!opaque && registeredVariant != null) {
+                        for (var line :
+                                registeredVariant.tooltipLines(Item.TooltipContext.of(Minecraft.getInstance().level))) {
+                            if (!line.getString().equals(name)) normal.add(line.copy());
                             if (normal.size() >= 4) break;
                         }
                     }
                 } catch (RuntimeException | LinkageError failure) {
-                    normal.add(text("tooltip_failed").getString());
+                    normal.add(text("tooltip_failed"));
+                }
+                if (!opaque
+                        && !type.equals(ResourceTypes.ITEM.toString())
+                        && !type.equals(ResourceTypes.ENERGY.toString())) {
+                    normal.add(Component.literal(sourceName)
+                            .withStyle(net.minecraft.ChatFormatting.DARK_GRAY, net.minecraft.ChatFormatting.ITALIC));
                 }
                 briefTooltip = List.copyOf(normal);
             }
@@ -776,16 +867,17 @@ final class DomainInventoryView implements AutoCloseable {
             if (entry == null) return;
             renderSlot(graphics, getX(), getY(), isHoveredOrFocused());
             if (!info.fluid.isEmpty()) DomainFluidDisplay.render(graphics, info.fluid, getX() + 1, getY() + 1);
+            else if (info.texture != null)
+                DomainFluidDisplay.render(graphics, info.texture, info.tint, getX() + 1, getY() + 1);
             else graphics.renderItem(info.icon, getX() + 1, getY() + 1);
             if (entry.amount() != previousAmount) {
                 previousAmount = entry.amount();
-                count = TerminalText.body(Component.literal(
-                        info.fluid.isEmpty() ? compact(previousAmount) : DomainFluidDisplay.compact(previousAmount)));
+                count = slotCount(previousAmount, info.bucketUnits);
                 countWidth = font.width(count);
             }
             graphics.pose().pushPose();
             graphics.pose().translate(0, 0, 220);
-            float scale = Math.min(0.7f, 16f / Math.max(1, countWidth));
+            float scale = 0.5f;
             graphics.pose().translate(getRight() - 1, getBottom() - 1, 0);
             graphics.pose().scale(scale, scale, 1);
             graphics.drawString(font, count, -countWidth, -font.lineHeight, TerminalTheme.TEXT, true);
@@ -796,6 +888,11 @@ final class DomainInventoryView implements AutoCloseable {
     private static void renderSlot(GuiGraphics graphics, int x, int y, boolean highlight) {
         graphics.fill(x, y, x + CELL, y + CELL, 0xFF10191F);
         graphics.fill(x + 1, y + 1, x + CELL - 1, y + CELL - 1, highlight ? 0xFF426772 : 0xFF35434B);
+    }
+
+    static Component slotCount(long amount, boolean buckets) {
+        return Component.literal(buckets ? DomainFluidDisplay.slotQuantity(amount) : compact(amount))
+                .withStyle(style -> style.withFont(net.minecraft.network.chat.Style.DEFAULT_FONT));
     }
 
     static String compact(long amount) {

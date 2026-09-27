@@ -13,23 +13,30 @@ import net.neoforged.neoforge.capabilities.Capabilities;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * One server-thread terminal click. Only discovery indices, an immutable server-selected key, and confirmed movement totals survive suspension;
+ * One server-thread terminal click. Only discovery indices, immutable resource/carrier identities, and confirmed movement totals survive suspension;
  * no native handler, uncommitted quantity, or simulation promise survives. The caller serializes player inventory, verifies menu revisions,
  * rechecks session permissions, and stops after every terminal outcome (including unknown mutations).
  */
 public final class TerminalStorageOperation {
     public record Outcome(Status status, long moved) {}
 
-    private static final ResourceAdapterDirectory ADAPTERS = ResourceAdapterDirectory.nativeDefaults();
+    private static final ResourceAdapterDirectory ADAPTERS =
+            io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create();
     private final int inventorySlot, button;
     private final long resourceId;
     private final boolean shift;
     private final @Nullable ResourceVariantKey bulkKey;
     private int bulkSlot;
     private long bulkMoved;
+    private boolean carrierUnit;
+    private @Nullable ResourceVariantKey carrierKey;
+    private @Nullable net.minecraft.world.item.Item carrierItem;
+    private int carrierAttempts;
+    private static final int MAX_CARRIER_ATTEMPTS = 256;
     private @Nullable ResourceVariantKey quickMoveKey;
     private int tank;
-    private boolean fluidScanned;
+    private int carrierTypeIndex;
+    private static final java.util.List<net.minecraft.resources.ResourceLocation> CARRIER_TYPES = carrierTypes();
     private final TerminalBucketLease.Search buckets = new TerminalBucketLease.Search();
     private final DomainTransferEngine engine = new DomainTransferEngine();
 
@@ -68,6 +75,54 @@ public final class TerminalStorageOperation {
             BooleanSupplier authorized,
             TransferWorkBudget budget) {
         if (!player.server.isSameThread()) throw new IllegalStateException("Terminal click off server thread");
+        if (!shift || inventorySlot >= 0 || bulkKey != null)
+            return stepOnce(player, ledger, recovery, settings, authorized, budget);
+        while (true) {
+            if (carrierKey != null) {
+                if (!current(player) || !authorized.getAsBoolean() || !ledger.isAvailable())
+                    return new Outcome(Status.DENIED, bulkMoved);
+                if (carrierAttempts >= MAX_CARRIER_ATTEMPTS
+                        || bulkMoved == Long.MAX_VALUE
+                        || player.inventoryMenu.getCarried().isEmpty()
+                        || !player.inventoryMenu.getCarried().is(carrierItem)
+                        || button == 0 && ledger.amount(carrierKey) == 0)
+                    return new Outcome(Status.COMPLETE, bulkMoved);
+                if (!budget.canStart()) return new Outcome(Status.PROGRESS, bulkMoved);
+            }
+            carrierUnit = false;
+            var result = stepOnce(player, ledger, recovery, settings, authorized, budget);
+            if (!carrierUnit)
+                return carrierKey == null
+                        ? result
+                        : new Outcome(
+                                result.status() == Status.WAITING_BUDGET ? Status.PROGRESS : result.status(),
+                                bulkMoved);
+            bulkMoved = Math.addExact(bulkMoved, result.moved());
+            carrierAttempts++;
+            if (result.status() == Status.COMPLETE && result.moved() > 0) continue;
+            return new Outcome(
+                    result.status() == Status.REFUSED && bulkMoved > 0 ? Status.COMPLETE : result.status(), bulkMoved);
+        }
+    }
+
+    private void markCarrierUnit(ServerPlayer player, ResourceVariant variant) {
+        if (!shift) return;
+        if (carrierKey == null) {
+            carrierKey = variant.key();
+            carrierItem = player.inventoryMenu.getCarried().getItem();
+        } else if (!carrierKey.equals(variant.key()))
+            throw new IllegalStateException("Carrier resource changed during bulk operation");
+        carrierUnit = true;
+    }
+
+    private Outcome stepOnce(
+            ServerPlayer player,
+            DomainLedger ledger,
+            RecoveryBuffer recovery,
+            ServerSettings settings,
+            BooleanSupplier authorized,
+            TransferWorkBudget budget) {
+        if (!player.server.isSameThread()) throw new IllegalStateException("Terminal click off server thread");
         if (!current(player) || !authorized.getAsBoolean() || !ledger.isAvailable()) return outcome(Status.DENIED);
         if (!budget.canStart()) return outcome(Status.WAITING_BUDGET);
         try {
@@ -83,6 +138,7 @@ public final class TerminalStorageOperation {
             if (inventorySlot < 0 && button == 1 && !held.isEmpty()) {
                 Outcome carrier = emptyCarrier(player, ledger, recovery, settings, authorized, budget);
                 if (carrier != null) return carrier;
+                if (carrierKey != null) return outcome(Status.COMPLETE);
             }
             var entry = resourceId == 0 ? null : ledger.findSequence(resourceId).orElse(null);
             if (resourceId > 0 && entry == null) return outcome(Status.STALE);
@@ -96,8 +152,12 @@ public final class TerminalStorageOperation {
                 if (held.isEmpty()) {
                     if (!(variant instanceof FluidVariant fluid)) return outcome(Status.NO_CARRIER);
                     if (ledger.amount(fluid.key()) < 1000) return outcome(Status.INSUFFICIENT_FLUID);
-                    lease = buckets.acquire(player, ledger, fluid, authorized, budget);
-                    if (lease == null) return outcome(buckets.exhausted() ? Status.NO_BUCKET : Status.WAITING_BUDGET);
+                    lease = buckets.acquire(player, ledger, fluid, authorized, budget, shift);
+                    if (lease == null)
+                        return outcome(
+                                buckets.noSpace()
+                                        ? Status.NO_SPACE
+                                        : buckets.exhausted() ? Status.NO_BUCKET : Status.WAITING_BUDGET);
                 }
                 try (var acquired = lease) {
                     var owner = new PlayerCarrierOwner(player);
@@ -106,6 +166,7 @@ public final class TerminalStorageOperation {
                         if (acquired != null) acquired.restore(budget);
                         return outcome(Status.NO_CARRIER);
                     }
+                    if (acquired == null) markCarrierUnit(player, variant);
                     var transferred = engine.withdrawGreedy(
                             ledger,
                             port,
@@ -121,6 +182,11 @@ public final class TerminalStorageOperation {
                             && transferred.moved() == 0
                             && transferred.failure() != ResourceTransferEngine.Failure.UNKNOWN_MUTATION)
                         acquired.restore(budget);
+                    if (acquired != null
+                            && shift
+                            && transferred.moved() > 0
+                            && transferred.failure() == ResourceTransferEngine.Failure.NONE)
+                        owner.moveToInventory(budget);
                     return result(transferred);
                 }
             }
@@ -250,13 +316,22 @@ public final class TerminalStorageOperation {
             BooleanSupplier authorized,
             TransferWorkBudget budget) {
         var owner = new PlayerCarrierOwner(player);
-        if (!fluidScanned) {
-            var port = carrier(player, owner, FluidVariant.class, authorized, budget);
+        while (carrierTypeIndex < CARRIER_TYPES.size()) {
+            if (!budget.canStart()) return outcome(Status.WAITING_BUDGET);
+            if (carrierKey != null && !CARRIER_TYPES.get(carrierTypeIndex).equals(carrierKey.typeId())) {
+                carrierTypeIndex++;
+                tank = 0;
+                continue;
+            }
+            var port = carrier(player, owner, CARRIER_TYPES.get(carrierTypeIndex), authorized, budget);
             if (port != null) {
                 int count = port.sourceViews(budget);
                 if (tank < count) {
                     var candidate = port.peek(tank, budget).orElse(null);
-                    if (candidate != null)
+                    if (candidate != null
+                            && (carrierKey == null
+                                    || carrierKey.equals(candidate.variant().key()))) {
+                        markCarrierUnit(player, candidate.variant());
                         return result(engine.depositGreedy(
                                 port,
                                 tank,
@@ -269,35 +344,28 @@ public final class TerminalStorageOperation {
                                 settings.recoveryLimits(),
                                 budget,
                                 true));
+                    }
                     tank++;
-                    if (tank < count) return outcome(Status.WAITING_BUDGET);
+                    if (tank < count) continue;
                 }
             }
-            fluidScanned = true;
+            carrierTypeIndex++;
+            tank = 0;
         }
-        if (!budget.canStart()) return outcome(Status.WAITING_BUDGET);
-        var port = carrier(player, owner, EnergyVariant.class, authorized, budget);
-        if (port == null) return null;
-        port.sourceViews(budget);
-        var candidate = port.peek(0, budget).orElse(null);
-        if (candidate == null) return null;
-        return result(engine.depositGreedy(
-                port,
-                0,
-                ledger,
-                candidate.variant(),
-                carrierAmount(candidate.variant()),
-                settings.storageVariantLimitPerNetwork(),
-                authorized,
-                recovery,
-                settings.recoveryLimits(),
-                budget,
-                true));
+        return null;
+    }
+
+    private static java.util.List<net.minecraft.resources.ResourceLocation> carrierTypes() {
+        var types = new java.util.ArrayList<net.minecraft.resources.ResourceLocation>();
+        types.add(ResourceTypes.FLUID);
+        types.add(ResourceTypes.ENERGY);
+        types.addAll(ADAPTERS.carrierTypes());
+        return java.util.List.copyOf(types);
     }
 
     private long carrierAmount(ResourceVariant variant) {
         return shift
-                ? Integer.MAX_VALUE
+                ? Long.MAX_VALUE - bulkMoved
                 : ADAPTERS.find(variant.key().typeId()).orElseThrow().defaultBatchSize();
     }
 
@@ -307,28 +375,31 @@ public final class TerminalStorageOperation {
             ResourceVariant variant,
             BooleanSupplier authorized,
             TransferWorkBudget budget) {
-        return carrier(player, owner, variant.getClass(), authorized, budget);
+        return carrier(player, owner, variant.key().typeId(), authorized, budget);
     }
 
     private static @Nullable TerminalCarrierPort carrier(
             ServerPlayer player,
             PlayerCarrierOwner owner,
-            Class<?> type,
+            net.minecraft.resources.ResourceLocation type,
             BooleanSupplier authorized,
             TransferWorkBudget budget) {
         budget.beforeCall();
         try {
-            if (type == FluidVariant.class) {
+            if (type.equals(ResourceTypes.FLUID)) {
                 var handler = owner.stack().getCapability(Capabilities.FluidHandler.ITEM);
                 return handler == null
                         ? null
                         : TerminalCarrierPort.fluid(owner, owner.stack(), handler, player.registryAccess(), authorized);
             }
-            if (type == EnergyVariant.class) {
+            if (type.equals(ResourceTypes.ENERGY)) {
                 var handler = owner.stack().getCapability(Capabilities.EnergyStorage.ITEM);
                 return handler == null ? null : TerminalCarrierPort.energy(owner, owner.stack(), handler, authorized);
             }
-            return null;
+            var delegate = ADAPTERS.carrier(type, owner.stack(), player.registryAccess());
+            return delegate == null
+                    ? null
+                    : TerminalCarrierPort.stackBacked(owner, owner.stack(), delegate, authorized);
         } finally {
             budget.afterCall();
         }

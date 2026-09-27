@@ -13,6 +13,16 @@ public final class ResourceTypes {
     public static final ResourceLocation FLUID = ResourceLocation.withDefaultNamespace("fluid");
     public static final ResourceLocation ENERGY = ResourceLocation.fromNamespaceAndPath("neoforge", "energy");
 
+    /** Stable optional identity; its presence does not register or load Ars Nouveau. */
+    public static final ResourceLocation SOURCE = ResourceLocation.parse("ars_nouveau:source");
+
+    public static final ResourceLocation SOUL = ResourceLocation.parse("industrialforegoingsouls:soul");
+
+    /** Pure identity classification, including unavailable optional types; no registration or native access. */
+    public static boolean scalar(ResourceLocation type) {
+        return ENERGY.equals(type) || SOURCE.equals(type) || SOUL.equals(type);
+    }
+
     private ResourceTypes() {}
 
     /**

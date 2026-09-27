@@ -855,6 +855,45 @@ public final class ItemFilterServiceGameTests {
         }
     }
 
+    @GameTest(template = "bootstrap")
+    public static void builtinPresetIsReadonlyAndDoesNotEnterTheOwnerLibrary(GameTestHelper helper) throws Exception {
+        try (Fixture f = new Fixture(helper, false)) {
+            var id = BuiltInPresets.ENTRIES.getFirst().preset().id();
+            long revision = f.library.presetLibraryRevision();
+            int count = f.library.presets().size();
+            f.library.setDirty(false);
+            var summary = f.service.summary(f.owner, NETWORK, id);
+            for (var entry : BuiltInPresets.ENTRIES) {
+                var row = f.service.summary(f.owner, NETWORK, entry.preset().id());
+                helper.assertTrue(
+                        (row != null) == f.repository.registeredResourceTypes().contains(entry.type()),
+                        "Unavailable built-in type leaked into server choices");
+            }
+            helper.assertTrue(
+                    summary != null && !summary.editable() && summary.ruleCount() == 1,
+                    "Built-in preset summary missing or editable");
+            for (var operation :
+                    List.of(PresetEditOperation.RENAME, PresetEditOperation.DELETE, PresetEditOperation.ADD_RULE))
+                reject(
+                        helper,
+                        ItemFilterService.Reason.NO_ACCESS,
+                        () -> f.service.begin(f.owner, NETWORK, operation, id));
+            boolean reserved = false;
+            try {
+                f.library.putPreset(BuiltInPresets.ENTRIES.getFirst().preset(), revision, -1, -1);
+            } catch (IllegalArgumentException expected) {
+                reserved = true;
+            }
+            helper.assertTrue(reserved, "Reserved built-in identity entered player storage");
+            helper.assertTrue(
+                    f.library.presets().size() == count
+                            && f.library.presetLibraryRevision() == revision
+                            && !f.library.isDirty(),
+                    "Built-in lookup consumed quota or dirtied owner library");
+        }
+        helper.succeed();
+    }
+
     private static final class Fixture implements AutoCloseable {
         private final Path path;
         private final SavedNetworkRepository repository;

@@ -74,6 +74,9 @@ public final class ExchangeDraftResolver {
             if (baseline == null) throw new IllegalStateException("No approved filter snapshot to retain");
             filter = baseline.terms().filter();
         } else if (draft.filter() instanceof ExchangeTermsDraft.OwnerPreset selected) {
+            Map<UUID, ResourceFilterPreset> presets = new HashMap<>();
+            if (io.github.loongin.omniresonance.filter.BuiltInPresets.find(selected.presetId()) != null)
+                throw new IllegalStateException("Retired built-in presets cannot be newly selected");
             var library = repository
                     .findOwner(actor)
                     .orElseThrow(() -> new IllegalStateException("Preset library unavailable"));
@@ -81,7 +84,6 @@ public final class ExchangeDraftResolver {
                 throw new IllegalStateException("Preset library changed during editing");
             if (library.findPreset(selected.presetId()).isEmpty())
                 throw new IllegalStateException("Owned preset unavailable");
-            Map<UUID, ResourceFilterPreset> presets = new HashMap<>();
             for (ResourceFilterPreset preset : library.presets()) presets.put(preset.id(), preset);
             filter = ExchangeFilterSnapshot.capture(
                     selected.presetId(), presets, ResourceFilterPreset.MAX_ENTRIES, ResourceFilterPreset.MAX_ENTRIES);

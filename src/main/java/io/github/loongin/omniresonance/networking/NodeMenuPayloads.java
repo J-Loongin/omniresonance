@@ -32,7 +32,7 @@ public final class NodeMenuPayloads {
      * Invalid active-menu envelopes receive one privacy-safe failure and never reach business state.
      */
     public static void register(RegisterPayloadHandlersEvent event) {
-        PayloadRegistrar registrar = event.registrar("27").executesOn(HandlerThread.MAIN);
+        PayloadRegistrar registrar = event.registrar("29").executesOn(HandlerThread.MAIN);
         registrar.playToClient(NodeChunkStatus.TYPE, NodeChunkStatus.STREAM_CODEC, (status, context) -> {
             var receiver = chunkReceiver;
             if (receiver == null) throw new IllegalStateException("Chunk status receiver missing");

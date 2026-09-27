@@ -152,6 +152,8 @@ public final class OwnerSavedData extends SavedData {
      * No simulation or I/O occurs; success marks this shard dirty.
      */
     public void putPreset(ResourceFilterPreset preset, long expectedLibraryRevision, int presetLimit, int ruleLimit) {
+        if (io.github.loongin.omniresonance.filter.BuiltInPresets.find(preset.id()) != null)
+            throw new IllegalArgumentException("Built-in preset identities cannot be stored in owner data");
         requireOwningThread();
         Objects.requireNonNull(preset, "preset");
         validatePresetQuota(presetLimit);

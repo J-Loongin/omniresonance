@@ -44,7 +44,7 @@ public final class ResourcePolicyNbt {
         tag.put("resource_scope", scope);
         Map<ResourceLocation, StoredResourcePolicy.RawOverride> rows = new HashMap<>(stored.missingTypeOverrides());
         policy.resourcePolicyOverrides().forEach((id, override) -> {
-            Integer rate = override.rate() == ResourceTransferPolicy.DEFAULT_RATE ? null : override.rate();
+            Long rate = override.rate() == ResourceTransferPolicy.DEFAULT_RATE ? null : override.rate();
             if (override instanceof ResourceTransferPolicy.InputOverride input
                     && input.batchMode() == ResourceTransferPolicy.BatchMode.EXACT) {
                 rows.put(id, new StoredResourcePolicy.RawOverride(rate, input.batchMode(), input.batchSize()));
@@ -55,7 +55,10 @@ public final class ResourcePolicyNbt {
             StoredResourcePolicy.RawOverride raw = rows.get(id);
             CompoundTag row = new CompoundTag();
             row.putString("type_id", id.toString());
-            if (raw.rate() != null) row.putInt("rate", raw.rate());
+            if (raw.rate() != null) {
+                if (raw.rate() <= Integer.MAX_VALUE) row.putInt("rate", Math.toIntExact(raw.rate()));
+                else row.putLong("rate", raw.rate());
+            }
             if (raw.batchMode() != null)
                 row.putString(
                         "batch_mode", raw.batchMode() == ResourceTransferPolicy.BatchMode.EXACT ? "exact" : "greedy");
@@ -110,7 +113,7 @@ public final class ResourcePolicyNbt {
             StoredResourcePolicy.RawOverride raw = readOverride(row, direction);
             if (!registered.contains(id)) missing.put(id, raw);
             else {
-                int rate = raw.rate() == null ? ResourceTransferPolicy.DEFAULT_RATE : raw.rate();
+                long rate = raw.rate() == null ? ResourceTransferPolicy.DEFAULT_RATE : raw.rate();
                 if (direction == TransferDirection.INPUT)
                     input.put(
                             id,
@@ -193,13 +196,14 @@ public final class ResourcePolicyNbt {
 
     private static StoredResourcePolicy.RawOverride readOverride(CompoundTag row, TransferDirection direction) {
         Set<String> fields = new HashSet<>(Set.of("type_id"));
-        Integer rate = null;
+        Long rate = null;
         ResourceTransferPolicy.BatchMode mode = null;
         Long batch = null;
         if (row.contains("rate")) {
             fields.add("rate");
-            ManagedDataNbt.requireType(row, "rate", Tag.TAG_INT);
-            rate = row.getInt("rate");
+            if (!row.contains("rate", Tag.TAG_INT) && !row.contains("rate", Tag.TAG_LONG))
+                throw new IllegalArgumentException("Invalid resource rate type");
+            rate = row.getLong("rate");
         }
         if (direction == TransferDirection.INPUT) {
             if (row.contains("batch_mode")) {

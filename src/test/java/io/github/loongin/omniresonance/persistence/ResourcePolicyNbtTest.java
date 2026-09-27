@@ -62,6 +62,30 @@ class ResourcePolicyNbtTest {
     }
 
     @Test
+    void longRatesAndLegacyIntRatesRoundTripWithoutNarrowing() {
+        var legacy = input();
+        add(legacy, row("minecraft:item", 123, null, null));
+        var original = legacy.copy();
+        var migrated = decode(legacy);
+        assertEquals(123L, migrated.effectivePolicy().rate(ResourceTypes.ITEM));
+        assertEquals(original, legacy);
+        var full = input();
+        var entry = row("minecraft:item", null, null, null);
+        entry.putLong("rate", Long.MAX_VALUE);
+        add(full, entry);
+        var decoded = decode(full);
+        assertEquals(Long.MAX_VALUE, decoded.effectivePolicy().rate(ResourceTypes.ITEM));
+        assertEquals(decoded, decode(ResourcePolicyNbt.encode(decoded)));
+        var opaque = ResourcePolicyNbt.decode(full, TransferDirection.INPUT, Set.of());
+        assertEquals(
+                Long.MAX_VALUE,
+                opaque.missingTypeOverrides().get(ResourceTypes.ITEM).rate());
+        assertEquals(decoded, decode(ResourcePolicyNbt.encode(opaque)));
+        entry.putLong("rate", -1);
+        assertThrows(IllegalArgumentException.class, () -> decode(full));
+    }
+
+    @Test
     void inputRoundTripRetainsAllFieldsAndLargeExactBatch() {
         CompoundTag tag = input();
         add(tag, row("minecraft:item", 3, "exact", Long.MAX_VALUE));
@@ -214,7 +238,7 @@ class ResourcePolicyNbtTest {
                 t -> add(t, row("example:missing", 1, "unknown", 4L)),
                 t -> {
                     CompoundTag r = row("minecraft:item", 1, null, null);
-                    r.putLong("rate", 1);
+                    r.putDouble("rate", 1);
                     add(t, r);
                 },
                 t -> {

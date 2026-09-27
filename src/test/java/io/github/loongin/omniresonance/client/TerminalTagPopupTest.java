@@ -10,6 +10,23 @@ import org.junit.jupiter.api.Test;
 
 class TerminalTagPopupTest {
     @Test
+    void typedLabelDoesNotChangeTheSingleCopiedTagIdentity() {
+        var popup = new TerminalTagPopup(
+                "minecraft:fluid",
+                java.util.List.of("minecraft:water"),
+                new TerminalLayout.Rect(100, 100, 16, 16),
+                427,
+                240,
+                String::length);
+        assertEquals("fluid:#minecraft:water", popup.display("minecraft:water"));
+        var result = popup.click(popup.bounds().x() + 4, popup.bounds().y() + 4, 0);
+        assertEquals("minecraft:water", result.tag());
+        TerminalTagClipboard.copy(
+                "minecraft:fluid", java.util.List.of(result.tag()), text -> assertEquals("#water", text));
+        TerminalTagClipboard.clear();
+    }
+
+    @Test
     void compactMenuFitsItsTextAndOnlyReservesScrollbarSpaceWhenNeeded() {
         var tags = List.of("c:buckets", "c:buckets/lava");
         var popup = new TerminalTagPopup(

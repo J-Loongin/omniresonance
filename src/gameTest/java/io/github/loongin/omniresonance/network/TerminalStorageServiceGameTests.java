@@ -27,7 +27,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 public final class TerminalStorageServiceGameTests {
     private TerminalStorageServiceGameTests() {}
 
-    private static ServerSettings writable() {
+    static ServerSettings writable() {
         var base = ServerSettings.defaults();
         return new ServerSettings(
                 base.networksPerOwner(),

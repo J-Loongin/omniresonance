@@ -15,6 +15,24 @@ import org.junit.jupiter.api.Test;
 
 class NodePresetPickerTest {
     @Test
+    void pickerOffersOnlyManualPresetsWithoutSectionRowsOrAutomaticSelection() {
+        var picker = new NodePresetPicker();
+        picker.open();
+        picker.nextRequest();
+        picker.complete(page(0, 1, 0));
+        var widgets = new ArrayList<TerminalRowButton>();
+        var selected = new ArrayList<FilterPresetSummary>();
+        NodePresetPickerView.buildRows(
+                new TerminalLayout.Rect(0, 0, 400, 300), picker, true, widgets::add, selected::add);
+        assertEquals(2, widgets.size());
+        assertTrue(selected.isEmpty());
+        widgets.get(1).onPress();
+        assertEquals(picker.page().entries().getFirst(), selected.getFirst());
+        picker.close();
+        assertEquals(0, picker.count());
+    }
+
+    @Test
     void pickerUsesTheSharedMatcherForItsActualVisibleChoices() {
         var picker = new NodePresetPicker();
         picker.open();

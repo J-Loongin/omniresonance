@@ -12,9 +12,47 @@ import org.junit.jupiter.api.Test;
 
 class ResourceNodePolicyDataTest {
     @Test
+    void versionTenIntRatesMigrateAndLongRatesSurviveNetworkReload() {
+        var saved = ItemPolicyDataTest.data().save(new CompoundTag(), RegistryAccess.EMPTY);
+        saved.putInt("schema_version", 10);
+        var policy = saved.getList("direct_bindings", Tag.TAG_COMPOUND)
+                .getCompound(0)
+                .getCompound("resource_policy");
+        var row = new CompoundTag();
+        row.putString("type_id", "minecraft:item");
+        row.putInt("rate", 123);
+        policy.getList("resource_policy_overrides", Tag.TAG_COMPOUND).add(row);
+        var copy = saved.copy();
+        var migrated = NetworkSavedData.load(ItemPolicyDataTest.NETWORK, saved);
+        assertEquals(copy, saved);
+        assertEquals(
+                123L,
+                migrated.findDirectBinding(ItemPolicyDataTest.NODE, ItemPolicyDataTest.CHANNEL)
+                        .orElseThrow()
+                        .policy()
+                        .rate(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM));
+        var upgraded = migrated.save(new CompoundTag(), RegistryAccess.EMPTY);
+        assertEquals(11, upgraded.getInt("schema_version"));
+        var storedRow = upgraded.getList("direct_bindings", Tag.TAG_COMPOUND)
+                .getCompound(0)
+                .getCompound("resource_policy")
+                .getList("resource_policy_overrides", Tag.TAG_COMPOUND)
+                .getCompound(0);
+        storedRow.putLong("rate", Long.MAX_VALUE);
+        var restored = NetworkSavedData.load(ItemPolicyDataTest.NETWORK, upgraded);
+        assertEquals(
+                Long.MAX_VALUE,
+                restored.findDirectBinding(ItemPolicyDataTest.NODE, ItemPolicyDataTest.CHANNEL)
+                        .orElseThrow()
+                        .policy()
+                        .rate(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM));
+        assertEquals(upgraded, restored.save(new CompoundTag(), RegistryAccess.EMPTY));
+    }
+
+    @Test
     void savesResourcePolicyAsCurrentSchema() {
         CompoundTag saved = ItemPolicyDataTest.data().save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(10, saved.getInt("schema_version"));
+        assertEquals(11, saved.getInt("schema_version"));
         CompoundTag binding = saved.getList("direct_bindings", Tag.TAG_COMPOUND).getCompound(0);
         assertTrue(binding.contains("resource_policy", Tag.TAG_COMPOUND));
         assertFalse(binding.contains("item_policy"));

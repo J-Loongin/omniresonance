@@ -31,7 +31,7 @@ final class ResourceDirectSchedulerTest {
         return new TransferWorkBudget(calls, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0);
     }
 
-    static ResourceTransferPolicy.Input input(int rate, int interval) {
+    static ResourceTransferPolicy.Input input(long rate, int interval) {
         Map<ResourceLocation, ResourceTransferPolicy.InputOverride> overrides = new HashMap<>();
         for (var type : TYPES)
             overrides.put(
@@ -40,7 +40,7 @@ final class ResourceDirectSchedulerTest {
                 interval, ResourceScope.all(), RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, overrides, 0);
     }
 
-    static ResourceTransferPolicy.Output output(int rate, int interval) {
+    static ResourceTransferPolicy.Output output(long rate, int interval) {
         Map<ResourceLocation, ResourceTransferPolicy.OutputOverride> overrides = new HashMap<>();
         for (var type : TYPES) overrides.put(type, new ResourceTransferPolicy.OutputOverride(rate));
         return new ResourceTransferPolicy.Output(
@@ -125,6 +125,25 @@ final class ResourceDirectSchedulerTest {
             SchedulerResourcePort p = new SchedulerResourcePort(type, size, amount, moves);
             ports.computeIfAbsent(new UUID(0, node), x -> new HashMap<>()).put(type, p);
             return p;
+        }
+    }
+
+    @Test
+    void longChannelRatePreservesFullQuantityThroughDiscoveryAndCommit() {
+        for (long amount : new long[] {(long) Integer.MAX_VALUE + 100, Long.MAX_VALUE}) {
+            Env env = new Env();
+            env.types = List.of(ResourceTypes.ENERGY);
+            var source = env.put(3, ResourceTypes.ENERGY, 1, amount);
+            var target = env.put(4, ResourceTypes.ENERGY, 1, 0);
+            source.viewCapacity = target.viewCapacity = Long.MAX_VALUE;
+            target.insertionLimit = Long.MAX_VALUE;
+            var scheduler = new ResourceDirectScheduler(env);
+            scheduler.replaceNetwork(NETWORK, List.of(config(3, input(amount, 1)), config(4, output(amount, 1))), 0);
+            var budget = budget(200);
+            scheduler.tick(0, ServerSettings.defaults(), budget);
+            assertEquals(0, source.amounts[0]);
+            assertEquals(amount, target.amounts[0]);
+            assertTrue(budget.calls() < 100);
         }
     }
 

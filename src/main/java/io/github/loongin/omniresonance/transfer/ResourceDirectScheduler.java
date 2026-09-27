@@ -588,8 +588,7 @@ public final class ResourceDirectScheduler {
                         t.hintLimit = Math.max(t.hintLimit, (int) Math.max(1, (b.calls() + b.remainingCalls()) / 2));
                         return;
                     }
-                    int accepted =
-                            t.target.port().insert(t.targetView, t.variant, (int) (desired - t.targetAmount), true, b);
+                    long accepted = t.target.port().insert(t.targetView, t.variant, desired - t.targetAmount, true, b);
                     if (accepted > 0) {
                         t.targetHints.add(t.targetView);
                         t.targetAmount = Math.addExact(t.targetAmount, accepted);
@@ -598,7 +597,7 @@ public final class ResourceDirectScheduler {
                     if (t.targetAmount >= desired) t.stage = Stage.COMMIT;
                     return;
                 }
-                int amount = (int) Math.min(t.candidateAmount, available(t.output, t.index, tick));
+                long amount = Math.min(t.candidateAmount, available(t.output, t.index, tick));
                 t.preparedAmount = t.target.port().insert(t.targetView, t.variant, amount, true, b);
                 if (t.preparedAmount == 0) {
                     t.targetView++;

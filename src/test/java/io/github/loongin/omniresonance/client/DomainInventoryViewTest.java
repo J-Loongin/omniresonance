@@ -38,6 +38,39 @@ class DomainInventoryViewTest {
     }
 
     @Test
+    void recipeHoverUsesActualVisibleResourceAndRejectsEmptyOrOutsideCells() {
+        var provider = net.minecraft.core.HolderLookup.Provider.create(
+                net.minecraft.core.registries.BuiltInRegistries.REGISTRY.stream()
+                        .map(registry -> registry.asLookup()));
+        var stack = new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT, 3);
+        stack.set(
+                net.minecraft.core.component.DataComponents.CUSTOM_NAME,
+                net.minecraft.network.chat.Component.literal("Named iron"));
+        var variant = io.github.loongin.omniresonance.transfer.ItemVariant.from(stack, provider);
+        var session = new UUID(91, 1);
+        try (var view = new DomainInventoryView(() -> {})) {
+            view.request(session, 1);
+            var widgets = new ArrayList<AbstractWidget>();
+            var body = TerminalLayout.calculate(427, 240).content();
+            view.build(font(), body, widgets::add, widget -> widgets.remove(widget));
+            var change = new io.github.loongin.omniresonance.storage.DomainLedger.Change(1, variant.key(), 3, 0);
+            var data = io.github.loongin.omniresonance.networking.DomainInventoryRecordCodec.encode(change);
+            view.accept(new DomainInventoryFrame.Begin(session, 1, 0, 1, 1));
+            view.accept(new DomainInventoryFrame.Data(session, 1, 1, true, data.length, 0, data));
+            view.accept(new DomainInventoryFrame.End(session, 1, 2, 1, 0));
+            for (int tick = 0; tick < 4; tick++) view.tick(false, () -> 0);
+            var cell = widgets.getLast();
+            var hover = view.recipeHover(cell.getX() + 1, cell.getY() + 1, provider);
+            var ingredient = (net.minecraft.world.item.ItemStack) hover.value();
+            assertEquals(1, ingredient.getCount());
+            assertTrue(net.minecraft.world.item.ItemStack.isSameItemSameComponents(stack, ingredient));
+            assertEquals(cell.getX(), hover.area().x());
+            org.junit.jupiter.api.Assertions.assertNull(
+                    view.recipeHover(body.right() + 1, body.bottom() + 1, provider));
+        }
+    }
+
+    @Test
     void realResourceButtonsCoverTheWholeCompactSlotWithoutDepositGaps() {
         UUID session = new UUID(9, 2);
         try (var view = new DomainInventoryView(() -> {})) {
@@ -95,6 +128,21 @@ class DomainInventoryViewTest {
                 assertEquals(1, retries[0]);
             }
         }
+    }
+
+    @Test
+    void slotQuantitiesUseVanillaDigitsAndFitWithoutUnits() {
+        for (long amount : new long[] {0, 1, 999, 1000, 1999, 999999, 329638725824L, Long.MAX_VALUE}) {
+            for (boolean buckets : new boolean[] {false, true}) {
+                var count = DomainInventoryView.slotCount(amount, buckets);
+                assertEquals(
+                        net.minecraft.network.chat.Style.DEFAULT_FONT,
+                        count.getStyle().getFont());
+                assertTrue(count.getString().length() <= 5);
+                assertFalse(count.getString().contains("B"));
+            }
+        }
+        assertEquals("329M", DomainInventoryView.slotCount(329638725824L, true).getString());
     }
 
     @Test

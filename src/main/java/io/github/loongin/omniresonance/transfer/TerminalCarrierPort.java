@@ -138,6 +138,12 @@ public final class TerminalCarrierPort implements ResourcePort, ResourceTransfer
                 owner, expected, new EnergyResourcePort(handler), () -> expected, false, authorized);
     }
 
+    /** Wraps an optional capability that modifies only the original stack, using the standard owned-slot settlement. */
+    public static TerminalCarrierPort stackBacked(
+            ContainerOwner owner, ItemStack expected, ResourcePort delegate, BooleanSupplier authorized) {
+        return new TerminalCarrierPort(owner, expected, delegate, () -> expected, false, authorized);
+    }
+
     private boolean owned() {
         if (Thread.currentThread() != owner) throw new IllegalStateException("Carrier accessed off server thread");
         return slot.current() && slot.stack() == expected;
@@ -185,14 +191,14 @@ public final class TerminalCarrierPort implements ResourcePort, ResourceTransfer
         return delegate.peek(view, budget);
     }
 
-    public int extract(int view, ResourceVariant variant, int amount, boolean simulate, TransferWorkBudget budget) {
-        int extracted = delegate.extract(view, variant, amount, simulate, budget);
+    public long extract(int view, ResourceVariant variant, long amount, boolean simulate, TransferWorkBudget budget) {
+        long extracted = delegate.extract(view, variant, amount, simulate, budget);
         if (!simulate) settle(budget);
         return extracted;
     }
 
-    public int insert(int view, ResourceVariant variant, int amount, boolean simulate, TransferWorkBudget budget) {
-        int inserted = delegate.insert(view, variant, amount, simulate, budget);
+    public long insert(int view, ResourceVariant variant, long amount, boolean simulate, TransferWorkBudget budget) {
+        long inserted = delegate.insert(view, variant, amount, simulate, budget);
         if (!simulate) settle(budget);
         return inserted;
     }

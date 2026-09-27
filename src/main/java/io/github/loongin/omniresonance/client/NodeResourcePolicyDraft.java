@@ -130,7 +130,7 @@ final class NodeResourcePolicyDraft {
             for (var originalRow : original.rows()) {
                 TypeDraft row = rows.get(originalRow.typeId());
                 if (row == null
-                        || Integer.parseInt(row.rate.trim())
+                        || Long.parseLong(row.rate.trim())
                                 != originalRow.value().rate()) return true;
                 if (originalRow.value() instanceof ResourceTransferPolicy.InputOverride input
                         && (row.batchMode != input.batchMode()
@@ -256,7 +256,7 @@ final class NodeResourcePolicyDraft {
         String batch;
 
         private TypeDraft(ResourceTransferPolicy.TypeOverride value) {
-            rate = Integer.toString(value.rate());
+            rate = Long.toString(value.rate());
             batchMode = value instanceof ResourceTransferPolicy.InputOverride input
                     ? input.batchMode()
                     : ResourceTransferPolicy.BatchMode.GREEDY;
@@ -264,7 +264,7 @@ final class NodeResourcePolicyDraft {
         }
 
         private ResourceTransferPolicy.TypeOverride value(TransferDirection direction) {
-            int parsedRate = Integer.parseInt(rate.trim());
+            long parsedRate = Long.parseLong(rate.trim());
             return direction == TransferDirection.INPUT
                     ? new ResourceTransferPolicy.InputOverride(parsedRate, batchMode, Long.parseLong(batch.trim()))
                     : new ResourceTransferPolicy.OutputOverride(parsedRate);

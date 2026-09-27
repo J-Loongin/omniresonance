@@ -142,7 +142,7 @@ public final class Ae2InterfacePayloads {
 
     public static void register(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
         var registrar =
-                event.registrar("27").executesOn(net.neoforged.neoforge.network.registration.HandlerThread.MAIN);
+                event.registrar("29").executesOn(net.neoforged.neoforge.network.registration.HandlerThread.MAIN);
         registrar.playToServer(Request.TYPE, Request.CODEC, (request, context) -> {
             var player = (net.minecraft.server.level.ServerPlayer) context.player();
             var runtime = Ae2InterfaceRuntime.find(player.server);

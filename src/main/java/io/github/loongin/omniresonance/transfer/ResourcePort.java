@@ -37,12 +37,18 @@ public interface ResourcePort {
     /** Internal execution admission after simulations and before extraction. Native ports require no extra state.
      * Ledger ports reserve exact destination capacity here; rejection/exception must not move any quantity or
      * invoke a native capability. This hook is never called by a simulation-only operation. */
-    default boolean reserveInsertion(ResourceVariant variant, int amount) {
+    default boolean reserveInsertion(ResourceVariant variant, long amount) {
         return true;
     }
 
     /** Releases internal destination admission on the owner thread; must not throw, move resources or call native code. */
     default void releaseInsertion() {}
+
+    /** Bounds one positive request at an external int-only API boundary, without native access or mutation. */
+    static int intRequest(long amount) {
+        if (amount <= 0) throw new IllegalArgumentException("Resource amount must be positive");
+        return (int) Math.min(Integer.MAX_VALUE, amount);
+    }
 
     /** Whether extraction promises from distinct views can represent independent quantities. */
     enum ExtractionScope {
@@ -59,8 +65,8 @@ public interface ResourcePort {
     int targetViews(TransferWorkBudget budget);
     /** Returns a detached positive candidate or empty; caller must have refreshed dynamic source bounds. */
     Optional<ResourceAmount> peek(int sourceView, TransferWorkBudget budget);
-    /** Extracts/simulates one positive int request and validates identity/amount before returning 0..amount. */
-    int extract(int sourceView, ResourceVariant variant, int amount, boolean simulate, TransferWorkBudget budget);
-    /** Inserts/simulates one positive int request and validates results before returning accepted 0..amount. */
-    int insert(int targetView, ResourceVariant variant, int amount, boolean simulate, TransferWorkBudget budget);
+    /** Extracts/simulates one positive long request and validates identity/amount before returning 0..amount. */
+    long extract(int sourceView, ResourceVariant variant, long amount, boolean simulate, TransferWorkBudget budget);
+    /** Inserts/simulates one positive long request and validates results before returning accepted 0..amount. */
+    long insert(int targetView, ResourceVariant variant, long amount, boolean simulate, TransferWorkBudget budget);
 }

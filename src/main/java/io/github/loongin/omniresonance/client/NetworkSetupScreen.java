@@ -54,6 +54,22 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     }
 
     @Override
+    public @Nullable RecipeGhostTarget.Hover recipeHover(double x, double y) {
+        if (disconnected
+                || closeSent
+                || inventoryView == null
+                || networkContext.open
+                || createOverlay
+                || topologyDiscardConfirmation
+                || confirmation
+                || pendingOperation != PendingOperation.NONE
+                || getFocused() instanceof net.minecraft.client.gui.components.EditBox box && box.canConsumeInput()
+                || minecraft == null
+                || minecraft.level == null) return null;
+        return inventoryView.recipeHover(x, y, minecraft.level.registryAccess());
+    }
+
+    @Override
     public RecipeGhostTarget.Area recipeGuiBounds() {
         var bounds = layout.window();
         return new RecipeGhostTarget.Area(bounds.x(), bounds.y(), bounds.width(), bounds.height());

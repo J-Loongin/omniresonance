@@ -183,7 +183,8 @@ final class NodeResourcePolicyView {
                                     ? legacy("no_preset")
                                     : draft.presetName == null
                                             ? legacy("missing_preset")
-                                            : Component.literal(draft.presetName),
+                                            : io.github.loongin.omniresonance.filter.BuiltInPresets.label(
+                                                    draft.presetId, draft.presetName),
                             active,
                             actions.choosePreset());
                 case FILTER ->
@@ -286,7 +287,8 @@ final class NodeResourcePolicyView {
         if (id.equals(ResourceTypes.ITEM)) return text("type.item");
         if (id.equals(ResourceTypes.FLUID)) return text("type.fluid");
         if (id.equals(ResourceTypes.ENERGY)) return text("type.energy");
-        return Component.literal(id.toString());
+        return Component.translatableWithFallback(
+                "omniresonance.resource_type." + id.getNamespace() + "." + id.getPath(), id.toString());
     }
 
     static Component text(String suffix, Object... args) {

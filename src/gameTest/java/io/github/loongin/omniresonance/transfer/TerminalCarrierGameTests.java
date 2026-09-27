@@ -201,6 +201,74 @@ public final class TerminalCarrierGameTests {
     }
 
     @GameTest(template = "bootstrap")
+    public static void shiftAutomaticBucketsGoToInventoryAndFullInventoryDoesNotConsumeResources(
+            GameTestHelper helper) {
+        for (boolean playerBucket : new boolean[] {false, true}) {
+            var player = new net.neoforged.neoforge.common.util.FakePlayer(
+                    helper.getLevel(),
+                    new com.mojang.authlib.GameProfile(new UUID(197, playerBucket ? 1 : 2), "ShiftBucket"));
+            var ledger = ledger();
+            var fluid = FluidVariant.from(
+                    new FluidStack(Fluids.WATER, 1), helper.getLevel().registryAccess());
+            var empty = ItemVariant.from(
+                    new ItemStack(Items.BUCKET), helper.getLevel().registryAccess());
+            try (var d = ledger.reserveDeposit(fluid.key(), 2000, -1).orElseThrow()) {
+                d.commit(2000);
+            }
+            if (playerBucket) player.getInventory().setItem(4, new ItemStack(Items.BUCKET, 2));
+            else
+                try (var d = ledger.reserveDeposit(empty.key(), 2, -1).orElseThrow()) {
+                    d.commit(2);
+                }
+            var result = new TerminalStorageOperation(-1, ledger.sequence(fluid.key()), 0, true)
+                    .step(
+                            player,
+                            ledger,
+                            new RecoveryBuffer(() -> {}),
+                            ServerSettings.defaults(),
+                            () -> true,
+                            budget());
+            helper.assertTrue(
+                    result.moved() == 1000
+                            && player.inventoryMenu.getCarried().isEmpty()
+                            && player.getInventory().countItem(Items.WATER_BUCKET) == 1
+                            && ledger.amount(fluid.key()) == 1000,
+                    "Shift automatic bucket was not delivered directly to inventory");
+            helper.assertTrue(
+                    playerBucket ? player.getInventory().countItem(Items.BUCKET) == 1 : ledger.amount(empty.key()) == 1,
+                    "Shift bucket consumed wrong number of empty buckets");
+        }
+        var player = new net.neoforged.neoforge.common.util.FakePlayer(
+                helper.getLevel(), new com.mojang.authlib.GameProfile(new UUID(197, 3), "FullShiftBucket"));
+        for (int slot = 0; slot < 36; slot++) player.getInventory().setItem(slot, new ItemStack(Items.STONE, 64));
+        player.getInventory().setItem(0, new ItemStack(Items.BUCKET, 2));
+        var ledger = ledger();
+        var fluid = FluidVariant.from(
+                new FluidStack(Fluids.LAVA, 1), helper.getLevel().registryAccess());
+        try (var d = ledger.reserveDeposit(fluid.key(), 2000, -1).orElseThrow()) {
+            d.commit(2000);
+        }
+        var blocked = new TerminalStorageOperation(-1, ledger.sequence(fluid.key()), 0, true)
+                .step(player, ledger, new RecoveryBuffer(() -> {}), ServerSettings.defaults(), () -> true, budget());
+        helper.assertTrue(
+                blocked.status() == io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.NO_SPACE
+                        && ledger.amount(fluid.key()) == 2000
+                        && player.getInventory().getItem(0).getCount() == 2
+                        && player.inventoryMenu.getCarried().isEmpty(),
+                "Full inventory consumed fluid or moved a bucket");
+        player.getInventory().setItem(8, new ItemStack(Items.BUCKET));
+        var filled = new TerminalStorageOperation(-1, ledger.sequence(fluid.key()), 0, true)
+                .step(player, ledger, new RecoveryBuffer(() -> {}), ServerSettings.defaults(), () -> true, budget());
+        helper.assertTrue(
+                filled.moved() == 1000
+                        && player.getInventory().getItem(8).is(Items.LAVA_BUCKET)
+                        && player.getInventory().getItem(0).getCount() == 2
+                        && player.inventoryMenu.getCarried().isEmpty(),
+                "Shift did not reuse a single bucket slot when inventory was otherwise full");
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void emptyCursorFindsOneBucketInPlayerInventoryThenDomain(GameTestHelper helper) {
         var player = new net.neoforged.neoforge.common.util.FakePlayer(
                 helper.getLevel(), new com.mojang.authlib.GameProfile(new UUID(97, 1), "AutoBucket"));

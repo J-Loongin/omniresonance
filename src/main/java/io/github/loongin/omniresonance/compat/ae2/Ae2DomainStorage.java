@@ -26,6 +26,8 @@ import org.jetbrains.annotations.Nullable;
  */
 public final class Ae2DomainStorage implements MEStorage {
     private final Ae2DomainAccess access;
+    private final io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory adapters =
+            io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create();
     private final Supplier<HolderLookup.Provider> registries;
 
     public Ae2DomainStorage(Ae2DomainAccess access, Supplier<HolderLookup.Provider> registries) {
@@ -55,6 +57,8 @@ public final class Ae2DomainStorage implements MEStorage {
                 return ItemVariant.from(item.toStack(1), registries.get()).key();
             if (key instanceof AEFluidKey fluid)
                 return FluidVariant.from(fluid.toStack(1), registries.get()).key();
+            var resource = AeResourceKeys.decode(key);
+            if (resource != null && adapters.decode(resource, registries.get()).isPresent()) return resource;
         } catch (IllegalArgumentException unsupported) {
             return null;
         }
@@ -68,7 +72,7 @@ public final class Ae2DomainStorage implements MEStorage {
                     : key.typeId().equals(ResourceTypes.FLUID)
                             ? AEFluidKey.of(
                                     FluidVariant.restore(key, registries.get()).stack(1))
-                            : null;
+                            : AeResourceKeys.canonical(key);
             return result != null && key.equals(decode(result)) ? result : null;
         } catch (IllegalArgumentException unsupported) {
             return null;

@@ -113,7 +113,8 @@ final class ResourceTransferEngineTest {
             };
             for (int i = 0; i < sources.length; i++) {
                 TransferWorkBudget b = budget(1);
-                ResourceTransferEngine.Result result = greedy(sources[i], targets[i], variants[i], quantity, b);
+                long request = quantity == Integer.MAX_VALUE ? Long.MAX_VALUE : quantity;
+                ResourceTransferEngine.Result result = greedy(sources[i], targets[i], variants[i], request, b);
                 assertEquals(quantity, result.moved());
                 conserved(result);
                 assertTrue(b.calls() <= ResourceTransferEngine.MAXIMUM_GREEDY_CALLS);

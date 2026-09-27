@@ -17,7 +17,7 @@ import net.minecraft.nbt.Tag;
 
 /** Strict versioned checks shared by managed SavedData codecs; inputs are never retained or modified. */
 final class ManagedDataNbt {
-    static final int NETWORK_SCHEMA_VERSION = 10;
+    static final int NETWORK_SCHEMA_VERSION = 11;
     static final int OWNER_SCHEMA_VERSION = 4;
     static final Set<String> NETWORK_V3_FIELDS = Set.of(
             "schema_version",

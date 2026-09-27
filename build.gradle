@@ -31,6 +31,11 @@ repositories {
             includeModule('maven.modrinth', 'justenoughcharacters')
             includeModule('maven.modrinth', 'jei')
             includeModule('maven.modrinth', 'emi')
+            includeModule('maven.modrinth', 'industrial-foregoing-souls')
+            includeModule('maven.modrinth', 'titanium')
+            includeModule('maven.modrinth', 'ars-nouveau')
+            includeModule('maven.modrinth', 'mekanism')
+            includeModule('maven.modrinth', 'applied-mekanistics')
         }
     }
 }
@@ -200,6 +205,11 @@ tasks.named('runGameTestServer') {
 }
 
 dependencies {
+    compileOnly('maven.modrinth:industrial-foregoing-souls:I0j6WSTx') { transitive = false }
+    compileOnly('maven.modrinth:titanium:zCzYA9mW') { transitive = false }
+    compileOnly('maven.modrinth:ars-nouveau:qEFs5RRw') { transitive = false }
+    compileOnly('maven.modrinth:applied-mekanistics:TpUCzFaW') { transitive = false }
+    compileOnly('maven.modrinth:mekanism:5KzzycBT') { transitive = false }
     compileOnly('org.appliedenergistics:appliedenergistics2:19.2.17:api') { transitive = false }
     compileOnly('maven.modrinth:justenoughcharacters:XPKoy65e') { transitive = false }
     compileOnly('maven.modrinth:jei:XCIrIXIV') { transitive = false }
@@ -297,7 +307,7 @@ def verifyModJar = tasks.register('verifyModJar') {
                 it.contains('/fixtures/') || it.contains('GameTests') ||
                         it.contains('TestStructureGenerator') || it.endsWith('.snbt') ||
                         it.startsWith('.cache/') || it.startsWith('me/towdium/') ||
-                        it.startsWith('appeng/') || it.startsWith('guideme/') || it.startsWith('mezz/jei/') || it.startsWith('dev/emi/') ||
+                        it.startsWith('com/buuz135/industrialforegoingsouls/') || it.startsWith('com/hrznstudio/titanium/') || it.startsWith('com/hollingsworth/arsnouveau/') || it.startsWith('mekanism/') || it.startsWith('me/ramidzkh/mekae2/') || it.startsWith('appeng/') || it.startsWith('guideme/') || it.startsWith('mezz/jei/') || it.startsWith('dev/emi/') ||
                         (it.endsWith('.jar') &&
                                 (it.toLowerCase(Locale.ROOT).contains('pinin') ||
                                         it.toLowerCase(Locale.ROOT).contains('jecharacters')))

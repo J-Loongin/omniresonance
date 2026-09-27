@@ -213,6 +213,20 @@ final class MaterialDataContractTest {
     }
 
     @Test
+    void aeInterfaceInheritsVanillaHeldTransformsWithoutShrinkingThePlacedCube() throws IOException {
+        var model = generatedJson("assets/omniresonance/models/block/ae_domain_interface.json");
+        assertEquals("minecraft:block/block", optionalString(model, "parent"));
+        var cube = model.getAsJsonArray("elements").get(0).getAsJsonObject();
+        assertEquals(List.of(0, 0, 0), integerArray(cube.getAsJsonArray("from")));
+        assertEquals(List.of(16, 16, 16), integerArray(cube.getAsJsonArray("to")));
+        assertEquals(
+                "omniresonance:block/ae_domain_interface",
+                generatedJson("assets/omniresonance/models/item/ae_domain_interface.json")
+                        .get("parent")
+                        .getAsString());
+    }
+
+    @Test
     void customBlockModelsInheritItemTransformsAndKeepPanelArtAligned() throws IOException {
         assertEquals(
                 "minecraft:block/block",

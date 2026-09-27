@@ -127,7 +127,7 @@ class ExchangeSavedDataTest {
         assertEquals(original, legacy);
         assertTrue(migrated.isDirty());
         CompoundTag current = migrated.save(new CompoundTag(), null);
-        assertEquals(3, current.getInt("schema_version"));
+        assertEquals(4, current.getInt("schema_version"));
         current.getList("terminated_revisions", net.minecraft.nbt.Tag.TAG_COMPOUND)
                 .getCompound(0)
                 .putLong("revision", Long.MAX_VALUE);
@@ -229,7 +229,7 @@ class ExchangeSavedDataTest {
                 ExchangeInvitation.State.OPEN,
                 data.invitation(INVITE).orElseThrow().state());
         CompoundTag invalid = data.save(new CompoundTag(), null);
-        invalid.putInt("schema_version", 4);
+        invalid.putInt("schema_version", 5);
         assertThrows(IllegalArgumentException.class, () -> ExchangeSavedData.load(invalid, LIMITS));
         CompoundTag duplicate = data.save(new CompoundTag(), null);
         ListTag rows = (ListTag) duplicate.get("agreements");

@@ -17,6 +17,7 @@ import org.lwjgl.glfw.GLFW;
 /** Immediate owner-only network selector; no configuration drafts, inventory slots or redundant save footer. */
 final class Ae2InterfaceScreen extends Screen {
     private final UUID session;
+    private final java.util.function.Consumer<Ae2InterfacePayloads.Request> sender;
     private final BiPredicate<Integer, Integer> terminalKey;
     private final ClientSearchState search = new ClientSearchState();
     private final LinkedHashMap<UUID, Ae2InterfacePayloads.Choice> catalog = new LinkedHashMap<>();
@@ -32,7 +33,15 @@ final class Ae2InterfaceScreen extends Screen {
     private List<Ae2InterfacePayloads.Choice> filtered = List.of();
 
     Ae2InterfaceScreen(Ae2InterfacePayloads.Frame first, BiPredicate<Integer, Integer> terminalKey) {
+        this(first, terminalKey, request -> PacketDistributor.sendToServer(request));
+    }
+
+    Ae2InterfaceScreen(
+            Ae2InterfacePayloads.Frame first,
+            BiPredicate<Integer, Integer> terminalKey,
+            java.util.function.Consumer<Ae2InterfacePayloads.Request> sender) {
         super(text("title"));
+        this.sender = sender;
         session = first.session();
         this.terminalKey = terminalKey;
         accept(first);
@@ -49,8 +58,9 @@ final class Ae2InterfaceScreen extends Screen {
             lastWrite = seq;
             writing = true;
         }
-        PacketDistributor.sendToServer(new Ae2InterfacePayloads.Request(
+        sender.accept(new Ae2InterfacePayloads.Request(
                 session, seq, action, network, text("default_name").getString()));
+        if (action == 1 || action == 2) rebuild();
     }
 
     void accept(Ae2InterfacePayloads.Frame frame) {
@@ -92,7 +102,13 @@ final class Ae2InterfaceScreen extends Screen {
 
     @Override
     protected void init() {
-        font = TerminalText.font(minecraft);
+        build(TerminalText.font(minecraft), width, height);
+    }
+
+    void build(net.minecraft.client.gui.Font font, int width, int height) {
+        this.font = font;
+        this.width = width;
+        this.height = height;
         layout = TerminalLayout.terminal(width, height);
         rebuild();
     }
@@ -136,21 +152,22 @@ final class Ae2InterfaceScreen extends Screen {
                         .filter(choice -> matcher.test(ClientTextSearch.fold(choice.name()), query))
                         .toList(),
                 ClientTextSearch.fold(search.draft()));
-        int count = filtered.size() + 1;
+        int count = filtered.size();
         scroll = Math.clamp(scroll, 0, Math.max(0, count - visible));
         if (!ready) return;
         for (int i = scroll; i < Math.min(count, scroll + visible); i++) {
-            var choice = i == 0 ? null : filtered.get(i - 1);
-            var label = choice == null ? text("unbind") : Component.literal(choice.name());
+            var choice = filtered.get(i);
+            var label = Component.literal(choice.name());
             var row = new TerminalRowButton(
                     listBounds.x(),
                     top + (i - scroll) * 26,
                     listBounds.width() - 8,
                     20,
                     label,
-                    ignored -> request(choice == null ? 2 : 1, choice == null ? null : choice.id()));
-            row.active = !writing && error.isEmpty() && (choice != null || selected != null);
-            row.setSelected(choice == null ? selected == null : choice.id().equals(selected));
+                    ignored -> request(
+                            choice.id().equals(selected) ? 2 : 1, choice.id().equals(selected) ? null : choice.id()));
+            row.active = !writing && error.isEmpty();
+            row.setSelected(choice.id().equals(selected));
             row.setTooltip(Tooltip.create(TerminalText.body(label)));
             widgets.add(row);
         }
@@ -192,13 +209,7 @@ final class Ae2InterfaceScreen extends Screen {
                 false);
         if (listBounds != null)
             TerminalTheme.renderScrollbar(
-                    g,
-                    listBounds.right() - 6,
-                    listBounds.y(),
-                    listBounds.height(),
-                    filtered.size() + 1,
-                    visible,
-                    scroll);
+                    g, listBounds.right() - 6, listBounds.y(), listBounds.height(), filtered.size(), visible, scroll);
     }
 
     @Override
@@ -254,7 +265,7 @@ final class Ae2InterfaceScreen extends Screen {
                 && y >= listBounds.y()
                 && y < listBounds.bottom()
                 && dy != 0) {
-            scroll = Math.clamp(scroll + (dy > 0 ? -1 : 1), 0, Math.max(0, filtered.size() + 1 - visible));
+            scroll = Math.clamp(scroll + (dy > 0 ? -1 : 1), 0, Math.max(0, filtered.size() - visible));
             rebuild();
             return true;
         }

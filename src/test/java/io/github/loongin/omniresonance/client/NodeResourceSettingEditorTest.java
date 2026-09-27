@@ -10,6 +10,27 @@ import org.junit.jupiter.api.Test;
 
 class NodeResourceSettingEditorTest {
     @Test
+    void longRateRoundTripsThroughEditorWireAndStorage() {
+        var draft = new NodeResourcePolicyDraft(
+                NodeResourcePolicyDraftTest.input(), null, NodeResourcePolicyDraftTest.catalog());
+        draft.addType(ResourceTypes.ITEM);
+        var editor = new NodeResourceSettingEditor(draft, ResourceTypes.ITEM);
+        editor.rate = Long.toString(Long.MAX_VALUE);
+        editor.apply();
+        assertEquals(Long.toString(Long.MAX_VALUE), draft.type(ResourceTypes.ITEM).rate);
+        var input = new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.InputOverride(
+                Long.MAX_VALUE, io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.BatchMode.GREEDY, 1);
+        assertEquals(Long.MAX_VALUE, input.rate());
+        var encoded = io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encode(draft.edit());
+        var decoded = io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.decode(encoded);
+        assertEquals(Long.MAX_VALUE, decoded.rows().getFirst().value().rate());
+        assertTrue(draft.dirty());
+        editor.rate = "9223372036854775808";
+        assertThrows(IllegalArgumentException.class, editor::apply);
+        assertEquals(Long.toString(Long.MAX_VALUE), draft.type(ResourceTypes.ITEM).rate);
+    }
+
+    @Test
     void localTextDoesNotModifyParentUntilAValidWholeApply() {
         var draft = new NodeResourcePolicyDraft(
                 NodeResourcePolicyDraftTest.input(), null, NodeResourcePolicyDraftTest.catalog());

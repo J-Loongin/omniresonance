@@ -126,6 +126,7 @@ public final class RecipeTagCopy {
         resourceType = common.type();
         var font = TerminalText.font(minecraft);
         popup = new TerminalTagPopup(
+                common.type(),
                 common.tags(),
                 new TerminalLayout.Rect(x - 8, y - 8, 16, 16),
                 screen.width,

@@ -21,6 +21,7 @@ public final class PlayerCarrierOwner implements TerminalCarrierPort.ContainerOw
     private ItemStack working;
     private ItemStack emptyAnchor;
     private boolean settled;
+    private boolean inventoryFirst;
 
     /** Captures one detached item for capability discovery, rejecting absent cursors or another open container. */
     public PlayerCarrierOwner(ServerPlayer player) {
@@ -75,6 +76,14 @@ public final class PlayerCarrierOwner implements TerminalCarrierPort.ContainerOw
         }
     }
 
+    /** Relocates an already confirmed carrier on the server thread. Does not transfer resources or simulate.
+     * Reuses owned-piece validation; an unexpectedly full inventory retains the item on the cursor. */
+    public void moveToInventory(TransferWorkBudget budget) {
+        if (!settled) throw new IllegalStateException("Carrier has not been settled");
+        inventoryFirst = true;
+        settle(working, budget);
+    }
+
     private void place(ItemStack value, TransferWorkBudget budget) {
         if (value.isEmpty()) return;
         ItemStack carried = player.inventoryMenu.getCarried();
@@ -83,7 +92,7 @@ public final class PlayerCarrierOwner implements TerminalCarrierPort.ContainerOw
                 : ItemStack.isSameItemSameComponents(carried, value)
                         ? Math.max(0, value.getMaxStackSize() - carried.getCount())
                         : 0;
-        if (room > 0) {
+        if (!inventoryFirst && room > 0) {
             int count = Math.min(room, value.getCount());
             var result = value.copyWithCount(carried.getCount() + count);
             player.inventoryMenu.setCarried(result);
@@ -105,6 +114,14 @@ public final class PlayerCarrierOwner implements TerminalCarrierPort.ContainerOw
                 pieces.add(new Piece(slot, null, result, count));
                 value.shrink(count);
             }
+        if (!value.isEmpty()
+                && inventoryFirst
+                && player.inventoryMenu.getCarried().isEmpty()) {
+            var retained = value.copy();
+            player.inventoryMenu.setCarried(retained);
+            pieces.add(new Piece(-1, null, retained, retained.getCount()));
+            value.setCount(0);
+        }
         if (!value.isEmpty()) {
             ItemEntity dropped;
             ItemStack snapshot = value.copy();

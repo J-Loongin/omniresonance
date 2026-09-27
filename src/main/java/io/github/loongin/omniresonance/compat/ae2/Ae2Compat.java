@@ -14,6 +14,10 @@ public final class Ae2Compat {
 
     public static void register(IEventBus bus) {
         Ae2InterfaceContent.register(bus);
+        bus.addListener(ResonanceKeys::register);
+        bus.addListener((net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent event) -> event.enqueueWork(() -> {
+            ResonanceCarrierStrategy.register();
+        }));
         bus.addListener(Ae2InterfacePayloads::register);
         bus.addListener((net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent event) ->
                 event.registerBlockEntity(

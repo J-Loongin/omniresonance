@@ -898,32 +898,7 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
     public @Nullable java.util.Iterator<net.minecraft.resources.ResourceLocation> openFilterTag(
             ResourceFilterCompiler.TagKey key) {
         requireThread();
-        if (key.typeId().equals(ResourceTypes.ITEM))
-            return tagMembers(
-                    server.registryAccess().registryOrThrow(net.minecraft.core.registries.Registries.ITEM),
-                    key.tagId());
-        if (key.typeId().equals(ResourceTypes.FLUID))
-            return tagMembers(
-                    server.registryAccess().registryOrThrow(net.minecraft.core.registries.Registries.FLUID),
-                    key.tagId());
-        return null;
-    }
-
-    private static <T> @Nullable java.util.Iterator<net.minecraft.resources.ResourceLocation> tagMembers(
-            net.minecraft.core.Registry<T> registry, net.minecraft.resources.ResourceLocation id) {
-        var tag = registry.getTag(net.minecraft.tags.TagKey.create(registry.key(), id))
-                .orElse(null);
-        if (tag == null) return null;
-        var members = tag.iterator();
-        return new java.util.Iterator<>() {
-            public boolean hasNext() {
-                return members.hasNext();
-            }
-
-            public net.minecraft.resources.ResourceLocation next() {
-                return members.next().unwrapKey().orElseThrow().location();
-            }
-        };
+        return adapters.openTag(key.typeId(), key.tagId(), server.registryAccess());
     }
 
     private void requireThread() {

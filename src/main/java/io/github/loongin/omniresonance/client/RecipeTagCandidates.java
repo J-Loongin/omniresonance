@@ -20,7 +20,7 @@ public final class RecipeTagCandidates {
 
     public record Candidate(String type, String id, List<String> tags) {
         public Candidate {
-            if (!type.equals("minecraft:item") && !type.equals("minecraft:fluid"))
+            if (!io.github.loongin.omniresonance.bootstrap.ResourceAdapters.registryType(ResourceLocation.parse(type)))
                 throw new IllegalArgumentException("Unsupported tag type");
             identifier(id);
             if (tags.size() > MAX_TAGS) throw new IllegalArgumentException("Too many tags");
@@ -69,7 +69,14 @@ public final class RecipeTagCandidates {
             return collect("minecraft:item", BuiltInRegistries.ITEM.getKey(stack.getItem()), stack.getTags());
         if (ingredient instanceof FluidStack stack && !stack.isEmpty())
             return collect("minecraft:fluid", BuiltInRegistries.FLUID.getKey(stack.getFluid()), stack.getTags());
-        return null;
+        var optional = io.github.loongin.omniresonance.bootstrap.ResourceAdapters.recipeVariant(ingredient);
+        if (optional == null) return null;
+        var tags = optional.tags();
+        if (tags.size() > MAX_TAGS) return null;
+        return new Candidate(
+                optional.key().typeId().toString(),
+                optional.resourceId().toString(),
+                tags.stream().map(Object::toString).toList());
     }
 
     private static @Nullable Candidate collect(

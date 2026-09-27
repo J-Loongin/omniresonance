@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.List;
 import mezz.jei.api.IModPlugin;
 import mezz.jei.api.JeiPlugin;
-import mezz.jei.api.constants.VanillaTypes;
 import mezz.jei.api.runtime.IJeiRuntime;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
@@ -20,47 +19,76 @@ public final class JeiTagPlugin implements IModPlugin {
     private volatile @Nullable IJeiRuntime runtime;
 
     @Override
+    public void registerIngredients(mezz.jei.api.registration.IModIngredientRegistration registration) {
+        JeiEnergyIngredient.register(registration);
+    }
+
+    @Override
     public void registerGuiHandlers(mezz.jei.api.registration.IGuiHandlerRegistration registration) {
         registerGhost(registration, io.github.loongin.omniresonance.client.RecipeGhostTarget.screenType());
     }
 
-    private static <T extends Screen> void registerGhost(
+    private <T extends Screen> void registerGhost(
             mezz.jei.api.registration.IGuiHandlerRegistration registration, Class<T> screenType) {
-        registration.addGuiScreenHandler(screenType, screen -> {
-            var bridge = (io.github.loongin.omniresonance.client.RecipeGhostTarget) screen;
-            var geometry = io.github.loongin.omniresonance.client.RecipeGhostTarget.geometry(
-                    screen.width, screen.height, bridge::recipeGuiBounds);
-            if (geometry == null) return null;
-            var bounds = geometry.area();
-            return new mezz.jei.api.gui.handlers.IGuiProperties() {
-                public Class<? extends Screen> screenClass() {
-                    return screenType;
-                }
+        registration.addGuiScreenHandler(screenType, new mezz.jei.api.gui.handlers.IScreenHandler<T>() {
+            @Override
+            public mezz.jei.api.gui.handlers.IGuiProperties apply(T screen) {
+                var bridge = (io.github.loongin.omniresonance.client.RecipeGhostTarget) screen;
+                var geometry = io.github.loongin.omniresonance.client.RecipeGhostTarget.geometry(
+                        screen.width, screen.height, bridge::recipeGuiBounds);
+                if (geometry == null) return null;
+                var bounds = geometry.area();
+                return new mezz.jei.api.gui.handlers.IGuiProperties() {
+                    public Class<? extends Screen> screenClass() {
+                        return screenType;
+                    }
 
-                public int guiLeft() {
-                    return bounds.x();
-                }
+                    public int guiLeft() {
+                        return bounds.x();
+                    }
 
-                public int guiTop() {
-                    return bounds.y();
-                }
+                    public int guiTop() {
+                        return bounds.y();
+                    }
 
-                public int guiXSize() {
-                    return bounds.width();
-                }
+                    public int guiXSize() {
+                        return bounds.width();
+                    }
 
-                public int guiYSize() {
-                    return bounds.height();
-                }
+                    public int guiYSize() {
+                        return bounds.height();
+                    }
 
-                public int screenWidth() {
-                    return geometry.screenWidth();
-                }
+                    public int screenWidth() {
+                        return geometry.screenWidth();
+                    }
 
-                public int screenHeight() {
-                    return geometry.screenHeight();
-                }
-            };
+                    public int screenHeight() {
+                        return geometry.screenHeight();
+                    }
+                };
+            }
+
+            @Override
+            public java.util.Optional<? extends mezz.jei.api.runtime.IClickableIngredient<?>>
+                    getClickableIngredientUnderMouse(
+                            mezz.jei.api.gui.builder.IClickableIngredientFactory factory,
+                            T screen,
+                            double x,
+                            double y) {
+                var current = runtime;
+                if (current == null) return java.util.Optional.empty();
+                var hover = ((io.github.loongin.omniresonance.client.RecipeGhostTarget) screen).recipeHover(x, y);
+                if (hover == null) return java.util.Optional.empty();
+                return current.getIngredientManager()
+                        .createTypedIngredient(hover.value(), true)
+                        .flatMap(typed -> factory.createBuilder(typed)
+                                .buildWithArea(
+                                        hover.area().x(),
+                                        hover.area().y(),
+                                        hover.area().width(),
+                                        hover.area().height()));
+            }
         });
         registration.addGhostIngredientHandler(screenType, new mezz.jei.api.gui.handlers.IGhostIngredientHandler<T>() {
             @Override
@@ -118,13 +146,12 @@ public final class JeiTagPlugin implements IModPlugin {
                     if (selected.isEmpty())
                         selected = value.getBookmarkOverlay().getIngredientUnderMouse();
                     if (selected.isPresent()) return single(selected.get().getIngredient());
-                    var item = value.getRecipesGui().getIngredientUnderMouse(VanillaTypes.ITEM_STACK);
-                    if (item.isPresent()) return single(item.get());
-                    var fluid = value.getRecipesGui()
-                            .getIngredientUnderMouse(value.getJeiHelpers()
-                                    .getPlatformFluidHelper()
-                                    .getFluidIngredientType());
-                    if (fluid.isPresent()) return single(fluid.get());
+                    int types = 0;
+                    for (var type : value.getIngredientManager().getRegisteredIngredientTypes()) {
+                        if (++types > RecipeTagCandidates.MAX_CANDIDATES) return RecipeTagCopy.Selection.unsupported();
+                        var ingredient = value.getRecipesGui().getIngredientUnderMouse(type);
+                        if (ingredient.isPresent()) return single(ingredient.get());
+                    }
                     var result = new ArrayList<RecipeTagCandidates.Candidate>();
                     try (var hovered = value.getScreenHelper().getClickableIngredientUnderMouse(screen, x, y)) {
                         var iterator = hovered.iterator();

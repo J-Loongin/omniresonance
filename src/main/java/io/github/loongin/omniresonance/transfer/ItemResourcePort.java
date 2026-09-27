@@ -53,8 +53,9 @@ public final class ItemResourcePort implements ResourcePort {
     }
 
     @Override
-    public int extract(
-            int sourceView, ResourceVariant variant, int amount, boolean simulate, TransferWorkBudget budget) {
+    public long extract(
+            int sourceView, ResourceVariant variant, long maximum, boolean simulate, TransferWorkBudget budget) {
+        int amount = ResourcePort.intRequest(maximum);
         validateView(sourceView, sourceViews);
         ItemStack identity = request(variant, amount);
         ItemStack extracted = ItemHandlerCalls.extract(handler, sourceView, amount, simulate, budget);
@@ -62,8 +63,9 @@ public final class ItemResourcePort implements ResourcePort {
     }
 
     @Override
-    public int insert(
-            int targetView, ResourceVariant variant, int amount, boolean simulate, TransferWorkBudget budget) {
+    public long insert(
+            int targetView, ResourceVariant variant, long maximum, boolean simulate, TransferWorkBudget budget) {
+        int amount = ResourcePort.intRequest(maximum);
         validateView(targetView, targetViews);
         ItemStack identity = request(variant, amount);
         ItemStack remainder = ItemHandlerCalls.insert(handler, targetView, identity, simulate, budget);

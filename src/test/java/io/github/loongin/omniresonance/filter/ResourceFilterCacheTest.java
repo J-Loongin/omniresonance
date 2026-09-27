@@ -54,6 +54,61 @@ final class ResourceFilterCacheTest {
         return units;
     }
 
+    @Test
+    void builtinRootsCompileWithoutReadingOwnerDataAndDoNotRetireCustomOwnerCache() {
+        var loads = new AtomicInteger();
+        var custom = preset(ROOT, List.of());
+        try (var cache = new ResourceFilterCache(
+                id -> {
+                    loads.incrementAndGet();
+                    return owner(custom);
+                },
+                key -> {
+                    throw new AssertionError("No tags");
+                })) {
+            var builtin = cache.acquire(
+                    OWNER, BuiltInPresets.ENTRIES.getFirst().preset().id());
+            assertEquals(0, loads.get());
+            complete(cache, builtin);
+            assertTrue(cache.view(builtin)
+                    .compiled()
+                    .allows(
+                            FilterResourceSample.idOnly(
+                                    io.github.loongin.omniresonance.transfer.EnergyVariant.INSTANCE),
+                            FilterMode.WHITELIST));
+            assertEquals(
+                    Boolean.FALSE,
+                    cache.view(builtin).compiled().fastDecision(ResourceTypes.FLUID, FilterMode.WHITELIST));
+            var user = cache.acquire(OWNER, ROOT);
+            assertEquals(1, loads.get());
+            cache.release(builtin);
+            var other = cache.acquire(OWNER, OTHER);
+            assertEquals(1, loads.get());
+            cache.release(other);
+            cache.release(user);
+        }
+        try (var cache = new ResourceFilterCache(
+                id -> {
+                    throw new IllegalStateException("Unreadable owner");
+                },
+                key -> {
+                    throw new AssertionError("No tags");
+                })) {
+            for (var entry : BuiltInPresets.ENTRIES) {
+                var key = cache.acquire(OWNER, entry.preset().id());
+                complete(cache, key);
+                assertTrue(cache.view(key).compiled().valid());
+                assertTrue(cache.view(key)
+                        .compiled()
+                        .allows(
+                                FilterResourceSample.idOnly(
+                                        () -> new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                                                entry.type(), new byte[0])),
+                                FilterMode.WHITELIST));
+            }
+        }
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(
             strings = {"oversized", "null_member", "long_member", "open", "has_next", "next"})

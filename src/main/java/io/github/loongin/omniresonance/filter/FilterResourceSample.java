@@ -37,6 +37,9 @@ public final class FilterResourceSample {
         ResourceVariantKey key = Objects.requireNonNull(variant).key();
         if (key.typeId().equals(ResourceTypes.ENERGY))
             return new FilterResourceSample(key.typeId(), "", new byte[0], Map.of());
+        if (variant instanceof io.github.loongin.omniresonance.transfer.RegisteredResourceVariant registered)
+            return new FilterResourceSample(
+                    key.typeId(), registered.resourceId().toString(), new byte[0], Map.of());
         if (!key.typeId().equals(ResourceTypes.ITEM) && !key.typeId().equals(ResourceTypes.FLUID))
             return new FilterResourceSample(key.typeId(), "", new byte[0], Map.of());
         CompoundTag identity = (CompoundTag) CanonicalResourceNbt.decode(key.canonicalBytes());
@@ -73,6 +76,8 @@ public final class FilterResourceSample {
         String id;
         if (variant instanceof ItemVariant item) id = item.itemId().toString();
         else if (variant instanceof FluidVariant fluid) id = fluid.fluidId().toString();
+        else if (variant instanceof io.github.loongin.omniresonance.transfer.RegisteredResourceVariant registered)
+            id = registered.resourceId().toString();
         else if (key.typeId().equals(ResourceTypes.ITEM) || key.typeId().equals(ResourceTypes.FLUID)) {
             CompoundTag identity = (CompoundTag) CanonicalResourceNbt.decode(key.canonicalBytes());
             id = ResourceLocation.parse(identity.getString("id")).toString();

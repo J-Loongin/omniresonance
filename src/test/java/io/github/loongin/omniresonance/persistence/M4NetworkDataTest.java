@@ -126,7 +126,7 @@ final class M4NetworkDataTest {
         assertFalse(loaded.isDirty());
         assertEquals(before, legacy);
         CompoundTag upgraded = loaded.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(10, upgraded.getInt("schema_version"));
+        assertEquals(11, upgraded.getInt("schema_version"));
         assertEquals(upgraded, NetworkSavedData.load(NETWORK, upgraded).save(new CompoundTag(), RegistryAccess.EMPTY));
     }
 

@@ -35,6 +35,21 @@ class TerminalStatusPresentationTest {
     }
 
     @Test
+    void optionalChemicalDetailsUseRegisteredUnitsAndTranslatedType() {
+        var type = ResourceLocation.parse("mekanism:chemical");
+        var t = new TransferTelemetry(List.of(type));
+        var network = new UUID(1, 1);
+        t.moved(network, type, 20, 1000);
+        var s = snapshot("available", 0)
+                .withRuntime(new NetworkDiagnosticsSnapshot.RuntimeStats(t.snapshot(network, 20), 0, 0, 0));
+        var rows = TerminalStatusPresentation.details(s, ignored -> "mB");
+        assertTrue(rows.stream()
+                .anyMatch(row -> row.value().getString().equals("1 B")
+                        && row.label().getContents() instanceof TranslatableContents c
+                        && c.getKey().equals("omniresonance.resource_type.mekanism.chemical")));
+    }
+
+    @Test
     void exchangeOverviewIsOneSummaryAndDetailsIdentifyBothNetworksWithoutFakeNodes() {
         var incident = new io.github.loongin.omniresonance.exchange.ExchangeTelemetry.Incident(
                 new UUID(10, 1),

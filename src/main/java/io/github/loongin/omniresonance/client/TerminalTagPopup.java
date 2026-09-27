@@ -14,6 +14,7 @@ final class TerminalTagPopup {
     private static final int ROW = 12, PAD = 2, TEXT_PAD = 4;
     private static final float TEXT_SCALE = 0.8f;
     private final List<String> tags;
+    private final String prefix;
     private final TerminalLayout.Rect bounds;
     private final int rows;
     private int offset;
@@ -24,6 +25,22 @@ final class TerminalTagPopup {
             int screenWidth,
             int screenHeight,
             ToIntFunction<String> measure) {
+        this("", tags, anchor, screenWidth, screenHeight, measure);
+    }
+
+    TerminalTagPopup(
+            String type,
+            List<String> tags,
+            TerminalLayout.Rect anchor,
+            int screenWidth,
+            int screenHeight,
+            ToIntFunction<String> measure) {
+        prefix = switch (type) {
+            case "minecraft:item" -> "item:";
+            case "minecraft:fluid" -> "fluid:";
+            case "mekanism:chemical" -> "chemical:";
+            default -> "";
+        };
         this.tags = tags.stream()
                 .distinct()
                 .sorted(Comparator.comparingInt(TerminalTagPopup::rank).thenComparing(s -> s))
@@ -32,13 +49,17 @@ final class TerminalTagPopup {
         int wanted = TEXT_PAD * 2 + scrollbarWidth();
         for (String tag : this.tags)
             wanted = Math.max(
-                    wanted, (int) Math.ceil(measure.applyAsInt("#" + tag) * 0.8) + TEXT_PAD * 2 + scrollbarWidth());
+                    wanted, (int) Math.ceil(measure.applyAsInt(display(tag)) * 0.8) + TEXT_PAD * 2 + scrollbarWidth());
         int width = Math.max(1, Math.min(wanted, Math.min(240, screenWidth - 8))), height = rows * ROW + PAD * 2;
         int x = anchor.right() + 2;
         if (x + width > screenWidth - 4) x = anchor.x() - width - 2;
         x = Math.clamp(x, 4, Math.max(4, screenWidth - width - 4));
         int y = Math.clamp(anchor.y(), 4, Math.max(4, screenHeight - height - 4));
         bounds = new TerminalLayout.Rect(x, y, width, height);
+    }
+
+    String display(String tag) {
+        return prefix + "#" + tag;
     }
 
     private int scrollbarWidth() {
@@ -98,8 +119,8 @@ final class TerminalTagPopup {
                 if (tag.equals(hovered))
                     graphics.fill(bounds.x() + 2, y, bounds.right() - 2 - scrollbarWidth(), y + ROW, 0xFF2B454F);
                 String label = TerminalText.ellipsize(
-                        font, "#" + tag, (int) ((bounds.width() - TEXT_PAD * 2 - scrollbarWidth()) / TEXT_SCALE));
-                int separator = label.indexOf(':') + 1;
+                        font, display(tag), (int) ((bounds.width() - TEXT_PAD * 2 - scrollbarWidth()) / TEXT_SCALE));
+                int separator = label.lastIndexOf(':') + 1;
                 Component styled = Component.literal(label.substring(0, separator))
                         .withStyle(style -> style.withColor(0x899BA3))
                         .append(Component.literal(label.substring(separator))

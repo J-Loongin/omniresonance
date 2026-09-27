@@ -279,7 +279,7 @@ public final class ExchangeSavedData extends SavedData {
     /** Strict clean restoration; malformed, oversized or future data fails rather than creating empty authority. */
     public static ExchangeSavedData load(CompoundTag tag, Limits limits) {
         int version = ManagedDataNbt.readSchemaVersion(tag);
-        if (version != 1 && version != 2 && version != 3)
+        if (version != 1 && version != 2 && version != 3 && version != 4)
             throw new IllegalArgumentException("Invalid exchange shard schema");
         Set<String> fields = version == 1
                 ? Set.of("schema_version", "revision", "invitations", "agreements")
@@ -339,7 +339,7 @@ public final class ExchangeSavedData extends SavedData {
                 : ExchangePairingCatalog.decode(ExchangeStateNbt.compound(tag, "pairing"));
         ExchangeSavedData data = new ExchangeSavedData(
                 limits, checked(tag.getLong("revision"), invitations, agreements, accepted, terminated, pairing));
-        if (version < 3) {
+        if (version < 4) {
             ManagedObjectNbtSize.validate(encode(data.state));
             data.setDirty();
         }
@@ -915,7 +915,7 @@ public final class ExchangeSavedData extends SavedData {
 
     private static CompoundTag encode(State state) {
         CompoundTag tag = new CompoundTag();
-        tag.putInt("schema_version", 3);
+        tag.putInt("schema_version", 4);
         tag.put("pairing", state.pairing.encode());
         tag.putLong("revision", state.revision);
         ListTag invitations = new ListTag();

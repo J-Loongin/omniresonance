@@ -153,7 +153,7 @@ class NetworkAdministrationDataTest {
         CompoundTag saved = loaded.save(new CompoundTag(), RegistryAccess.EMPTY);
         assertEquals(before, legacy);
         assertFalse(loaded.isDirty());
-        assertEquals(10, saved.getInt("schema_version"));
+        assertEquals(11, saved.getInt("schema_version"));
         assertEquals(0L, saved.getLong("management_revision"));
         for (String key : before.getAllKeys()) {
             if (!key.equals("schema_version")) {

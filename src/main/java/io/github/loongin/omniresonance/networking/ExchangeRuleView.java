@@ -31,6 +31,7 @@ public record ExchangeRuleView(
         int typeCount,
         FilterMode filterMode,
         @Nullable String filterName,
+        @Nullable UUID filterId,
         int filterEntries,
         long defaultRate,
         int intervalTicks,
@@ -73,6 +74,8 @@ public record ExchangeRuleView(
         count(overrideCount);
         if (filterName == null && filterEntries != 0) throw new IllegalArgumentException("Missing filter summary name");
         if (filterName != null) name(filterName);
+        if ((filterName == null) != (filterId == null))
+            throw new IllegalArgumentException("Filter identity/name mismatch");
     }
 
     /** Projects only display facts from a previously authorized agreement; names must match their endpoint IDs. */
@@ -98,6 +101,7 @@ public record ExchangeRuleView(
                 filter == null
                         ? null
                         : filter.presets().get(filter.root()).name().value(),
+                filter == null ? null : filter.root(),
                 filter == null ? 0 : filter.ruleCount(),
                 terms.defaultRate(),
                 terms.intervalTicks(),
@@ -125,7 +129,10 @@ public record ExchangeRuleView(
         writeEndpoint(buffer, target);
         buffer.writeBoolean(allTypes).writeVarInt(typeCount).writeByte(filterMode == FilterMode.WHITELIST ? 0 : 1);
         buffer.writeBoolean(filterName != null);
-        if (filterName != null) NetworkSummary.writeName(buffer, filterName);
+        if (filterName != null) {
+            NetworkSummary.writeName(buffer, filterName);
+            buffer.writeUUID(filterId);
+        }
         buffer.writeVarInt(filterEntries)
                 .writeLong(defaultRate)
                 .writeInt(intervalTicks)
@@ -151,6 +158,7 @@ public record ExchangeRuleView(
                     default -> throw new IllegalArgumentException("Unknown exchange filter mode");
                 };
         String filter = bool(buffer) ? NetworkSummary.readName(buffer) : null;
+        UUID filterId = filter == null ? null : buffer.readUUID();
         ExchangeRuleView value = new ExchangeRuleView(
                 id,
                 revision,
@@ -166,6 +174,7 @@ public record ExchangeRuleView(
                 types,
                 mode,
                 filter,
+                filterId,
                 buffer.readVarInt(),
                 buffer.readLong(),
                 buffer.readInt(),

@@ -38,6 +38,57 @@ public final class Ae2InterfaceGameTests {
         Lifecycle.run(helper);
     }
 
+    @GameTest(template = "bootstrap", timeoutTicks = 200)
+    public static void controllerDriveInterfacePathRespectsTheDriveFrontFace(GameTestHelper h) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("ae2")) {
+            h.succeed();
+            return;
+        }
+        DrivePath.run(h);
+    }
+
+    private static final class DrivePath {
+        static void run(GameTestHelper h) {
+            var controller = new net.minecraft.core.BlockPos(1, 2, 1);
+            var drive = new net.minecraft.core.BlockPos(2, 2, 1);
+            var endpoint = new net.minecraft.core.BlockPos(3, 2, 1);
+            var registry = net.minecraft.core.registries.BuiltInRegistries.BLOCK;
+            h.setBlock(controller, registry.get(net.minecraft.resources.ResourceLocation.parse("ae2:controller")));
+            h.setBlock(drive, registry.get(net.minecraft.resources.ResourceLocation.parse("ae2:drive")));
+            appeng.api.orientation.BlockOrientation.NORTH_UP.setOn(h.getLevel(), h.absolutePos(drive));
+            h.setBlock(
+                    new net.minecraft.core.BlockPos(1, 2, 2),
+                    registry.get(net.minecraft.resources.ResourceLocation.parse("ae2:creative_energy_cell")));
+            h.setBlock(endpoint, Ae2InterfaceContent.BLOCK.get());
+            var runtime = Ae2InterfaceRuntime.find(h.getLevel().getServer());
+            var owner = java.util.UUID.randomUUID();
+            var network = Lifecycle.network(runtime, owner, "Drive path");
+            var actor = new net.neoforged.neoforge.common.util.FakePlayer(
+                    h.getLevel(), new com.mojang.authlib.GameProfile(owner, "DrivePath"));
+            actor.setPos(net.minecraft.world.phys.Vec3.atCenterOf(h.absolutePos(endpoint)));
+            h.runAfterDelay(5, () -> runtime.bind(actor, Lifecycle.entity(h, endpoint), network, "Interface"));
+            h.runAfterDelay(45, () -> {
+                var host = runtime.host(Lifecycle.entity(h, endpoint));
+                h.assertTrue(
+                        host.node.isActive() && host.node.getNode().getUsedChannels() == 1,
+                        "Interface failed to obtain its channel through a non-front drive face");
+                appeng.api.orientation.BlockOrientation.EAST_UP.setOn(h.getLevel(), h.absolutePos(drive));
+            });
+            h.runAfterDelay(85, () -> {
+                h.assertTrue(
+                        !runtime.host(Lifecycle.entity(h, endpoint)).node.isActive(),
+                        "Drive front incorrectly carried an AE channel");
+                appeng.api.orientation.BlockOrientation.NORTH_UP.setOn(h.getLevel(), h.absolutePos(drive));
+            });
+            h.runAfterDelay(125, () -> {
+                h.assertTrue(
+                        runtime.host(Lifecycle.entity(h, endpoint)).node.isActive(),
+                        "Restoring the drive side did not reconnect the interface");
+                h.succeed();
+            });
+        }
+    }
+
     private static final class Lifecycle {
         static void run(GameTestHelper h) {
             var runtime = Ae2InterfaceRuntime.find(h.getLevel().getServer());

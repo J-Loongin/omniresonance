@@ -537,7 +537,7 @@ public final class NetworkRuntimeRegistry {
     }
 
     private static RuntimeComponents createRuntime(MinecraftServer server, ServerConfig.State initial) {
-        var adapters = io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory.nativeDefaults();
+        var adapters = io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create();
         SavedNetworkRepository repository = new SavedNetworkRepository(
                 server.overworld().getDataStorage(),
                 server.getWorldPath(LevelResource.ROOT).resolve("data"),

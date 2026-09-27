@@ -47,9 +47,12 @@ final class TerminalFilterView {
     private record PendingRule(
             UUID network, UUID preset, io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match intent) {}
 
+    private final java.util.List<net.minecraft.resources.ResourceLocation> resourceTypes =
+            io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create().types();
     private @Nullable PendingRule pendingRule;
     private int pasteNoticeTicks;
     private @Nullable TerminalClickButton selectorButton;
+    private @Nullable TerminalEditBox ruleField;
 
     @Nullable
     RecipeGhostTarget.Target ghostTarget() {
@@ -74,7 +77,9 @@ final class TerminalFilterView {
         if (!target.equals(ghostTarget())) return false;
         var intent = new io.github.loongin.omniresonance.filter.ResourceRuleIntent.Match(
                 ingredient.type(),
-                io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.exact(ingredient.id()),
+                ingredient.type().equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY)
+                        ? io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.wholeType()
+                        : io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.exact(ingredient.id()),
                 io.github.loongin.omniresonance.filter.ComponentCondition.Mode.ID_ONLY,
                 java.util.Set.of(),
                 null);
@@ -395,6 +400,14 @@ final class TerminalFilterView {
                         instanceof io.github.loongin.omniresonance.filter.ResourceFilterRule.Exact exact) {
                     resourceDraft.selector = 0;
                     resourceDraft.text = exact.resourceId().toString();
+                } else if (match.selector()
+                        instanceof io.github.loongin.omniresonance.filter.ResourceFilterRule.Glob glob) {
+                    resourceDraft.selector = 2;
+                    resourceDraft.text = glob.glob().pattern();
+                } else if (match.selector()
+                        instanceof io.github.loongin.omniresonance.filter.ResourceFilterRule.WholeType) {
+                    resourceDraft.selector = 3;
+                    resourceDraft.text = "";
                 }
                 resourceDraft.dirty = true;
             }
@@ -905,8 +918,11 @@ final class TerminalFilterView {
                 !pending,
                 true);
         java.util.List<String> keys = draft.keys();
-        java.util.List<Integer> fields = new java.util.ArrayList<>(java.util.List.of(0, 1, 2));
-        if (draft.selector != 4 && !draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY)) {
+        java.util.List<Integer> fields = new java.util.ArrayList<>(java.util.List.of(0, 1));
+        if (draft.selector != 3) fields.add(2);
+        if (draft.selector != 4
+                && (draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM)
+                        || draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.FLUID))) {
             fields.add(3);
             if (draft.mode != io.github.loongin.omniresonance.filter.ComponentCondition.Mode.ID_ONLY) {
                 fields.add(6);
@@ -919,6 +935,7 @@ final class TerminalFilterView {
         detailScroll = details.scroll();
         maxDetailScroll = Math.max(0, count - details.visibleRows());
         selectorButton = null;
+        ruleField = null;
         EditBox firstField = null;
         boolean deleting = state instanceof NetworkTerminalState.PresetEdit edit
                 && edit.operation() == PresetEditOperation.REMOVE_RULE;
@@ -949,21 +966,29 @@ final class TerminalFilterView {
             } else if (index == 2) {
                 TerminalEditBox field =
                         new TerminalEditBox(font, bounds.x(), bounds.y(), bounds.width(), 20, label("selector_value"));
+                ruleField = field;
                 field.setMaxLength(65535);
+                field.setTooltip(net.minecraft.client.gui.components.Tooltip.create(label("typed_rule_help")));
                 field.setValue(draft.text);
                 field.setResponder(value -> {
                     sampleFailure = "";
                     if (draft.pasteTag(TerminalTagClipboard.recent(), value)) {
                         sampleSlot = -1;
                         changed.accept(draft.text);
-                        rebuild.run();
+                        rebuildRuleInput(field, draft.text.length());
                         return;
                     }
+                    var previousType = draft.type;
+                    int cursor = field.getCursorPosition();
                     draft.editText(value);
                     if (selectorButton != null) selectorButton.setMessage(label("selector_" + draft.selector));
                     changed.accept(value);
+                    if (!previousType.equals(draft.type)) {
+                        sampleSlot = -1;
+                        rebuildRuleInput(field, cursor);
+                    }
                 });
-                field.active = !pending && !deleting && draft.selector < 3;
+                field.active = !pending && !deleting;
                 add.accept(field);
                 if (firstField == null) firstField = field;
             } else {
@@ -983,17 +1008,14 @@ final class TerminalFilterView {
                 net.minecraft.client.gui.components.Button.OnPress press = ignored -> {
                     sampleFailure = "";
                     if (index == 0) {
-                        draft.type = draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM)
-                                ? io.github.loongin.omniresonance.transfer.ResourceTypes.FLUID
-                                : draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.FLUID)
-                                        ? io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY
-                                        : io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM;
+                        var types = resourceTypes;
+                        draft.changeType(types.get((types.indexOf(draft.type) + 1) % types.size()));
                         sampleSlot = -1;
                         draft.source = io.github.loongin.omniresonance.filter.ComponentCondition.idOnly();
                         draft.sampleToken = null;
                         draft.mode = io.github.loongin.omniresonance.filter.ComponentCondition.Mode.ID_ONLY;
                         draft.selected.clear();
-                        if (draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY))
+                        if (io.github.loongin.omniresonance.bootstrap.ResourceAdapters.scalarType(draft.type))
                             draft.selector = 3;
                     } else if (index == 1) {
                         draft.select((draft.selector + 1) % 5);
@@ -1019,7 +1041,15 @@ final class TerminalFilterView {
                                         ? "✓ "
                                         : "")
                                 + keys.get(index - 7))
-                        : label(key);
+                        : index == 0
+                                        && !draft.type.equals(
+                                                io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM)
+                                        && !draft.type.equals(
+                                                io.github.loongin.omniresonance.transfer.ResourceTypes.FLUID)
+                                        && !draft.type.equals(
+                                                io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY)
+                                ? NodeResourcePolicyView.typeName(draft.type)
+                                : label(key);
                 TerminalClickButton widget = index == 6
                         ? new TerminalSampleSlot(bounds, message, press, () -> {
                             var player = net.minecraft.client.Minecraft.getInstance().player;
@@ -1038,7 +1068,7 @@ final class TerminalFilterView {
                                 || draft.mode
                                         == io.github.loongin.omniresonance.filter.ComponentCondition.Mode.SELECTED)
                         && (index != 1 && index != 3 && index != 6
-                                || !draft.type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY));
+                                || !io.github.loongin.omniresonance.bootstrap.ResourceAdapters.scalarType(draft.type));
                 if (index >= 7)
                     widget.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
                             Component.literal(componentPreview(draft.available().get(keys.get(index - 7))))));
@@ -1046,6 +1076,17 @@ final class TerminalFilterView {
             }
         }
         return firstField;
+    }
+
+    private void rebuildRuleInput(TerminalEditBox previous, int cursor) {
+        boolean focused = previous.isFocused();
+        rebuild.run();
+        if (focused && ruleField != null) {
+            var minecraft = net.minecraft.client.Minecraft.getInstance();
+            if (minecraft != null && minecraft.screen != null) minecraft.screen.setFocused(ruleField);
+            ruleField.setFocused(true);
+            ruleField.setCursorPosition(Math.min(cursor, ruleField.getValue().length()));
+        }
     }
 
     private void buildReferencePicker(

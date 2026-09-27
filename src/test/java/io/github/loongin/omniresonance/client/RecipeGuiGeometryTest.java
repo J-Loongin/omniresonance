@@ -8,6 +8,13 @@ import org.junit.jupiter.api.Test;
 
 class RecipeGuiGeometryTest {
     @Test
+    void energyIsARealRecipeIngredientIdentityRatherThanAnItemId() {
+        var ingredient = RecipeGhostTarget.ingredient(io.github.loongin.omniresonance.transfer.EnergyVariant.INSTANCE);
+        assertEquals(io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY, ingredient.type());
+        assertEquals(io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY, ingredient.id());
+    }
+
+    @Test
     void uninitializedScreensNeverReadLayoutOrPublishZeroSizedProperties() {
         for (int[] size : new int[][] {{0, 0}, {640, 0}, {0, 360}})
             assertNull(RecipeGhostTarget.geometry(size[0], size[1], () -> {

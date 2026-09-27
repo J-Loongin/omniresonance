@@ -33,5 +33,10 @@ class DomainFluidDisplayTest {
         assertEquals("1B", DomainFluidDisplay.compact(1000));
         assertEquals("0.25B", DomainFluidDisplay.compact(250));
         assertEquals("1KB", DomainFluidDisplay.compact(1000000));
+        assertEquals("1", DomainFluidDisplay.slotQuantity(1000));
+        assertEquals("0.25", DomainFluidDisplay.slotQuantity(250));
+        assertEquals("999", DomainFluidDisplay.slotQuantity(999999));
+        assertEquals("0.001", DomainFluidDisplay.slotQuantity(1));
+        assertEquals("1K", DomainFluidDisplay.slotQuantity(1000000));
     }
 }

@@ -38,7 +38,7 @@ import net.minecraft.resources.ResourceLocation;
 public final class ResourcePolicyEditCodec {
     public static final int MAX_BYTES = ManagementTransferPool.MAXIMUM_OBJECT_BYTES;
     private static final int MAGIC = 0x4f525045;
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int OUTPUT = 1;
     private static final int CUSTOM = 2;
     private static final int PRESET = 4;
@@ -119,7 +119,7 @@ public final class ResourcePolicyEditCodec {
                     if (values.batchSize() != 1) rowFlags |= BATCH;
                 }
                 output.writeByte(rowFlags);
-                if ((rowFlags & RATE) != 0) output.writeInt(value.rate());
+                if ((rowFlags & RATE) != 0) output.writeLong(value.rate());
                 if ((rowFlags & BATCH) != 0)
                     output.writeLong(((ResourceTransferPolicy.InputOverride) value).batchSize());
             }
@@ -172,7 +172,7 @@ public final class ResourcePolicyEditCodec {
                 int rowFlags = input.readUnsignedByte();
                 if ((rowFlags & ~(isInput ? RATE | EXACT | BATCH : RATE)) != 0)
                     throw new IllegalArgumentException("Unknown or mixed direction row flags");
-                int rate = (rowFlags & RATE) != 0 ? input.readInt() : ResourceTransferPolicy.DEFAULT_RATE;
+                long rate = (rowFlags & RATE) != 0 ? input.readLong() : ResourceTransferPolicy.DEFAULT_RATE;
                 ResourceTransferPolicy.TypeOverride value = isInput
                         ? new ResourceTransferPolicy.InputOverride(
                                 rate,

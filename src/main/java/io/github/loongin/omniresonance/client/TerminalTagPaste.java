@@ -13,6 +13,17 @@ final class TerminalTagPaste {
     private TerminalTagPaste() {}
 
     static @Nullable ResourceRuleIntent.Match read(@Nullable TerminalTagClipboard.Candidate candidate, String text) {
+        var copied = copiedTag(candidate, text);
+        if (copied != null) return copied;
+        try {
+            return TerminalRuleInput.explicit(text);
+        } catch (IllegalArgumentException invalid) {
+            return null;
+        }
+    }
+
+    static @Nullable ResourceRuleIntent.Match copiedTag(
+            @Nullable TerminalTagClipboard.Candidate candidate, String text) {
         if (candidate == null
                 || candidate.tags().size() != 1
                 || !candidate.text().equals(text)

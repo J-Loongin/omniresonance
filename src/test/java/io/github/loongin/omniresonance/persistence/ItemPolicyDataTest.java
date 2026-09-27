@@ -50,7 +50,7 @@ class ItemPolicyDataTest {
 
     @Test
     void writesResourceWorkingFaceSchemaEight() {
-        assertEquals(10, data().save(new CompoundTag(), RegistryAccess.EMPTY).getInt("schema_version"));
+        assertEquals(11, data().save(new CompoundTag(), RegistryAccess.EMPTY).getInt("schema_version"));
     }
 
     @Test

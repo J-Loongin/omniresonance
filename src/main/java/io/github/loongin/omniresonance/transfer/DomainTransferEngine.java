@@ -192,24 +192,24 @@ public final class DomainTransferEngine {
             return amount == 0 ? Optional.empty() : Optional.of(new ResourceAmount(variant, amount));
         }
 
-        public int extract(
-                int view, ResourceVariant requestedVariant, int amount, boolean simulate, TransferWorkBudget budget) {
+        public long extract(
+                int view, ResourceVariant requestedVariant, long amount, boolean simulate, TransferWorkBudget budget) {
             validate(view, requestedVariant, amount);
             if (depositMode || withdrawal != null) throw new IllegalStateException("Invalid domain extraction phase");
-            int accepted = (int) Math.min(amount, ledger.amount(variant.key()));
+            long accepted = Math.min(amount, ledger.amount(variant.key()));
             if (simulate || accepted == 0) return accepted;
             withdrawal = ledger.withdraw(variant.key(), accepted).orElseThrow();
             return accepted;
         }
 
-        public int insert(
-                int view, ResourceVariant requestedVariant, int amount, boolean simulate, TransferWorkBudget budget) {
+        public long insert(
+                int view, ResourceVariant requestedVariant, long amount, boolean simulate, TransferWorkBudget budget) {
             if (!depositMode && !simulate && withdrawal != null) {
                 if (closed || !ledger.isAvailable()) throw new IllegalStateException("Unavailable original domain");
                 validateRequest(view, requestedVariant, amount);
             } else validate(view, requestedVariant, amount);
             if (depositMode) {
-                if (simulate) return (int) Math.min(amount, ledger.insertCapacity(variant.key(), variantLimit));
+                if (simulate) return Math.min(amount, ledger.insertCapacity(variant.key(), variantLimit));
                 if (deposit == null) throw new IllegalStateException("Missing domain insertion reservation");
                 deposit.commit(amount);
                 return amount;
@@ -219,7 +219,7 @@ public final class DomainTransferEngine {
             return amount;
         }
 
-        public boolean reserveInsertion(ResourceVariant requestedVariant, int amount) {
+        public boolean reserveInsertion(ResourceVariant requestedVariant, long amount) {
             validate(0, requestedVariant, amount);
             if (!depositMode || deposit != null) throw new IllegalStateException("Invalid domain reservation phase");
             deposit = ledger.reserveDeposit(variant.key(), amount, variantLimit).orElse(null);
@@ -230,12 +230,12 @@ public final class DomainTransferEngine {
             if (deposit != null) deposit.close();
         }
 
-        private void validate(int view, ResourceVariant requestedVariant, int amount) {
+        private void validate(int view, ResourceVariant requestedVariant, long amount) {
             if (!valid()) throw new IllegalStateException("Stale domain resource access");
             validateRequest(view, requestedVariant, amount);
         }
 
-        private void validateRequest(int view, ResourceVariant requestedVariant, int amount) {
+        private void validateRequest(int view, ResourceVariant requestedVariant, long amount) {
             if (view != 0 || amount <= 0 || !variant.key().equals(requestedVariant.key()))
                 throw new IllegalArgumentException("Invalid domain resource request");
         }

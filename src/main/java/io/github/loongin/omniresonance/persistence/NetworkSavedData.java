@@ -254,7 +254,7 @@ public final class NetworkSavedData extends SavedData {
                     case 5 -> ManagedDataNbt.NETWORK_V5_FIELDS;
                     case 6, 7, 8 -> ManagedDataNbt.NETWORK_V8_FIELDS;
                     case 9 -> ManagedDataNbt.NETWORK_V9_FIELDS;
-                    case ManagedDataNbt.NETWORK_SCHEMA_VERSION -> ManagedDataNbt.NETWORK_FIELDS;
+                    case 10, ManagedDataNbt.NETWORK_SCHEMA_VERSION -> ManagedDataNbt.NETWORK_FIELDS;
                     default -> throw new IllegalArgumentException("Unsupported network schema");
                 };
         ManagedDataNbt.validateSchemaAndFields(tag, schemaVersion, fields);

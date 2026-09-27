@@ -22,12 +22,19 @@ final class DomainFluidDisplay {
                 + "B";
     }
 
+    static String slotQuantity(long milliBuckets) {
+        return milliBuckets < 1000 ? exactBuckets(milliBuckets) : DomainInventoryView.compact(milliBuckets / 1000);
+    }
+
     static void render(GuiGraphics graphics, FluidStack stack, int x, int y) {
         var extension = IClientFluidTypeExtensions.of(stack.getFluid());
+        render(graphics, extension.getStillTexture(stack), extension.getTintColor(stack), x, y);
+    }
+
+    static void render(GuiGraphics graphics, net.minecraft.resources.ResourceLocation texture, int tint, int x, int y) {
         var sprite = Minecraft.getInstance()
                 .getTextureAtlas(InventoryMenu.BLOCK_ATLAS)
-                .apply(extension.getStillTexture(stack));
-        int tint = extension.getTintColor(stack);
+                .apply(texture);
         graphics.blit(
                 x,
                 y,

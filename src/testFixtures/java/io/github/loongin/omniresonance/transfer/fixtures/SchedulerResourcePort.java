@@ -22,8 +22,8 @@ public final class SchedulerResourcePort implements ResourcePort, ResourceTransf
     public final List<ResourceLocation> moves;
     public int discoveries, calls;
     public boolean throwInsert, throwExtract, throwReturn, rejectInsert;
-    public int insertionLimit = Integer.MAX_VALUE;
-    public int viewCapacity = Integer.MAX_VALUE;
+    public long insertionLimit = Integer.MAX_VALUE;
+    public long viewCapacity = Integer.MAX_VALUE;
     public Runnable onSimulate = () -> {};
     public Runnable onCall = () -> {};
 
@@ -68,9 +68,9 @@ public final class SchedulerResourcePort implements ResourcePort, ResourceTransf
                 : Optional.of(new ResourceAmount(variantAt.apply(view), amounts[view]));
     }
 
-    public int extract(int view, ResourceVariant v, int amount, boolean simulate, TransferWorkBudget b) {
+    public long extract(int view, ResourceVariant v, long amount, boolean simulate, TransferWorkBudget b) {
         count(b);
-        int n = v.key().equals(variantAt.apply(view).key()) ? (int) Math.min(amounts[view], amount) : 0;
+        long n = v.key().equals(variantAt.apply(view).key()) ? Math.min(amounts[view], amount) : 0;
         if (!simulate) {
             amounts[view] -= n;
             if (throwExtract) throw new IllegalStateException("unknown extraction");
@@ -78,13 +78,13 @@ public final class SchedulerResourcePort implements ResourcePort, ResourceTransf
         return n;
     }
 
-    public int insert(int view, ResourceVariant v, int amount, boolean simulate, TransferWorkBudget b) {
+    public long insert(int view, ResourceVariant v, long amount, boolean simulate, TransferWorkBudget b) {
         if (amount <= 0) throw new IllegalArgumentException("Request must be positive");
         count(b);
         if (simulate) onSimulate.run();
-        int n = (int) Math.min(
+        long n = Math.min(
                 Math.min(amount, Math.max(0, viewCapacity - amounts[view])),
-                simulate ? Integer.MAX_VALUE : insertionLimit);
+                simulate ? Long.MAX_VALUE : insertionLimit);
         if (!simulate) {
             if (rejectInsert) return 0;
             amounts[view] += n;

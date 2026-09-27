@@ -51,7 +51,7 @@ class AuditSavedDataTest {
         assertFalse(loadedO.isDirty());
         assertEquals(originalN, n);
         assertEquals(originalO, o);
-        assertEquals(10, loadedN.save(new CompoundTag(), RegistryAccess.EMPTY).getInt("schema_version"));
+        assertEquals(11, loadedN.save(new CompoundTag(), RegistryAccess.EMPTY).getInt("schema_version"));
         assertEquals(4, loadedO.save(new CompoundTag(), RegistryAccess.EMPTY).getInt("schema_version"));
         n.putInt("schema_version", 10);
         n.put("audit_entries", StringTag.valueOf("invalid"));

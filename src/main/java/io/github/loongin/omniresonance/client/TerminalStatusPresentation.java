@@ -63,7 +63,15 @@ final class TerminalStatusPresentation {
         return List.copyOf(rows);
     }
 
+    private static final io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory ADAPTERS =
+            io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create();
+
     static List<Row> details(NetworkDiagnosticsSnapshot s) {
+        return details(s, type -> ADAPTERS.find(type).map(d -> d.unit()).orElse(""));
+    }
+
+    static List<Row> details(
+            NetworkDiagnosticsSnapshot s, java.util.function.Function<ResourceLocation, String> units) {
         var rows = new ArrayList<Row>();
         section(rows, "network_section");
         add(rows, "nodes", number(s.nodes()), "counts_help");
@@ -103,11 +111,12 @@ final class TerminalStatusPresentation {
             if (transferredTypes(s) == 0)
                 rows.add(new Row(text("recent"), text("none"), Tone.MUTED, text("recent_help"), false));
             for (var movement : t.moved()) {
-                String amount = movement.type().equals(ResourceTypes.FLUID)
+                String unit = units.apply(movement.type());
+                String amount = unit.equals("mB")
                         ? BigDecimal.valueOf(movement.amount(), 3)
                                         .stripTrailingZeros()
                                         .toPlainString() + " B"
-                        : movement.amount() + (movement.type().equals(ResourceTypes.ENERGY) ? " FE" : "");
+                        : movement.amount() + (unit.isEmpty() || unit.equals("item") ? "" : " " + unit);
                 Component name = type(movement.type());
                 rows.add(new Row(
                         name,
@@ -287,7 +296,7 @@ final class TerminalStatusPresentation {
         if (id.equals(ResourceTypes.ITEM)) return Component.translatable("omniresonance.resource_policy.type.item");
         if (id.equals(ResourceTypes.FLUID)) return Component.translatable("omniresonance.resource_policy.type.fluid");
         if (id.equals(ResourceTypes.ENERGY)) return Component.translatable("omniresonance.resource_policy.type.energy");
-        return Component.literal(id.toString());
+        return NodeResourcePolicyView.typeName(id);
     }
 
     private static Component quota(int used, int limit) {

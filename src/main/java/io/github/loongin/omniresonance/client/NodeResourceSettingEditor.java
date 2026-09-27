@@ -40,12 +40,12 @@ final class NodeResourceSettingEditor {
     void apply() {
         if (unavailable || owner.direction != direction || !owner.hasSetting(id))
             throw new IllegalStateException("Resource setting is unavailable or changed");
-        int parsedRate = Integer.parseInt(rate.trim());
+        long parsedRate = Long.parseLong(rate.trim());
         ResourceTransferPolicy.TypeOverride value = direction == TransferDirection.INPUT
                 ? new ResourceTransferPolicy.InputOverride(parsedRate, mode, Long.parseLong(batch.trim()))
                 : new ResourceTransferPolicy.OutputOverride(parsedRate);
         var target = owner.type(id);
-        target.rate = Integer.toString(value.rate());
+        target.rate = Long.toString(value.rate());
         if (value instanceof ResourceTransferPolicy.InputOverride input) {
             target.batchMode = input.batchMode();
             target.batch = Long.toString(input.batchSize());

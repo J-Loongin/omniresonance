@@ -118,7 +118,7 @@ class ResourcePolicyEditCodecTest {
     static DataOutputStream header(ByteArrayOutputStream bytes, int flags) throws Exception {
         var data = new DataOutputStream(bytes);
         data.writeInt(0x4f525045);
-        data.writeByte(1);
+        data.writeByte(2);
         data.writeByte(flags);
         data.writeInt(1);
         data.writeByte(0);
@@ -257,7 +257,7 @@ class ResourcePolicyEditCodecTest {
         var bytes = new ByteArrayOutputStream();
         var data = new DataOutputStream(bytes);
         data.writeInt(0x4f525045);
-        data.writeByte(1);
+        data.writeByte(2);
         data.writeByte(128);
         var failure =
                 assertThrows(IllegalArgumentException.class, () -> ResourcePolicyEditCodec.decode(bytes.toByteArray()));
@@ -311,7 +311,7 @@ class ResourcePolicyEditCodecTest {
                 tag, io.github.loongin.omniresonance.network.TransferDirection.INPUT, registered);
         ResourcePolicyEdit seed = ResourcePolicyEdit.fromStored(stored);
         byte[] encoded = ResourcePolicyEditCodec.encode(seed);
-        assertEquals(scopeOnly ? 16648011 : 14790314, encoded.length);
+        assertEquals(scopeOnly ? 16648011 : 14790314 + 4 * values.size(), encoded.length);
         assertEquals(encoded.length, ResourcePolicyEditCodec.encodedSize(seed));
         assertTrue(encoded.length <= raw(tag).length);
         assertEquals(seed, ResourcePolicyEditCodec.decode(encoded));
@@ -340,7 +340,7 @@ class ResourcePolicyEditCodecTest {
                     io.github.loongin.omniresonance.transfer.ResourceScope.customSet(
                             List.of(ResourceTypes.ITEM, missingId)))) {
                 for (var mode : ResourceTransferPolicy.BatchMode.values()) {
-                    for (int rate : new int[] {1, Integer.MAX_VALUE}) {
+                    for (long rate : new long[] {1, Integer.MAX_VALUE, Long.MAX_VALUE}) {
                         ResourceTransferPolicy policy = direction
                                         == io.github.loongin.omniresonance.network.TransferDirection.INPUT
                                 ? new ResourceTransferPolicy.Input(

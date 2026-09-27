@@ -28,7 +28,7 @@ class M2PersistenceTest {
         CompoundTag before = tag.copy();
         NetworkSavedData loaded = NetworkSavedData.load(NETWORK, tag);
         CompoundTag saved = loaded.save(new CompoundTag(), RegistryAccess.EMPTY);
-        assertEquals(10, saved.getInt("schema_version"));
+        assertEquals(11, saved.getInt("schema_version"));
         assertEquals(new ListTag(), saved.get("recovery"));
         assertFalse(loaded.isDirty());
         assertEquals(before, tag);
