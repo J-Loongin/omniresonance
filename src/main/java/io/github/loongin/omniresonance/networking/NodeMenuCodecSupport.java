@@ -61,6 +61,7 @@ final class NodeMenuCodecSupport {
         return switch (buffer.readUnsignedByte()) {
             case 0 -> NodeForm.BLOCK;
             case 1 -> NodeForm.PANEL;
+            case 2 -> NodeForm.AE_INTERFACE;
             default -> throw new DecoderException("Unknown node-menu form");
         };
     }
@@ -70,6 +71,7 @@ final class NodeMenuCodecSupport {
                 switch (form) {
                     case BLOCK -> 0;
                     case PANEL -> 1;
+                    case AE_INTERFACE -> 2;
                 });
     }
 

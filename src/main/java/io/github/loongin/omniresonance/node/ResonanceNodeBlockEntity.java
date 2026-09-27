@@ -26,6 +26,26 @@ import org.slf4j.LoggerFactory;
 public final class ResonanceNodeBlockEntity extends BlockEntity {
     private static final Logger LOGGER = LoggerFactory.getLogger(ResonanceNodeBlockEntity.class);
     private @Nullable NodePersistentState persistentState;
+    private CompoundTag interfaceData = new CompoundTag();
+    private @Nullable UUID interfaceOwner;
+    /** Immutable cached authorization identity; no NBT copying or world access. */
+    public @Nullable UUID interfaceOwner() {
+        requireServerThreadIfAttached();
+        return interfaceOwner;
+    }
+    /** Server-thread detached optional integration data; contains no domain inventory. */
+    public CompoundTag interfaceData() {
+        requireServerThreadIfAttached();
+        return interfaceData.copy();
+    }
+
+    public void interfaceData(CompoundTag value) {
+        requireServerThreadIfAttached();
+        interfaceData = value.copy();
+        interfaceOwner = interfaceData.hasUUID("domain_owner") ? interfaceData.getUUID("domain_owner") : null;
+        setChanged();
+    }
+
     private boolean decoded;
     private boolean unavailableLogged;
 
@@ -103,11 +123,14 @@ public final class ResonanceNodeBlockEntity extends BlockEntity {
         decoded = true;
         unavailableLogged = false;
         persistentState = NodePersistentState.decode(tag);
+        interfaceData = tag.getCompound("interface_data").copy();
+        interfaceOwner = interfaceData.hasUUID("domain_owner") ? interfaceData.getUUID("domain_owner") : null;
     }
 
     @Override
     protected void saveAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.saveAdditional(tag, registries);
+        if (!interfaceData.isEmpty()) tag.put("interface_data", interfaceData.copy());
         if (persistentState != null) {
             persistentState.writeOwnedFields(tag);
         }

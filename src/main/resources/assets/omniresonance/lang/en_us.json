@@ -833,5 +833,19 @@
   "omniresonance.status.exchange.stage.target_storage": "Receiving storage",
   "omniresonance.status.exchange.stage.decode": "Resource decoding",
   "omniresonance.status.exchange.stage.transfer": "Ledger commit",
-  "omniresonance.status.exchange.stage.validation": "Runtime eligibility"
+  "omniresonance.status.exchange.stage.validation": "Runtime eligibility",
+  "omniresonance.ae_interface.title": "AE Resonance Interface",
+  "omniresonance.ae_interface.search": "Search networks",
+  "omniresonance.ae_interface.default_name": "AE Resonance Interface",
+  "omniresonance.ae_interface.authorization": "Selecting a network authorizes the connected AE grid to read and write its domain",
+  "omniresonance.ae_interface.unbind": "Unbind",
+  "omniresonance.ae_interface.unbound": "Unbound",
+  "omniresonance.ae_interface.preparing": "Preparing domain storage",
+  "omniresonance.ae_interface.offline": "Waiting for AE power or a channel",
+  "omniresonance.ae_interface.ready": "Connected to AE · Uses one channel",
+  "omniresonance.ae_interface.conflict": "Duplicate connection: all interfaces for this domain are disabled",
+  "omniresonance.ae_interface.unavailable": "Interface unavailable; check its binding or replace it",
+  "omniresonance.ae_interface.loading": "Loading networks",
+  "omniresonance.ae_interface.denied": "Only the resonance network owner can configure this interface",
+  "block.omniresonance.ae_domain_interface": "AE Resonance Interface"
 }

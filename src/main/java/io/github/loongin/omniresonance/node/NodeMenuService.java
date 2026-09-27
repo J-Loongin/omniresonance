@@ -141,6 +141,8 @@ public final class NodeMenuService implements AutoCloseable {
     public boolean open(ServerPlayer player, BlockPos position) {
         requirePlayer(player);
         Objects.requireNonNull(position, "position");
+        if (player.serverLevel().getBlockState(position).getBlock() instanceof AbstractResonanceNodeBlock block
+                && block.form() == NodeForm.AE_INTERFACE) return false;
         UUID sessionId = Objects.requireNonNull(sessionIds().get(), "sessionId");
         Initial initial = initial(player, position);
         SimpleMenuProvider provider = new SimpleMenuProvider(

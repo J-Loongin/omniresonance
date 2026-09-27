@@ -1,0 +1,22 @@
+{
+  "neoforge:conditions": [
+    {
+      "type": "neoforge:mod_loaded",
+      "modid": "ae2"
+    }
+  ],
+  "type": "minecraft:crafting_shapeless",
+  "category": "redstone",
+  "ingredients": [
+    {
+      "item": "omniresonance:resonance_transfer_node"
+    },
+    {
+      "item": "ae2:interface"
+    }
+  ],
+  "result": {
+    "count": 1,
+    "id": "omniresonance:ae_domain_interface"
+  }
+}

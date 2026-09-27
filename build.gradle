@@ -48,6 +48,7 @@ sourceSets {
 
 configurations {
     gameTestImplementation.extendsFrom implementation, testFixturesImplementation
+    gameTestCompileOnly.extendsFrom compileOnly
     gameTestRuntimeOnly.extendsFrom runtimeOnly, testFixturesRuntimeOnly
 }
 
@@ -199,6 +200,7 @@ tasks.named('runGameTestServer') {
 }
 
 dependencies {
+    compileOnly('org.appliedenergistics:appliedenergistics2:19.2.17:api') { transitive = false }
     compileOnly('maven.modrinth:justenoughcharacters:XPKoy65e') { transitive = false }
     compileOnly('maven.modrinth:jei:XCIrIXIV') { transitive = false }
     compileOnly('maven.modrinth:emi:5sIPA1To') { transitive = false }
@@ -295,7 +297,7 @@ def verifyModJar = tasks.register('verifyModJar') {
                 it.contains('/fixtures/') || it.contains('GameTests') ||
                         it.contains('TestStructureGenerator') || it.endsWith('.snbt') ||
                         it.startsWith('.cache/') || it.startsWith('me/towdium/') ||
-                        it.startsWith('mezz/jei/') || it.startsWith('dev/emi/') ||
+                        it.startsWith('appeng/') || it.startsWith('guideme/') || it.startsWith('mezz/jei/') || it.startsWith('dev/emi/') ||
                         (it.endsWith('.jar') &&
                                 (it.toLowerCase(Locale.ROOT).contains('pinin') ||
                                         it.toLowerCase(Locale.ROOT).contains('jecharacters')))

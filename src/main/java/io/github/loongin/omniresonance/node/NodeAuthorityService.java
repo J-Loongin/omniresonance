@@ -189,6 +189,21 @@ public final class NodeAuthorityService implements AutoCloseable {
         }
     }
 
+    /** Unlinks an exact loaded interface after caller authorization; inventory stays in its network. */
+    public void unlinkInterface(ResonanceNodeBlockEntity entity, long expectedRevision) {
+        requireServerThread();
+        var physical = requirePhysicalNode(entity);
+        var state = entity.state().orElseThrow();
+        var entry = directory().byId(state.nodeId()).entry().orElseThrow();
+        if (physical.form() != NodeForm.AE_INTERFACE
+                || entry.record().form() != NodeForm.AE_INTERFACE
+                || !entry.record().position().equals(physical.position())
+                || entry.record().revision() != expectedRevision)
+            throw new IllegalStateException("Interface binding changed");
+        removeEntry(entry);
+        entity.replaceWithFreshBlank(state.nodeId(), UUID.randomUUID());
+    }
+
     /** Deletes only a unique exact network/UUID/position authority record; conflicts and mismatches are retained. */
     public void removePhysical(UUID nodeId, GlobalPos position) {
         requireServerThread();

@@ -49,7 +49,7 @@ public final class MaterialRegistrationGameTests {
                 .map(ItemStack::getItem)
                 .map(BuiltInRegistries.ITEM::getKey)
                 .toList();
-        List<ResourceLocation> expected = List.of(
+        List<ResourceLocation> expected = new java.util.ArrayList<>(List.of(
                         "omni_dust",
                         "resonance_substrate",
                         "resonance_core",
@@ -57,7 +57,9 @@ public final class MaterialRegistrationGameTests {
                         "resonance_transfer_panel")
                 .stream()
                 .map(path -> ResourceLocation.fromNamespaceAndPath(OmniResonanceMod.MOD_ID, path))
-                .toList();
+                .toList());
+        if (net.neoforged.fml.ModList.get().isLoaded("ae2"))
+            expected.add(ResourceLocation.fromNamespaceAndPath(OmniResonanceMod.MOD_ID, "ae_domain_interface"));
         helper.assertTrue(actual.equals(expected), "Creative tab contents or ordering changed: " + actual);
         helper.succeed();
     }

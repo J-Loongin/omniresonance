@@ -204,6 +204,18 @@ public final class DomainLedger {
         }
     }
 
+    /**
+     * Visits every positive variant once on the owner thread in O(variants). Callbacks must not mutate this ledger;
+     * callers stage external output until the revision and their authorization are rechecked. No authority or
+     * cursor is changed; callback failures propagate without pretending the partially visited view is complete.
+     */
+    public void enumerate(java.util.function.Consumer<Cursor> visitor) {
+        checkThread();
+        Objects.requireNonNull(visitor);
+        for (var entry : entries.values())
+            if (entry.amount > 0) visitor.accept(new Cursor(entry.sequence, entry.key, entry.amount));
+    }
+
     /** O(1) nonmutating quantity query on the owner thread; reservations are never exposed as inventory. */
     public long amount(ResourceVariantKey key) {
         checkThread();

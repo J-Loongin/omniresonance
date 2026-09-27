@@ -21,6 +21,14 @@ final class TerminalAuxiliaryWork implements Consumer<TransferWorkBudget> {
         groups = List.of(inventory, sample, exchange);
     }
 
+    TerminalAuxiliaryWork(
+            Consumer<TransferWorkBudget> sample,
+            Consumer<TransferWorkBudget> inventory,
+            Consumer<TransferWorkBudget> exchange,
+            Consumer<TransferWorkBudget> interfaces) {
+        groups = List.of(inventory, sample, exchange, interfaces);
+    }
+
     @Override
     public void accept(TransferWorkBudget budget) {
         int first = phase / 2;

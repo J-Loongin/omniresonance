@@ -169,6 +169,21 @@ public final class NetworkDirectory {
         return owned == null ? List.of() : List.copyOf(owned);
     }
 
+    /** Owner-only bounded directory window; reads no world state and does not copy the complete owner catalog. */
+    public AccessPage pageOwned(UUID owner, @Nullable UUID anchor, int limit) {
+        requireOwningThread();
+        if (limit < 1 || limit > 128) throw new IllegalArgumentException("Invalid owner page size");
+        var owned = byOwner.get(Objects.requireNonNull(owner));
+        var start = anchor == null ? null : networks.get(anchor);
+        if (anchor != null && (owned == null || start == null || !owned.contains(start)))
+            throw new IllegalArgumentException("Unknown owner anchor");
+        if (owned == null) return new AccessPage(List.of(), 0, false, false);
+        var iterator = (start == null ? owned : owned.tailSet(start, false)).iterator();
+        var rows = new ArrayList<NetworkMetadata>();
+        while (rows.size() < limit && iterator.hasNext()) rows.add(iterator.next());
+        return new AccessPage(rows, owned.size(), anchor != null, iterator.hasNext());
+    }
+
     /** Returns only explicit owner/administrator access in creation order, without mutation or OP inference. */
     public List<NetworkMetadata> accessibleTo(UUID player) {
         requireOwningThread();

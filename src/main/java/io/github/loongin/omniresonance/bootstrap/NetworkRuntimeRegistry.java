@@ -603,8 +603,14 @@ public final class NetworkRuntimeRegistry {
         ExchangeRuntime exchanges = new ExchangeRuntime(
                 server, repository, networks, topology::settingsSnapshot, directTransfers::openFilterTag);
         terminal.installExchange(exchanges.terminalController(), repository);
-        directTransfers.installSampleWork(
-                new TerminalAuxiliaryWork(filters::sampleStep, terminal::inventoryStep, exchanges::step));
+        if (net.neoforged.fml.ModList.get().isLoaded("ae2")) {
+            var interfaces = new io.github.loongin.omniresonance.compat.ae2.Ae2InterfaceRuntime(
+                    server, repository, networks, nodes, authority, nodeManagement, topology::settingsSnapshot);
+            directTransfers.installSampleWork(new TerminalAuxiliaryWork(
+                    filters::sampleStep, terminal::inventoryStep, exchanges::step, interfaces::step));
+        } else
+            directTransfers.installSampleWork(
+                    new TerminalAuxiliaryWork(filters::sampleStep, terminal::inventoryStep, exchanges::step));
         var chunkLoading = new io.github.loongin.omniresonance.chunkloading.ChunkLoadingRuntime(
                 server, repository, networks, nodes, authority, initial);
         var diagnostics = new io.github.loongin.omniresonance.network.NetworkDiagnosticsService(

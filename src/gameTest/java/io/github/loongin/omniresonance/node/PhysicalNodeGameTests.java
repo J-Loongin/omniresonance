@@ -39,7 +39,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 public final class PhysicalNodeGameTests {
     private PhysicalNodeGameTests() {}
 
-    /** Verifies stable registry identities and one BE type valid for exactly both physical forms. */
+    /** Verifies stable registry identities and one BE type valid for the base forms and installed optional forms. */
     @GameTest(template = "bootstrap")
     public static void physicalFormsUseStableRegistriesAndSharedEntityType(GameTestHelper helper) {
         ResourceLocation nodeId = id("resonance_transfer_node");
@@ -56,12 +56,12 @@ public final class PhysicalNodeGameTests {
         helper.assertTrue(
                 BuiltInRegistries.ITEM.getOptional(panelId).orElse(null) == ModItems.RESONANCE_TRANSFER_PANEL.get(),
                 "Panel item registry identity changed");
+        var expectedBlocks = new java.util.HashSet<net.minecraft.world.level.block.Block>(
+                Set.of(ModBlocks.RESONANCE_TRANSFER_NODE.get(), ModBlocks.RESONANCE_TRANSFER_PANEL.get()));
+        if (net.neoforged.fml.ModList.get().isLoaded("ae2"))
+            expectedBlocks.add(BuiltInRegistries.BLOCK.get(id("ae_domain_interface")));
         helper.assertTrue(
-                ModBlockEntities.RESONANCE_TRANSFER_NODE
-                        .get()
-                        .getValidBlocks()
-                        .equals(Set.of(
-                                ModBlocks.RESONANCE_TRANSFER_NODE.get(), ModBlocks.RESONANCE_TRANSFER_PANEL.get())),
+                ModBlockEntities.RESONANCE_TRANSFER_NODE.get().getValidBlocks().equals(expectedBlocks),
                 "Shared block-entity valid-block set changed");
         helper.succeed();
     }

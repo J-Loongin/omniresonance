@@ -33,6 +33,22 @@ public final class ModBlocks {
                     .isViewBlocking((state, level, pos) -> false)
                     .isRedstoneConductor((state, level, pos) -> false));
 
+    private static final java.util.List<java.util.function.Supplier<? extends net.minecraft.world.level.block.Block>>
+            OPTIONAL_NODES = new java.util.ArrayList<>();
+    /** FML construction-time optional content contribution, before block entity types are resolved. */
+    public static void addNodeBlock(
+            java.util.function.Supplier<? extends net.minecraft.world.level.block.Block> block) {
+        OPTIONAL_NODES.add(java.util.Objects.requireNonNull(block));
+    }
+
+    public static net.minecraft.world.level.block.Block[] nodeBlocks() {
+        var blocks = new java.util.ArrayList<net.minecraft.world.level.block.Block>();
+        blocks.add(RESONANCE_TRANSFER_NODE.get());
+        blocks.add(RESONANCE_TRANSFER_PANEL.get());
+        for (var supplier : OPTIONAL_NODES) blocks.add(supplier.get());
+        return blocks.toArray(net.minecraft.world.level.block.Block[]::new);
+    }
+
     private ModBlocks() {}
 
     /** Installs the owned block registry without accessing a live world. */

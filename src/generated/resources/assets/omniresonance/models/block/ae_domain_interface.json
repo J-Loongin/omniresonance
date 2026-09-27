@@ -1,0 +1,149 @@
+{
+  "elements": [
+    {
+      "faces": {
+        "down": {
+          "texture": "#case"
+        },
+        "east": {
+          "texture": "#case"
+        },
+        "north": {
+          "texture": "#case"
+        },
+        "south": {
+          "texture": "#case"
+        },
+        "up": {
+          "texture": "#case"
+        },
+        "west": {
+          "texture": "#case"
+        }
+      },
+      "from": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "to": [
+        16.0,
+        16.0,
+        16.0
+      ]
+    },
+    {
+      "faces": {
+        "north": {
+          "texture": "#port",
+          "tintindex": 0
+        }
+      },
+      "from": [
+        5.0,
+        5.0,
+        -0.01
+      ],
+      "to": [
+        11.0,
+        11.0,
+        -0.01
+      ]
+    },
+    {
+      "faces": {
+        "south": {
+          "texture": "#port",
+          "tintindex": 0
+        }
+      },
+      "from": [
+        5.0,
+        5.0,
+        16.01
+      ],
+      "to": [
+        11.0,
+        11.0,
+        16.01
+      ]
+    },
+    {
+      "faces": {
+        "west": {
+          "texture": "#port",
+          "tintindex": 0
+        }
+      },
+      "from": [
+        -0.01,
+        5.0,
+        5.0
+      ],
+      "to": [
+        -0.01,
+        11.0,
+        11.0
+      ]
+    },
+    {
+      "faces": {
+        "east": {
+          "texture": "#port",
+          "tintindex": 0
+        }
+      },
+      "from": [
+        16.01,
+        5.0,
+        5.0
+      ],
+      "to": [
+        16.01,
+        11.0,
+        11.0
+      ]
+    },
+    {
+      "faces": {
+        "down": {
+          "texture": "#port",
+          "tintindex": 0
+        }
+      },
+      "from": [
+        5.0,
+        -0.01,
+        5.0
+      ],
+      "to": [
+        11.0,
+        -0.01,
+        11.0
+      ]
+    },
+    {
+      "faces": {
+        "up": {
+          "texture": "#port",
+          "tintindex": 0
+        }
+      },
+      "from": [
+        5.0,
+        16.01,
+        5.0
+      ],
+      "to": [
+        11.0,
+        16.01,
+        11.0
+      ]
+    }
+  ],
+  "textures": {
+    "case": "omniresonance:block/resonance_transfer_node_top",
+    "particle": "omniresonance:block/resonance_transfer_node_top",
+    "port": "minecraft:block/white_concrete"
+  }
+}

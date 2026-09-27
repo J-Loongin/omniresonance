@@ -833,5 +833,19 @@
   "omniresonance.status.exchange.stage.target_storage": "接收方存储",
   "omniresonance.status.exchange.stage.decode": "资源解码",
   "omniresonance.status.exchange.stage.transfer": "账本提交",
-  "omniresonance.status.exchange.stage.validation": "运行资格检查"
+  "omniresonance.status.exchange.stage.validation": "运行资格检查",
+  "omniresonance.ae_interface.title": "AE 共鸣接口",
+  "omniresonance.ae_interface.search": "搜索网络",
+  "omniresonance.ae_interface.default_name": "AE 共鸣接口",
+  "omniresonance.ae_interface.authorization": "选择网络即授权连接的 AE 网络读写共鸣域",
+  "omniresonance.ae_interface.unbind": "解除绑定",
+  "omniresonance.ae_interface.unbound": "未绑定",
+  "omniresonance.ae_interface.preparing": "正在准备共鸣域",
+  "omniresonance.ae_interface.offline": "等待 AE 供电或可用频道",
+  "omniresonance.ae_interface.ready": "已接入 AE 网络 · 占用 1 个频道",
+  "omniresonance.ae_interface.conflict": "重复接入：此共鸣域的相关接口已全部停用",
+  "omniresonance.ae_interface.unavailable": "接口不可用，请检查绑定或重新放置",
+  "omniresonance.ae_interface.loading": "正在读取网络",
+  "omniresonance.ae_interface.denied": "只有共鸣网络所有者可以配置此接口",
+  "block.omniresonance.ae_domain_interface": "AE 共鸣接口"
 }

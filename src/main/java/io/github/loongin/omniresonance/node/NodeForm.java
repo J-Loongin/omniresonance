@@ -6,7 +6,8 @@ import java.util.Objects;
 /** Stable physical node forms used by world blocks and later authoritative records. */
 public enum NodeForm {
     BLOCK("block"),
-    PANEL("panel");
+    PANEL("panel"),
+    AE_INTERFACE("ae_interface");
 
     private final String serializedName;
 
@@ -24,6 +25,7 @@ public enum NodeForm {
         return switch (Objects.requireNonNull(value, "value")) {
             case "block" -> BLOCK;
             case "panel" -> PANEL;
+            case "ae_interface" -> AE_INTERFACE;
             default -> throw new IllegalArgumentException("Unknown node form");
         };
     }

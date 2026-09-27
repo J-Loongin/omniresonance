@@ -14,6 +14,7 @@ public final class OmniDataGenerators {
     /** Registers providers for the current mod data run without accessing a live world. */
     public static void gatherData(GatherDataEvent event) {
         event.createProvider(OmniRecipeProvider::new);
+        event.createProvider(OmniAeInterfaceData::new);
         event.createProvider(output -> new OmniItemModelProvider(output, event.getExistingFileHelper()));
         event.createProvider(output -> new OmniBlockStateProvider(output, event.getExistingFileHelper()));
         event.createProvider(output -> new OmniSoundDefinitionsProvider(output, event.getExistingFileHelper()));

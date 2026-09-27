@@ -53,6 +53,26 @@ public final class NetworkTerminalClient {
     /** Installs client events and the immutable protocol response consumer without accessing a world. */
     public NetworkTerminalClient(IEventBus modBus) {
         nodeClient = new ResonanceNodeClient(modBus);
+        if (net.neoforged.fml.ModList.get().isLoaded("ae2")) {
+            io.github.loongin.omniresonance.compat.ae2.Ae2InterfacePayloads.receiver(frame -> {
+                var mc = Minecraft.getInstance();
+                if (frame.initial()) {
+                    if (mc.screen == null && mc.player != null)
+                        mc.setScreen(new Ae2InterfaceScreen(frame, this::isTerminalKey));
+                    else
+                        net.neoforged.neoforge.network.PacketDistributor.sendToServer(
+                                new io.github.loongin.omniresonance.compat.ae2.Ae2InterfacePayloads.Request(
+                                        frame.session(), 1, 3, null, ""));
+                } else if (mc.screen instanceof Ae2InterfaceScreen screen) screen.accept(frame);
+            });
+            modBus.addListener(
+                    (net.neoforged.neoforge.client.event.RegisterColorHandlersEvent.Block event) -> event.register(
+                            (state, level, pos, index) -> state.getValue(
+                                            io.github.loongin.omniresonance.compat.ae2.Ae2InterfaceBlock.CONFLICT)
+                                    ? 0xFFFF3333
+                                    : 0xFF66E5F1,
+                            io.github.loongin.omniresonance.compat.ae2.Ae2InterfaceContent.BLOCK.get()));
+        }
         new NodeHighlightClient();
         modBus.addListener(this::registerKeyMappings);
         NeoForge.EVENT_BUS.addListener(this::onClientTick);

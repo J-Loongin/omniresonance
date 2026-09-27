@@ -23,10 +23,7 @@ public final class ModBlockEntities {
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<ResonanceNodeBlockEntity>>
             RESONANCE_TRANSFER_NODE = BLOCK_ENTITIES.register(
                     "resonance_transfer_node",
-                    () -> BlockEntityType.Builder.of(
-                                    ResonanceNodeBlockEntity::new,
-                                    ModBlocks.RESONANCE_TRANSFER_NODE.get(),
-                                    ModBlocks.RESONANCE_TRANSFER_PANEL.get())
+                    () -> BlockEntityType.Builder.of(ResonanceNodeBlockEntity::new, ModBlocks.nodeBlocks())
                             .build(null));
 
     private ModBlockEntities() {}

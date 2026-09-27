@@ -12,6 +12,13 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 
 /** Owns the mod's stable creative-mode categories without mutating vanilla tabs. */
 public final class ModCreativeTabs {
+    private static final java.util.List<java.util.function.Supplier<? extends net.minecraft.world.level.ItemLike>>
+            OPTIONAL_ITEMS = new java.util.ArrayList<>();
+
+    public static void addOptionalItem(java.util.function.Supplier<? extends net.minecraft.world.level.ItemLike> item) {
+        OPTIONAL_ITEMS.add(java.util.Objects.requireNonNull(item));
+    }
+
     public static final DeferredRegister<CreativeModeTab> TABS =
             DeferredRegister.create(Registries.CREATIVE_MODE_TAB, OmniResonanceMod.MOD_ID);
     public static final DeferredHolder<CreativeModeTab, CreativeModeTab> MAIN = TABS.register(
@@ -25,6 +32,7 @@ public final class ModCreativeTabs {
                         output.accept(ModItems.RESONANCE_CORE.get());
                         output.accept(ModItems.RESONANCE_TRANSFER_NODE.get());
                         output.accept(ModItems.RESONANCE_TRANSFER_PANEL.get());
+                        for (var item : OPTIONAL_ITEMS) output.accept(item.get());
                     })
                     .build());
 

@@ -47,6 +47,8 @@ public final class OmniResonanceMod {
         ModBlockEntities.register(modBus);
         ModMenus.register(modBus);
         ModSounds.register(modBus);
+        if (net.neoforged.fml.ModList.get().isLoaded("ae2"))
+            io.github.loongin.omniresonance.compat.ae2.Ae2Compat.register(modBus);
         modBus.addListener(OmniDataGenerators::gatherData);
         serverConfig = new ServerConfig();
         container.registerConfig(ModConfig.Type.SERVER, serverConfig.spec(), "omniresonance-server.toml");
