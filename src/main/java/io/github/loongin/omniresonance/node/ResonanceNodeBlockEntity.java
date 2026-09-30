@@ -46,6 +46,55 @@ public final class ResonanceNodeBlockEntity extends BlockEntity {
         setChanged();
     }
 
+    /** Server-owned, nonpersistent connection metadata: six faces each for items, fluids, FE and chemicals. */
+    private long pipeConnectionMask;
+
+    private Object externalIdentity = new Object();
+
+    private @Nullable io.github.loongin.omniresonance.transfer.ExternalDomainInput externalInput;
+
+    /** Publishes derived face/type availability on the server thread, never inventory or saved authority.
+     * Changed availability invalidates native capability caches; zero disconnects all marker interfaces. */
+    public void publishPipeConnections(long mask) {
+        requireServerThreadIfAttached();
+        if (mask < 0 || mask > 0xFFFFFFFFFL) throw new IllegalArgumentException("Invalid connection mask");
+        if (pipeConnectionMask == mask) return;
+        pipeConnectionMask = mask;
+        if (level instanceof ServerLevel serverLevel) serverLevel.invalidateCapabilities(worldPosition);
+    }
+
+    /** Server-thread pure availability lookup for native/optional registration. Indices 0..5 denote item,
+     * fluid, FE, chemical, Source and soul; owns no resources and performs no simulation, mutation or discovery. */
+    public boolean pipeConnection(@Nullable net.minecraft.core.Direction side, int type) {
+        requireServerThreadIfAttached();
+        if (type < 0 || type > 5) throw new IllegalArgumentException("Unknown connection type");
+        return level instanceof ServerLevel
+                && !isRemoved()
+                && side != null
+                && state().map(s -> s.linkState() == NodeLinkState.LINKED).orElse(false)
+                && (pipeConnectionMask & (1L << (type * 6 + side.get3DDataValue()))) != 0;
+    }
+
+    /** Opaque lifecycle token for delivery leases; pure server-thread read, no inventory ownership. */
+    public Object externalIdentity() {
+        requireServerThreadIfAttached();
+        return externalIdentity;
+    }
+
+    /** Server-thread lease publication; revokes cached native handlers through normal invalidation. No storage access. */
+    public void publishExternalInput(@Nullable io.github.loongin.omniresonance.transfer.ExternalDomainInput input) {
+        requireServerThreadIfAttached();
+        if (externalInput == input) return;
+        externalInput = input;
+        if (level instanceof ServerLevel serverLevel) serverLevel.invalidateCapabilities(worldPosition);
+    }
+
+    /** Borrowed server-thread lease; stale calls must still pass the lease's authority checks. */
+    public @Nullable io.github.loongin.omniresonance.transfer.ExternalDomainInput externalInput() {
+        requireServerThreadIfAttached();
+        return !isRemoved() ? externalInput : null;
+    }
+
     private boolean decoded;
     private boolean unavailableLogged;
 
@@ -108,6 +157,9 @@ public final class ResonanceNodeBlockEntity extends BlockEntity {
         if (!current.nodeId().equals(expectedId)) {
             throw new IllegalStateException("Node identity changed before authority replacement");
         }
+        externalIdentity = new Object();
+        publishExternalInput(null);
+        publishPipeConnections(0);
         persistentState = NodePersistentState.fresh(replacementId);
         setChanged();
     }
@@ -120,6 +172,9 @@ public final class ResonanceNodeBlockEntity extends BlockEntity {
     @Override
     protected void loadAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.loadAdditional(tag, registries);
+        externalIdentity = new Object();
+        publishExternalInput(null);
+        publishPipeConnections(0);
         decoded = true;
         unavailableLogged = false;
         persistentState = NodePersistentState.decode(tag);
@@ -134,6 +189,14 @@ public final class ResonanceNodeBlockEntity extends BlockEntity {
         if (persistentState != null) {
             persistentState.writeOwnedFields(tag);
         }
+    }
+
+    @Override
+    public void setRemoved() {
+        externalIdentity = new Object();
+        publishExternalInput(null);
+        publishPipeConnections(0);
+        super.setRemoved();
     }
 
     @Override

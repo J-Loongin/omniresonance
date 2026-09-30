@@ -257,7 +257,9 @@ final class DomainInventoryView implements AutoCloseable {
             return true;
         }
         quickMove.clear();
-        if (!geometry().inGrid(x, y) || !writable) return false;
+        if (!geometry().inGrid(x, y)) return false;
+        // Consume read-only grid clicks so the screen cannot focus a resource button.
+        if (!writable) return true;
         for (var widget : cells)
             if (widget instanceof Cell cell && cell.isMouseOver(x, y)) {
                 if (!cell.info.opaque) click(cell.id, -1, button);

@@ -18,7 +18,7 @@ import net.minecraft.resources.ResourceLocation;
 
 /** Lossless registered chemical identity; quantities and runtime attributes never become a second inventory. */
 public final class ChemicalVariant implements RegisteredResourceVariant {
-    public static final ResourceLocation TYPE = ResourceLocation.parse("mekanism:chemical");
+    public static final ResourceLocation TYPE = io.github.loongin.omniresonance.transfer.ResourceTypes.CHEMICAL;
     private final ResourceVariantKey key;
     private final Holder<Chemical> chemical;
     private final ResourceLocation id;

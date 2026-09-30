@@ -34,6 +34,7 @@ import org.jetbrains.annotations.Nullable;
  * with their last reference; a missing owner is retried only on activation or an explicit owner-library event, never per candidate.
  */
 public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirectScheduler.Environment {
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(ResourceDirectRuntime.class);
     private final MinecraftServer server;
     private final SavedNetworkRepository repository;
     private final NetworkNodeDirectory nodes;
@@ -55,6 +56,11 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             DomainInputScheduler.Configuration configuration,
             io.github.loongin.omniresonance.network.DomainNodeConfiguration binding,
             @Nullable ResourceFilterCache.Key filter) {}
+
+    /** One lease per configured domain input; lifecycle follows publications, never external requests. */
+    private final java.util.LinkedHashMap<UUID, Inbound> inbound = new java.util.LinkedHashMap<>();
+
+    private @Nullable java.util.Iterator<Inbound> inboundPreparation;
 
     private record SourceKey(net.minecraft.core.GlobalPos position, net.minecraft.resources.ResourceLocation type) {}
 
@@ -319,6 +325,7 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         while (!changedNodes.isEmpty()) {
             UUID id = changedNodes.iterator().next();
             changedNodes.remove(id);
+            updatePipeConnections(id);
             scheduler.wakeNode(id, currentTick);
             var domain = domainInputs.configuration(id);
             if (domain != null) scheduler.scheduleDomain(id, domain.networkId(), domainInputs.wake(id, currentTick));
@@ -335,9 +342,15 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
                 (long) (cfg.slowCallThresholdMillis() * 1_000_000),
                 clock);
         samplesFirst = !samplesFirst;
-        if (samplesFirst) sampleWork.accept(budget);
+        if (samplesFirst) {
+            sampleWork.accept(budget);
+            prepareInbound(budget);
+        }
         scheduler.tick(currentTick, settings, budget);
-        if (!samplesFirst) sampleWork.accept(budget);
+        if (!samplesFirst) {
+            prepareInbound(budget);
+            sampleWork.accept(budget);
+        }
         completedTelemetryTick = currentTick;
     }
 
@@ -453,11 +466,24 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         requireThread();
         if (closed) return;
         closed = true;
+        for (UUID id : trackedNodes.keySet()) {
+            var entry = nodes.byId(id).entry().orElse(null);
+            if (entry != null && endpoints.physical(entry.record())) {
+                var node = entry.record();
+                var level = server.getLevel(node.position().dimension());
+                var entity = (io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity)
+                        level.getBlockEntity(node.position().pos());
+                entity.publishExternalInput(null);
+                entity.publishPipeConnections(0);
+            }
+        }
         repository.onRuntimeChanged(null);
         endpoints.close();
         scheduler.close();
         domainInputs.close();
         domainOutputs.close();
+        inbound.clear();
+        inboundPreparation = null;
         outputPublications.clear();
         domainPublications.clear();
         domainNetworks.clear();
@@ -665,6 +691,8 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         List<OutputPublication> retiredOutputs = new ArrayList<>();
         if (oldDomains != null)
             for (UUID id : oldDomains) {
+                inbound.remove(id);
+                inboundPreparation = null;
                 var old = domainPublications.remove(id);
                 if (old != null) retiredDomains.add(old);
                 var oldOutput = outputPublications.remove(id);
@@ -798,6 +826,150 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             publications.put(publication.configuration().key(), publication);
         if (!nextPublications.isEmpty()) networkPublications.put(networkId, nextPublications);
         scheduler.replaceNetwork(networkId, configs, currentTick);
+        for (NetworkNodeRecord node : data.nodes()) updatePipeConnections(node.nodeId());
+    }
+
+    private void updatePipeConnections(UUID id) {
+        var entry = nodes.byId(id).entry().orElse(null);
+        if (entry == null || !endpoints.physical(entry.record())) return;
+        var node = entry.record();
+        var level = server.getLevel(node.position().dimension());
+        var entity = (io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity)
+                level.getBlockEntity(node.position().pos());
+        var data = repository.findLoadedNetwork(entry.networkId()).orElse(null);
+        long mask = 0;
+        if (data != null && node.enabled()) {
+            if (node.mode() == NodeMode.DOMAIN) {
+                var binding = data.domainConfiguration(id).orElse(null);
+                if (binding != null && binding.configured())
+                    mask = connectionMask(
+                            binding.policy().scope(), binding.workingFaces().effectiveMask(node.facing()));
+            } else if (node.mode() == NodeMode.DIRECT) {
+                for (var binding : data.directBindings(id))
+                    mask |= connectionMask(
+                            binding.policy().scope(), binding.workingFaces().effectiveMask(node.facing()));
+            }
+        }
+        var publication = domainPublications.get(id);
+        Inbound input = null;
+        if (publication != null && node.enabled() && mask != 0) {
+            input = inbound.get(id);
+            if (input == null || input.publication != publication || input.identity != entity.externalIdentity()) {
+                input = new Inbound(publication, entity.externalIdentity());
+                inbound.put(id, input);
+                inboundPreparation = null;
+            }
+        } else if (inbound.remove(id) != null) inboundPreparation = null;
+        entity.publishExternalInput(input);
+        entity.publishPipeConnections(mask);
+    }
+
+    private static long connectionMask(ResourceScope scope, int faces) {
+        long mask = scope.includes(ResourceTypes.ITEM) ? faces : 0;
+        if (scope.includes(ResourceTypes.FLUID)) mask |= faces << 6;
+        if (scope.includes(ResourceTypes.ENERGY)) mask |= faces << 12;
+        if (scope.includes(ResourceTypes.CHEMICAL)) mask |= faces << 18;
+        if (scope.includes(ResourceTypes.SOURCE)) mask |= (long) faces << 24;
+        if (scope.includes(ResourceTypes.SOUL)) mask |= (long) faces << 30;
+        return mask;
+    }
+
+    private void prepareInbound(TransferWorkBudget budget) {
+        if (inboundPreparation == null || !inboundPreparation.hasNext())
+            inboundPreparation = inbound.values().iterator();
+        int remaining = 64;
+        while (remaining-- > 0 && budget.canStart() && inboundPreparation.hasNext()) {
+            var input = inboundPreparation.next();
+            var c = input.publication.configuration();
+            if (!domainActive(c)) continue;
+            repository.domainStorage(c.networkId()).activate();
+            if (budget.canStart() && input.publication.filter() != null)
+                filters.advance(input.publication.filter(), 256);
+        }
+    }
+
+    private final class Inbound implements ExternalDomainInput {
+        private final DomainPublication publication;
+        private final Object identity;
+        private boolean failed;
+
+        Inbound(DomainPublication publication, Object identity) {
+            this.publication = publication;
+            this.identity = identity;
+        }
+
+        public boolean available(Direction side, net.minecraft.resources.ResourceLocation type) {
+            requireThread();
+            var c = publication.configuration();
+            if (closed
+                    || failed
+                    || side == null
+                    || !c.policy().scope().includes(type)
+                    || !adapters.types().contains(type)) return false;
+            var domain = repository.inspectDomain(c.networkId());
+            var ledger = domain == null ? null : domain.activatedLedger().orElse(null);
+            if (ledger == null || !ledger.isAvailable() || !domainActive(c)) return false;
+            var node = repository
+                    .findLoadedNetwork(c.networkId())
+                    .orElseThrow()
+                    .findNode(c.nodeId())
+                    .orElseThrow();
+            var entity = server.getLevel(node.position().dimension())
+                    .getBlockEntity(node.position().pos());
+            if (!(entity instanceof io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity physical)
+                    || physical.externalIdentity() != identity) return false;
+            return (c.faces().effectiveMask(node.facing()) & (1 << side.get3DDataValue())) != 0;
+        }
+
+        public long insert(Direction side, ResourceVariant variant, long maximum, boolean simulate) {
+            requireThread();
+            if (maximum <= 0 || !available(side, variant.key().typeId())) return 0;
+            var c = publication.configuration();
+            Object token = publication.filter() == null ? unfilteredToken : filters.token(publication.filter());
+            if (publication.filter() != null) {
+                var compiled = filters.view(publication.filter()).compiled();
+                if (compiled == null) return 0;
+                Boolean allowed =
+                        compiled.fastDecision(variant.key().typeId(), c.policy().filterMode());
+                if (allowed == null) {
+                    long start = clock.getAsLong();
+                    long duration = (long) (currentSettings.scheduler().cpuBudgetMillisPerTick() * 1_000_000);
+                    var evaluation = compiled.evaluate(
+                            compiled.prepareCandidate(variant), c.policy().filterMode());
+                    int remaining = 4096;
+                    while (!evaluation.done() && remaining > 0 && clock.getAsLong() - start < duration) {
+                        remaining -= evaluation.step(Math.min(256, remaining));
+                    }
+                    if (!evaluation.done() || clock.getAsLong() - start >= duration) return 0;
+                    allowed = evaluation.allowed();
+                }
+                if (!allowed) return 0;
+            }
+            if (!available(side, variant.key().typeId())
+                    || publication.filter() != null
+                            && !java.util.Objects.equals(token, filters.token(publication.filter()))) return 0;
+            var ledger =
+                    repository.inspectDomain(c.networkId()).activatedLedger().orElseThrow();
+            long limit = currentSettings.storageVariantLimitPerNetwork();
+            long accepted = Math.min(maximum, ledger.insertCapacity(variant.key(), limit));
+            if (simulate || accepted == 0) return accepted;
+            try (var deposit =
+                    ledger.reserveDeposit(variant.key(), accepted, limit).orElse(null)) {
+                if (deposit == null
+                        || !available(side, variant.key().typeId())
+                        || publication.filter() != null
+                                && !java.util.Objects.equals(token, filters.token(publication.filter()))) return 0;
+                deposit.commit(accepted);
+            } catch (RuntimeException failure) {
+                failed = true;
+                ledger.invalidate();
+                LOGGER.error("External domain insertion failed; outcome must not be inferred or retried", failure);
+                throw failure;
+            }
+            telemetry.moved(
+                    c.networkId(), variant.key().typeId(), server.overworld().getGameTime(), accepted);
+            return accepted;
+        }
     }
 
     private void retire(@Nullable List<Publication> previous) {

@@ -521,6 +521,7 @@
   "omniresonance.nodes.enable": "启用节点",
   "omniresonance.nodes.rename": "重命名节点",
   "omniresonance.nodes.highlight": "高亮",
+  "omniresonance.nodes.teleport_operator": "传送需要 OP 权限",
   "omniresonance.nodes.teleport": "传送",
   "omniresonance.nodes.input": "输入",
   "omniresonance.nodes.output": "输出",

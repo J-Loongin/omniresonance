@@ -91,6 +91,11 @@ class DomainInventoryViewTest {
             assertEquals(18, cell.getWidth());
             assertEquals(18, cell.getHeight());
             assertTrue(cell.isMouseOver(cell.getRight() - 1, cell.getBottom() - 1));
+            assertTrue(
+                    view.mouseClicked(cell.getX() + 1, cell.getY() + 1, 0),
+                    "Read-only clicks must be consumed before the screen focuses a resource button");
+            assertTrue(view.mouseClicked(cell.getX() + 1, cell.getY() + 1, 1));
+            assertFalse(cell.isFocused());
         }
     }
 

@@ -13,6 +13,9 @@ public final class ResourceTypes {
     public static final ResourceLocation FLUID = ResourceLocation.withDefaultNamespace("fluid");
     public static final ResourceLocation ENERGY = ResourceLocation.fromNamespaceAndPath("neoforge", "energy");
 
+    /** Stable optional chemical identity; never loads Mekanism. */
+    public static final ResourceLocation CHEMICAL = ResourceLocation.parse("mekanism:chemical");
+
     /** Stable optional identity; its presence does not register or load Ars Nouveau. */
     public static final ResourceLocation SOURCE = ResourceLocation.parse("ars_nouveau:source");
 

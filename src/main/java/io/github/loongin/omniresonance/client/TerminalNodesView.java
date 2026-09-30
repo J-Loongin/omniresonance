@@ -52,6 +52,7 @@ final class TerminalNodesView {
     private @Nullable UUID selected, expanded;
     private Modal modal = Modal.NONE;
     private @Nullable TerminalEditBox nameField;
+    private @Nullable AbstractWidget teleportButton;
     private @Nullable TerminalSearchBox searchField;
     private final NodeSearchCatalog catalog = new NodeSearchCatalog();
     private boolean catalogFailed;
@@ -276,6 +277,7 @@ final class TerminalNodesView {
     }
 
     private void rebuild() {
+        teleportButton = null;
         if (add == null) return;
         chunkStatusBounds = new TerminalLayout.Rect(0, 0, 0, 0);
         boolean focus = searchField != null && searchField.isFocused();
@@ -552,7 +554,7 @@ final class TerminalNodesView {
                     i == 0
                             ? (node.enabled() ? "disable" : "enable")
                             : i == 1 ? "rename" : i == 2 ? "highlight" : "teleport");
-            button(bounds, label, !pending, () -> {
+            button(bounds, label, !pending && (action != 3 || canTeleport()), () -> {
                 if (action == 0) {
                     if (node.enabled()) {
                         modal = Modal.DISABLE;
@@ -561,6 +563,10 @@ final class TerminalNodesView {
                 } else if (action == 1) request(NodeDirectoryRequest.Action.BEGIN_RENAME, null);
                 else navigation.accept(node.nodeId(), action == 3);
             });
+            if (action == 3) {
+                teleportButton = widgets.getLast();
+                updateTeleportButton();
+            }
         }
         int full = basicHeight();
         if (node.enabled() && !page.cards().isEmpty()) {
@@ -752,8 +758,21 @@ final class TerminalNodesView {
         return ClientSearchState.handleToggleKey(key, modifiers, searchEligible(), this::toggleSearch);
     }
 
+    private void updateTeleportButton() {
+        if (teleportButton == null) return;
+        boolean allowed = canTeleport();
+        teleportButton.active = !pending && allowed;
+        teleportButton.setTooltip(Tooltip.create(TerminalText.body(text(allowed ? "teleport" : "teleport_operator"))));
+    }
+
+    private static boolean canTeleport() {
+        var client = net.minecraft.client.Minecraft.getInstance();
+        return client != null && client.player != null && client.player.hasPermissions(2);
+    }
+
     void tick() {
         ticks++;
+        if (teleportButton != null && teleportButton.active != (!pending && canTeleport())) updateTeleportButton();
         if (modal == Modal.NONE && search.due(ticks)) {
             query = search.draft();
             search.handled();

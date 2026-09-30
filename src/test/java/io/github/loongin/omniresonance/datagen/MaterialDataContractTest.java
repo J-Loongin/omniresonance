@@ -32,10 +32,26 @@ final class MaterialDataContractTest {
                         .map(JsonElement::getAsString)
                         .toList());
         assertEquals(9, dust.getAsJsonObject("result").get("count").getAsInt());
-        assertEquals(9, substrate.getAsJsonArray("ingredients").size());
+        assertMaterialPattern(substrate, List.of("DED", "ECE", "DED"), "minecraft:redstone", "minecraft:obsidian");
         assertEquals(4, substrate.getAsJsonObject("result").get("count").getAsInt());
-        assertEquals(9, core.getAsJsonArray("ingredients").size());
+        assertMaterialPattern(core, List.of("EDE", "DCD", "EDE"), "minecraft:amethyst_shard", "minecraft:nether_star");
         assertEquals(64, core.getAsJsonObject("result").get("count").getAsInt());
+    }
+
+    private static void assertMaterialPattern(JsonObject recipe, List<String> pattern, String edge, String center) {
+        assertEquals("minecraft:crafting_shaped", recipe.get("type").getAsString());
+        assertEquals(
+                pattern,
+                recipe.getAsJsonArray("pattern").asList().stream()
+                        .map(JsonElement::getAsString)
+                        .toList());
+        var keys = recipe.getAsJsonObject("key");
+        assertEquals(3, keys.size());
+        assertEquals(
+                "omniresonance:omni_dust", keys.getAsJsonObject("D").get("item").getAsString());
+        assertEquals(edge, keys.getAsJsonObject("E").get("item").getAsString());
+        assertEquals(center, keys.getAsJsonObject("C").get("item").getAsString());
+        assertFalse(recipe.has("ingredients"));
     }
 
     @Test

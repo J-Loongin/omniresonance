@@ -1,34 +1,21 @@
 {
-  "type": "minecraft:crafting_shapeless",
+  "type": "minecraft:crafting_shaped",
   "category": "misc",
-  "ingredients": [
-    {
-      "item": "omniresonance:omni_dust"
-    },
-    {
-      "item": "omniresonance:omni_dust"
-    },
-    {
-      "item": "omniresonance:omni_dust"
-    },
-    {
-      "item": "omniresonance:omni_dust"
-    },
-    {
-      "item": "minecraft:redstone"
-    },
-    {
-      "item": "minecraft:redstone"
-    },
-    {
-      "item": "minecraft:redstone"
-    },
-    {
-      "item": "minecraft:redstone"
-    },
-    {
+  "key": {
+    "C": {
       "item": "minecraft:obsidian"
+    },
+    "D": {
+      "item": "omniresonance:omni_dust"
+    },
+    "E": {
+      "item": "minecraft:redstone"
     }
+  },
+  "pattern": [
+    "DED",
+    "ECE",
+    "DED"
   ],
   "result": {
     "count": 4,

@@ -521,6 +521,7 @@
   "omniresonance.nodes.enable": "Enable node",
   "omniresonance.nodes.rename": "Rename node",
   "omniresonance.nodes.highlight": "Highlight",
+  "omniresonance.nodes.teleport_operator": "Teleport requires operator permission",
   "omniresonance.nodes.teleport": "Teleport",
   "omniresonance.nodes.input": "Input",
   "omniresonance.nodes.output": "Output",

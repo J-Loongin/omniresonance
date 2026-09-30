@@ -51,6 +51,12 @@ public final class OmniResonanceMod {
             io.github.loongin.omniresonance.compat.ae2.Ae2Compat.register(modBus);
         if (net.neoforged.fml.ModList.get().isLoaded("industrialforegoingsouls"))
             modBus.addListener(io.github.loongin.omniresonance.compat.souls.SoulResources::capabilities);
+        modBus.addListener(io.github.loongin.omniresonance.node.NodePipeConnections::register);
+        if (net.neoforged.fml.ModList.get().isLoaded("ars_nouveau"))
+            modBus.addListener(io.github.loongin.omniresonance.compat.ars.ArsResources::capabilities);
+        if (net.neoforged.fml.ModList.get().isLoaded("mekanism"))
+            modBus.addListener(
+                    io.github.loongin.omniresonance.compat.mekanism.MekanismResources::registerNodeConnections);
         modBus.addListener(OmniDataGenerators::gatherData);
         serverConfig = new ServerConfig();
         container.registerConfig(ModConfig.Type.SERVER, serverConfig.spec(), "omniresonance-server.toml");

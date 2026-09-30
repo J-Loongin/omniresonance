@@ -16,6 +16,86 @@ public final class MekanismResources {
     public static final ItemCapability<IChemicalHandler, Void> ITEM =
             ItemCapability.createVoid(ResourceLocation.parse("mekanism:chemical_handler"), IChemicalHandler.class);
 
+    private static final IChemicalHandler CONNECTION = new IChemicalHandler() {
+        public int getChemicalTanks() {
+            return 0;
+        }
+
+        public mekanism.api.chemical.ChemicalStack getChemicalInTank(int tank) {
+            return mekanism.api.chemical.ChemicalStack.EMPTY;
+        }
+
+        public void setChemicalInTank(int tank, mekanism.api.chemical.ChemicalStack stack) {
+            throw new IndexOutOfBoundsException("Connection marker has no chemical tanks");
+        }
+
+        public long getChemicalTankCapacity(int tank) {
+            return 0;
+        }
+
+        public boolean isValid(int tank, mekanism.api.chemical.ChemicalStack stack) {
+            return false;
+        }
+
+        public mekanism.api.chemical.ChemicalStack insertChemical(
+                int tank, mekanism.api.chemical.ChemicalStack stack, mekanism.api.Action action) {
+            return stack;
+        }
+
+        public mekanism.api.chemical.ChemicalStack extractChemical(int tank, long amount, mekanism.api.Action action) {
+            return mekanism.api.chemical.ChemicalStack.EMPTY;
+        }
+    };
+
+    /** Optional server-thread registration. Domain inputs use receive-only leases; other configured chemical
+     * faces expose empty markers. Simulation never changes inventory; extraction always returns empty. */
+    public static void registerNodeConnections(net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent event) {
+        event.registerBlockEntity(
+                BLOCK,
+                io.github.loongin.omniresonance.registry.ModBlockEntities.RESONANCE_TRANSFER_NODE.get(),
+                (entity, side) -> !entity.pipeConnection(side, 3)
+                        ? null
+                        : entity.externalInput() == null
+                                ? CONNECTION
+                                : new ChemicalInput(entity.externalInput(), side));
+    }
+
+    private record ChemicalInput(io.github.loongin.omniresonance.transfer.ExternalDomainInput input, Direction side)
+            implements IChemicalHandler {
+        public int getChemicalTanks() {
+            return 1;
+        }
+
+        public mekanism.api.chemical.ChemicalStack getChemicalInTank(int tank) {
+            return mekanism.api.chemical.ChemicalStack.EMPTY;
+        }
+
+        public void setChemicalInTank(int tank, mekanism.api.chemical.ChemicalStack stack) {
+            throw new UnsupportedOperationException("Delivery endpoint has no mutable inventory");
+        }
+
+        public long getChemicalTankCapacity(int tank) {
+            return Long.MAX_VALUE;
+        }
+
+        public boolean isValid(int tank, mekanism.api.chemical.ChemicalStack stack) {
+            return tank == 0 && !stack.isEmpty() && input.available(side, ChemicalVariant.TYPE);
+        }
+
+        public mekanism.api.chemical.ChemicalStack insertChemical(
+                int tank, mekanism.api.chemical.ChemicalStack stack, mekanism.api.Action action) {
+            if (!isValid(tank, stack)) return stack;
+            long accepted = input.insert(side, ChemicalVariant.from(stack), stack.getAmount(), action.simulate());
+            return accepted == stack.getAmount()
+                    ? mekanism.api.chemical.ChemicalStack.EMPTY
+                    : stack.copyWithAmount(stack.getAmount() - accepted);
+        }
+
+        public mekanism.api.chemical.ChemicalStack extractChemical(int tank, long amount, mekanism.api.Action action) {
+            return mekanism.api.chemical.ChemicalStack.EMPTY;
+        }
+    }
+
     private MekanismResources() {}
 
     public static @org.jetbrains.annotations.Nullable ChemicalVariant recipeVariant(Object ingredient) {

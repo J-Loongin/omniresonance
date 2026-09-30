@@ -122,6 +122,7 @@ public final class NodeNavigationService implements AutoCloseable {
 
     public void teleport(ServerPlayer player, UUID network, UUID id) {
         check();
+        if (!player.hasPermissions(2)) throw new SecurityException("Node travel requires operator permission");
         long tick = now();
         UUID actor = player.getUUID();
         if (tick < requests.getOrDefault(actor, Long.MIN_VALUE)) throw new IllegalStateException("Request interval");
@@ -185,6 +186,7 @@ public final class NodeNavigationService implements AutoCloseable {
             boolean finished = false;
             try {
                 if (!settings.teleportEnabled()
+                        || !task.player.hasPermissions(2)
                         || !eligible(task.player)
                         || tick >= task.expiresTick
                         || task.origin != task.player.serverLevel()

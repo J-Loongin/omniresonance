@@ -46,6 +46,418 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 public final class ItemDirectTransferGameTests {
     private ItemDirectTransferGameTests() {}
 
+    @GameTest(template = "bootstrap", timeoutTicks = 160)
+    public static void realMekanismItemPipeDeliversDirectlyToDomainInput(GameTestHelper helper) throws Exception {
+        if (!net.neoforged.fml.ModList.get().isLoaded("mekanism")) {
+            helper.succeed();
+            return;
+        }
+        var f = new Fixture(helper);
+        UUID id = f.node(2, TransferDirection.INPUT);
+        var n = f.data.findNode(id).orElseThrow();
+        n = f.data.setNodeMode(id, n.revision(), NodeMode.DOMAIN, true).orElseThrow();
+        f.data.saveDomainConfiguration(
+                id,
+                n.revision(),
+                new StoredResourcePolicy(ResourceTransferPolicy.defaults(TransferDirection.INPUT), java.util.Map.of()),
+                WorkingFaces.attachedFace(),
+                true);
+        f.sync();
+        helper.runAfterDelay(5, () -> {
+            var entity = (ResonanceNodeBlockEntity) helper.getLevel().getBlockEntity(f.pos(2));
+            var tag = new CompoundTag();
+            NodePersistentState.linked(id).writeOwnedFields(tag);
+            entity.loadCustomOnly(tag, helper.getLevel().registryAccess());
+            f.start();
+            f.tick(0);
+            NativeDeliveryPipe.place(helper, f.pos(2).below());
+            helper.runAfterDelay(80, () -> {
+                try {
+                    var ledger = f.repository
+                            .domainStorage(f.network)
+                            .activatedLedger()
+                            .orElseThrow();
+                    var iron = ItemVariant.from(
+                            new ItemStack(Items.IRON_INGOT), helper.getLevel().registryAccess());
+                    helper.assertTrue(ledger.amount(iron.key()) == 1, "Native item pipe did not deliver to the domain");
+                    var handler = helper.getLevel()
+                            .getCapability(
+                                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
+                                    f.pos(2),
+                                    Direction.DOWN);
+                    helper.assertTrue(handler.extractItem(0, 64, false).isEmpty(), "Delivery slot exposed extraction");
+                    helper.succeed();
+                } finally {
+                    helper.getLevel().setBlockAndUpdate(f.pos(2).below().east(), Blocks.AIR.defaultBlockState());
+                    try {
+                        f.close();
+                    } catch (Exception error) {
+                        throw new IllegalStateException(error);
+                    }
+                }
+            });
+        });
+    }
+
+    private static final class NativeDeliveryPipe {
+        static void place(GameTestHelper helper, BlockPos pos) {
+            var level = helper.getLevel();
+            level.setBlockAndUpdate(
+                    pos,
+                    mekanism.common.registries.MekanismBlocks.BASIC_LOGISTICAL_TRANSPORTER
+                            .get()
+                            .defaultBlockState());
+            level.setBlockAndUpdate(pos.east(), Blocks.CHEST.defaultBlockState());
+            ((ChestBlockEntity) level.getBlockEntity(pos.east())).setItem(0, new ItemStack(Items.IRON_INGOT));
+            var pipe = ((mekanism.common.tile.transmitter.TileEntityLogisticalTransporter) level.getBlockEntity(pos))
+                    .getTransmitter();
+            pipe.setConnectionTypeRaw(Direction.EAST, mekanism.common.lib.transmitter.ConnectionType.PULL);
+            pipe.refreshConnections();
+        }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void externalDeliveryHonorsFiltersAndRejectsIncompleteMatching(GameTestHelper helper)
+            throws Exception {
+        try (var f = new Fixture(helper)) {
+            UUID node = f.node(2, TransferDirection.INPUT);
+            UUID preset = new UUID(781, 1);
+            var owner = f.repository.createOwner(f.owner, null);
+            var rules = new java.util.ArrayList<io.github.loongin.omniresonance.filter.ResourceFilterRule>();
+            for (int i = 0; i < 5000; i++)
+                rules.add(new io.github.loongin.omniresonance.filter.ResourceFilterRule.Match(
+                        new UUID(782, i + 1),
+                        ResourceTypes.ITEM,
+                        io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.exact(
+                                net.minecraft.resources.ResourceLocation.parse("minecraft:stone")),
+                        io.github.loongin.omniresonance.filter.ComponentCondition.idOnly()));
+            rules.add(new io.github.loongin.omniresonance.filter.ResourceFilterRule.Match(
+                    new UUID(782, 5001),
+                    ResourceTypes.ITEM,
+                    io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.wholeType(),
+                    io.github.loongin.omniresonance.filter.ComponentCondition.idOnly()));
+            owner.putPreset(
+                    new io.github.loongin.omniresonance.filter.ResourceFilterPreset(
+                            preset, new ManagedName("Delivery"), 0, rules),
+                    0,
+                    -1,
+                    -1);
+            var n = f.data.findNode(node).orElseThrow();
+            n = f.data.setNodeMode(node, n.revision(), NodeMode.DOMAIN, true).orElseThrow();
+            f.data.saveDomainConfiguration(
+                    node,
+                    n.revision(),
+                    new StoredResourcePolicy(
+                            new ResourceTransferPolicy.Input(
+                                    1,
+                                    ResourceScope.all(),
+                                    RedstoneCondition.IGNORE,
+                                    preset,
+                                    FilterMode.WHITELIST,
+                                    java.util.Map.of(),
+                                    0),
+                            java.util.Map.of()),
+                    WorkingFaces.attachedFace(),
+                    true);
+            f.sync();
+            f.start();
+            f.tick(0);
+            var handler = helper.getLevel()
+                    .getCapability(
+                            net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
+                            f.pos(2),
+                            Direction.DOWN);
+            var iron = new ItemStack(Items.IRON_INGOT, 16);
+            var ledger = f.repository.domainStorage(f.network).activatedLedger().orElseThrow();
+            long revision = ledger.revision();
+            owner.setDirty(false);
+            f.data.setDirty(false);
+            for (int i = 0; i < 20; i++)
+                helper.assertTrue(
+                        handler.insertItem(0, iron, true).getCount() == 16, "Simulation advanced unready filter work");
+            helper.assertTrue(
+                    ledger.revision() == revision && !owner.isDirty() && !f.data.isDirty(),
+                    "Simulation dirtied authority");
+            for (int tick = 1; tick < 300; tick++) f.tick(tick);
+            helper.assertTrue(
+                    handler.insertItem(0, iron, false).getCount() == 16 && ledger.revision() == revision,
+                    "Over-budget candidate was partially committed");
+            owner.putPreset(
+                    new io.github.loongin.omniresonance.filter.ItemFilterPreset(
+                            preset,
+                            new ManagedName("Delivery"),
+                            1,
+                            java.util.Set.of(net.minecraft.resources.ResourceLocation.parse("minecraft:iron_ingot"))),
+                    owner.presetLibraryRevision(),
+                    -1,
+                    -1);
+            f.runtime.ownerLibraryChanged(f.owner);
+            helper.assertTrue(
+                    handler.insertItem(0, iron, true).getCount() == 16, "Stale filter accepted before preparation");
+            for (int tick = 300; tick < 304; tick++) f.tick(tick);
+            helper.assertTrue(
+                    handler.insertItem(0, new ItemStack(Items.GOLD_INGOT, 16), false)
+                                    .getCount()
+                            == 16,
+                    "Filter admitted forbidden resource");
+            helper.assertTrue(
+                    handler.insertItem(0, iron, true).isEmpty() && ledger.revision() == revision,
+                    "Prepared matching rejected or dirtied a valid resource");
+            helper.assertTrue(
+                    handler.insertItem(0, iron, false).isEmpty()
+                            && ledger.amount(ItemVariant.from(
+                                                    iron, helper.getLevel().registryAccess())
+                                            .key())
+                                    == 16,
+                    "Prepared valid delivery failed");
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void domainInputAcceptsExternalItemsWithoutExposingItsInventory(GameTestHelper helper)
+            throws Exception {
+        try (var f = new Fixture(helper, io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create())) {
+            UUID id = f.node(2, TransferDirection.INPUT);
+            var n = f.data.findNode(id).orElseThrow();
+            n = f.data.setNodeMode(id, n.revision(), NodeMode.DOMAIN, true).orElseThrow();
+            var policy = new ResourceTransferPolicy.Input(
+                    100,
+                    ResourceScope.all(),
+                    RedstoneCondition.IGNORE,
+                    null,
+                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                    java.util.Map.of(
+                            ResourceTypes.ITEM,
+                            new ResourceTransferPolicy.InputOverride(1, ResourceTransferPolicy.BatchMode.EXACT, 64)),
+                    100);
+            f.data.saveDomainConfiguration(
+                    id,
+                    n.revision(),
+                    new StoredResourcePolicy(policy, java.util.Map.of()),
+                    WorkingFaces.attachedFace(),
+                    true);
+            f.sync();
+            f.start();
+            f.tick(0);
+            var handler = helper.getLevel()
+                    .getCapability(
+                            net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
+                            f.pos(2),
+                            Direction.DOWN);
+            helper.assertTrue(handler != null && handler.getSlots() > 0, "Input node has no external delivery slot");
+            var stack = new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT, 32);
+            var key =
+                    ItemVariant.from(stack, helper.getLevel().registryAccess()).key();
+            var ledger = f.repository.domainStorage(f.network).activatedLedger().orElseThrow();
+            long revision = ledger.revision();
+            helper.assertTrue(
+                    handler.insertItem(0, stack, true).isEmpty()
+                            && ledger.amount(key) == 0
+                            && ledger.revision() == revision,
+                    "Delivery simulation mutated storage or applied active quota");
+            helper.assertTrue(
+                    handler.insertItem(0, stack, false).isEmpty() && stack.getCount() == 32 && ledger.amount(key) == 32,
+                    "Delivery failed to conserve items independently of active batch/rate/retention");
+            helper.assertTrue(
+                    handler.getStackInSlot(0).isEmpty()
+                            && handler.extractItem(0, 64, false).isEmpty()
+                            && ledger.amount(key) == 32,
+                    "External handler exposed domain inventory");
+            io.github.loongin.omniresonance.transfer.ExternalResourceDeliveryChecks.verify(helper, f.pos(2), ledger);
+            var physical = (ResonanceNodeBlockEntity) helper.getLevel().getBlockEntity(f.pos(2));
+            var restored = new CompoundTag();
+            NodePersistentState.linked(id).writeOwnedFields(restored);
+            physical.loadCustomOnly(restored, helper.getLevel().registryAccess());
+            helper.assertTrue(
+                    handler.insertItem(0, stack, false).getCount() == 32,
+                    "Old delivery lease survived identity reload");
+            f.runtime.nodeChanged(id);
+            f.tick(1);
+            var oldHandler = handler;
+            handler = helper.getLevel()
+                    .getCapability(
+                            net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
+                            f.pos(2),
+                            Direction.DOWN);
+            helper.assertTrue(
+                    handler != null
+                            && handler.insertItem(0, stack, true).isEmpty()
+                            && oldHandler.insertItem(0, stack, true).getCount() == 32,
+                    "New lifecycle revived an old external capability");
+            n = f.data.findNode(id).orElseThrow();
+            f.data.setNodeEnabled(id, n.revision(), false);
+            f.sync();
+            helper.assertTrue(
+                    handler.insertItem(0, stack, true).getCount() == 32
+                            && handler.insertItem(0, stack, false).getCount() == 32
+                            && ledger.amount(key) == 32,
+                    "Stale external handler bypassed disabled authority before reconciliation");
+            n = f.data.findNode(id).orElseThrow();
+            n = f.data.setNodeEnabled(id, n.revision(), true).orElseThrow();
+            f.data.saveDomainConfiguration(
+                    id,
+                    n.revision(),
+                    new StoredResourcePolicy(
+                            new ResourceTransferPolicy.Input(
+                                    1,
+                                    ResourceScope.all(),
+                                    RedstoneCondition.SIGNAL,
+                                    null,
+                                    FilterMode.WHITELIST,
+                                    java.util.Map.of(),
+                                    0),
+                            java.util.Map.of()),
+                    WorkingFaces.attachedFace(),
+                    true);
+            f.sync();
+            f.runtime.networkChanged(f.network);
+            f.tick(1);
+            var redstoneHandler = helper.getLevel()
+                    .getCapability(
+                            net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
+                            f.pos(2),
+                            Direction.DOWN);
+            helper.assertTrue(
+                    redstoneHandler.insertItem(0, stack, true).getCount() == 32,
+                    "Inactive redstone gate accepted input");
+            helper.getLevel().setBlockAndUpdate(f.pos(2).east(), Blocks.REDSTONE_BLOCK.defaultBlockState());
+            try {
+                helper.assertTrue(
+                        redstoneHandler.insertItem(0, stack, true).isEmpty() && ledger.amount(key) == 32,
+                        "Live redstone gate was ignored or simulation mutated storage");
+            } finally {
+                helper.getLevel().setBlockAndUpdate(f.pos(2).east(), Blocks.AIR.defaultBlockState());
+            }
+            n = f.data.findNode(id).orElseThrow();
+            f.data.saveDomainConfiguration(
+                    id,
+                    n.revision(),
+                    new StoredResourcePolicy(
+                            ResourceTransferPolicy.defaults(TransferDirection.OUTPUT), java.util.Map.of()),
+                    WorkingFaces.attachedFace(),
+                    true);
+            f.sync();
+            helper.assertTrue(
+                    redstoneHandler.insertItem(0, stack, false).getCount() == 32 && ledger.amount(key) == 32,
+                    "Stale input lease accepted after direction changed to output");
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void connectionMarkersFollowConfiguredFacesWithoutExposingInventory(GameTestHelper helper)
+            throws Exception {
+        try (var f = new Fixture(helper)) {
+            UUID node = f.node(2, TransferDirection.OUTPUT);
+            f.start();
+            f.tick(0);
+            var level = helper.getLevel();
+            var pos = f.pos(2);
+            var items = level.getCapability(
+                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK, pos, Direction.DOWN);
+            helper.assertTrue(
+                    items != null && items.getSlots() == 0, "Configured item face has no empty connection marker");
+            helper.assertTrue(
+                    level.getCapability(
+                                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
+                                    pos,
+                                    Direction.UP)
+                            == null,
+                    "Unselected face exposed an interface");
+            helper.assertTrue(
+                    level.getCapability(
+                                    net.neoforged.neoforge.capabilities.Capabilities.EnergyStorage.BLOCK,
+                                    pos,
+                                    Direction.DOWN)
+                            == null,
+                    "Item-only policy exposed energy");
+            var current = f.data.findNode(node).orElseThrow();
+            f.data.setNodeEnabled(node, current.revision(), false);
+            f.sync();
+            f.runtime.networkChanged(f.network);
+            f.tick(1);
+            helper.assertTrue(
+                    level.getCapability(
+                                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
+                                    pos,
+                                    Direction.DOWN)
+                            == null,
+                    "Disabled node kept its connection marker");
+            current = f.data.findNode(node).orElseThrow();
+            current = f.data.setNodeEnabled(node, current.revision(), true).orElseThrow();
+            current = f.data.setNodeMode(node, current.revision(), NodeMode.DOMAIN, true)
+                    .orElseThrow();
+            var policy = new ResourceTransferPolicy.Input(
+                    1,
+                    ResourceScope.customSet(java.util.Set.of(ResourceTypes.ENERGY)),
+                    RedstoneCondition.IGNORE,
+                    null,
+                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                    java.util.Map.of(),
+                    0);
+            f.data.saveDomainConfiguration(
+                    node,
+                    current.revision(),
+                    new StoredResourcePolicy(policy, java.util.Map.of()),
+                    WorkingFaces.explicit(1 << Direction.EAST.get3DDataValue()),
+                    true);
+            f.sync();
+            f.runtime.networkChanged(f.network);
+            f.tick(2);
+            helper.assertTrue(
+                    level.getCapability(
+                                    net.neoforged.neoforge.capabilities.Capabilities.EnergyStorage.BLOCK,
+                                    pos,
+                                    Direction.EAST)
+                            != null,
+                    "Domain energy face did not publish its connection marker");
+            helper.assertTrue(
+                    level.getCapability(
+                                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
+                                    pos,
+                                    Direction.DOWN)
+                            == null,
+                    "Domain mode switch retained a stale item marker");
+            var entity = (ResonanceNodeBlockEntity) level.getBlockEntity(pos);
+            helper.assertTrue(!entity.pipeConnection(Direction.EAST, 3), "Energy-only configuration exposed chemicals");
+            current = f.data.findNode(node).orElseThrow();
+            var chemical = new ResourceTransferPolicy.Input(
+                    1,
+                    ResourceScope.customSet(java.util.Set.of(ResourceTypes.CHEMICAL)),
+                    RedstoneCondition.IGNORE,
+                    null,
+                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                    java.util.Map.of(),
+                    0);
+            f.data.saveDomainConfiguration(
+                    node,
+                    current.revision(),
+                    new StoredResourcePolicy(chemical, java.util.Map.of()),
+                    WorkingFaces.explicit(1 << Direction.UP.get3DDataValue()),
+                    true);
+            f.sync();
+            f.runtime.networkChanged(f.network);
+            f.tick(3);
+            helper.assertTrue(
+                    entity.pipeConnection(Direction.UP, 3)
+                            && !entity.pipeConnection(Direction.EAST, 3)
+                            && !entity.pipeConnection(Direction.EAST, 2),
+                    "Chemical-only configuration did not replace the previous resource and face selection");
+            f.runtime.close();
+            helper.assertTrue(
+                    !entity.pipeConnection(Direction.UP, 3), "Closed runtime kept chemical connection metadata");
+            helper.assertTrue(
+                    level.getCapability(
+                                    net.neoforged.neoforge.capabilities.Capabilities.EnergyStorage.BLOCK,
+                                    pos,
+                                    Direction.EAST)
+                            == null,
+                    "Closing runtime retained connection metadata");
+        }
+        helper.succeed();
+    }
+
     @GameTest(template = "bootstrap")
     public static void loadedNodeDoesNotLoadUnselectedOrSelectedDistantChunk(GameTestHelper helper) throws Exception {
         BlockPos pos = new BlockPos(29999007, 80, 29999000);
@@ -282,7 +694,8 @@ public final class ItemDirectTransferGameTests {
             f.tick(0);
             helper.assertTrue(f.runtime.cachedEndpoints() == 0, "Mismatched physical UUID discovered capability");
             helper.assertTrue(f.chest(1).getItem(0).getCount() == 64, "Mismatched source extracted");
-            BlockPos unloaded = new BlockPos(29999000, 80, 29999000);
+            // Keep this non-loading probe separate from the far-chunk hydration fixture.
+            BlockPos unloaded = new BlockPos(-29998000, 80, 29998000);
             helper.assertTrue(!helper.getLevel().isLoaded(unloaded), "Fixture far target was already loaded");
             NetworkNodeRecord distant = NetworkNodeRecord.fresh(
                     UUID.randomUUID(),

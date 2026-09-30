@@ -32,6 +32,12 @@ public final class SoulResources {
     }
 
     public static void capabilities(RegisterCapabilitiesEvent event) {
+        event.registerBlockEntity(
+                SoulCapabilities.BLOCK,
+                io.github.loongin.omniresonance.registry.ModBlockEntities.RESONANCE_TRANSFER_NODE.get(),
+                (entity, side) -> entity.pipeConnection(side, 5) && entity.externalInput() != null
+                        ? new Input(entity.externalInput(), side)
+                        : null);
         event.registerBlock(
                 BLOCK,
                 (level, pos, state, entity, side) -> level instanceof ServerLevel server && entity != null
@@ -43,6 +49,29 @@ public final class SoulResources {
                 (level, pos, state, entity, side) ->
                         level.getCapability(SoulCapabilities.BLOCK, pos, state, entity, side),
                 BuiltInRegistries.BLOCK.get(ResourceLocation.parse("industrialforegoingsouls:soul_laser_base")));
+    }
+
+    private record Input(io.github.loongin.omniresonance.transfer.ExternalDomainInput input, Direction side)
+            implements ISoulHandler {
+        public int getSoulTanks() {
+            return 1;
+        }
+
+        public int getSoulInTank(int tank) {
+            return 0;
+        }
+
+        public int getTankCapacity(int tank) {
+            return input.available(side, SoulVariant.TYPE) ? Integer.MAX_VALUE : 0;
+        }
+
+        public int fill(int amount, Action action) {
+            return amount <= 0 ? 0 : (int) input.insert(side, SoulVariant.INSTANCE, amount, action.simulate());
+        }
+
+        public int drain(int amount, Action action) {
+            return 0;
+        }
     }
 
     private record PipeHandler(ServerLevel level, BlockEntity entity, NetworkManager manager) implements ISoulHandler {

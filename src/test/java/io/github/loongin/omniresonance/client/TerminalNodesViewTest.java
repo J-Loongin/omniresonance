@@ -603,7 +603,7 @@ class TerminalNodesViewTest {
         view.accept(page(2, true, true, false));
         assertTrue(key(widgets, "rename").active);
         assertTrue(key(widgets, "highlight").active);
-        assertTrue(key(widgets, "teleport").active);
+        assertFalse(key(widgets, "teleport").active, "No local operator must leave teleport disabled");
         card(widgets).onPress();
         key(widgets, "edit_configuration").onPress();
         assertEquals(
@@ -628,7 +628,7 @@ class TerminalNodesViewTest {
         view.accept(page(2, true, false, false));
         assertTrue(key(widgets, "enable").active);
         assertTrue(key(widgets, "highlight").active);
-        assertTrue(key(widgets, "teleport").active);
+        assertFalse(key(widgets, "teleport").active, "No local operator must leave teleport disabled");
         assertFalse(widgets.stream()
                 .anyMatch(w -> w.getMessage().getContents() instanceof TranslatableContents value
                         && value.getKey().equals("omniresonance.nodes.rename")));

@@ -52,6 +52,50 @@ public final class NodeManagementGameTests {
     private NodeManagementGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void navigationRequiresOperatorAndRechecksPendingTravel(GameTestHelper helper) throws IOException {
+        try (var f = new Fixture(helper)) {
+            var pos = helper.absolutePos(new BlockPos(3, 3, 3));
+            var entity = placeBlank(helper, pos, NODE_A, ModBlocks.RESONANCE_TRANSFER_NODE.get(), Direction.DOWN);
+            f.authority.link(NETWORK, entity, new ManagedName("Permission node"));
+            var owner = new TravelPlayer(helper.getLevel(), new GameProfile(OWNER, "TravelPermission"));
+            var settings = io.github.loongin.omniresonance.config.ServerSettings.Navigation.defaults();
+            try (var navigation = new NodeNavigationService(
+                    helper.getLevel().getServer(), f.management, f.authority, settings, (p, frame) -> {})) {
+                owner.permissionLevel = 0;
+                boolean denied = false;
+                try {
+                    navigation.teleport(owner, NETWORK, NODE_A);
+                } catch (SecurityException expected) {
+                    denied = true;
+                }
+                helper.assertTrue(
+                        denied && navigation.pendingCount() == 0 && navigation.ticketCount() == 0,
+                        "Non-operator network owner was allowed to request travel");
+                navigation.highlight(owner, NETWORK, NODE_A);
+                owner.permissionLevel = 2;
+                var distant = f.network()
+                        .createNode(
+                                NODE_B,
+                                new ManagedName("Permission distant"),
+                                GlobalPos.of(helper.getLevel().dimension(), pos.offset(2048, 0, 2048)),
+                                NodeForm.BLOCK,
+                                Direction.NORTH);
+                f.nodes.add(new NetworkNodeDirectory.Entry(NETWORK, distant));
+                navigation.teleport(owner, NETWORK, NODE_B);
+                helper.assertTrue(
+                        navigation.pendingCount() == 1 && navigation.ticketCount() == 1,
+                        "Operator could not request bounded travel");
+                owner.permissionLevel = 0;
+                navigation.tick(settings);
+                helper.assertTrue(
+                        navigation.pendingCount() == 0 && navigation.ticketCount() == 0 && owner.moves == 0,
+                        "Revoked operator retained travel or temporary tickets");
+            }
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void navigationIsRoleBoundedAndUsesSafeLoadedDestinations(GameTestHelper helper) throws IOException {
         try (var f = new Fixture(helper)) {
             var pos = helper.absolutePos(new BlockPos(3, 3, 3));
@@ -159,6 +203,12 @@ public final class NodeManagementGameTests {
 
     private static final class TravelPlayer extends FakePlayer {
         int moves;
+        int permissionLevel = 2;
+
+        @Override
+        public boolean hasPermissions(int level) {
+            return permissionLevel >= level;
+        }
 
         TravelPlayer(ServerLevel level, GameProfile profile) {
             super(level, profile);
