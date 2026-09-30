@@ -9,6 +9,8 @@ import io.github.loongin.omniresonance.network.ManagedName;
 import io.github.loongin.omniresonance.network.NetworkDirectory;
 import io.github.loongin.omniresonance.network.NetworkMetadata;
 import io.github.loongin.omniresonance.network.NetworkTopologyService;
+import io.github.loongin.omniresonance.networking.NodeMenuRequest;
+import io.github.loongin.omniresonance.networking.NodeMenuResponse;
 import io.github.loongin.omniresonance.networking.NodeMenuState;
 import io.github.loongin.omniresonance.persistence.SavedNetworkRepository;
 import io.github.loongin.omniresonance.registry.ModBlocks;
@@ -157,6 +159,49 @@ public final class NodeMenuLifecycleGameTests {
             removed.removed(owner);
             helper.succeed();
         }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void inlineRequestsRecheckPhysicalMenuAndReleaseExpiredEdits(GameTestHelper helper)
+            throws IOException {
+        BlockPos pos = helper.absolutePos(new BlockPos(2, 3, 2));
+        try (Fixture fixture = new Fixture(helper, true)) {
+            var entity = place(helper, pos, NODE, ModBlocks.RESONANCE_TRANSFER_NODE.get(), Direction.DOWN);
+            fixture.authority.link(NETWORK, entity, new ManagedName("Node"));
+            var owner = player(helper, OWNER, pos);
+            var menu = fixture.menus.createMenu(12, owner, pos, SESSION);
+            owner.containerMenu = menu;
+            menu.handle(owner, new NodeMenuRequest.BeginRename(12, SESSION, 1));
+            owner.setPos(pos.getX() + 8.5001, pos.getY() + 0.5, pos.getZ() + 0.5);
+            var response = menu.handle(owner, new NodeMenuRequest.Rename(12, SESSION, 2, "Forbidden"));
+            helper.assertTrue(
+                    response instanceof NodeMenuResponse.Failure,
+                    "An inline rename must reject an out-of-range physical menu before its next tick");
+            helper.assertTrue(owner.containerMenu == owner.inventoryMenu, "Invalid physical menu was not closed");
+            owner.setPos(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
+            var edit = fixture.management.acquireLinked(owner, NETWORK, NODE);
+            helper.assertTrue(edit.node().name().value().equals("Node"), "Rejected rename changed authority");
+            fixture.management.cancel(owner, edit.token());
+            helper.assertTrue(!menu.stillValid(owner), "Returning in range revived the rejected menu");
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void inlineRequestsCloseMenusWhosePhysicalNodeDisappeared(GameTestHelper helper) throws IOException {
+        BlockPos pos = helper.absolutePos(new BlockPos(2, 3, 2));
+        try (Fixture fixture = new Fixture(helper, true)) {
+            var entity = place(helper, pos, NODE, ModBlocks.RESONANCE_TRANSFER_NODE.get(), Direction.DOWN);
+            fixture.authority.link(NETWORK, entity, new ManagedName("Node"));
+            var owner = player(helper, OWNER, pos);
+            var menu = fixture.menus.createMenu(13, owner, pos, SESSION);
+            owner.containerMenu = menu;
+            helper.getLevel().setBlockAndUpdate(pos, Blocks.AIR.defaultBlockState());
+            var response = menu.handle(owner, new NodeMenuRequest.SetEnabled(13, SESSION, 1, false));
+            helper.assertTrue(response instanceof NodeMenuResponse.Failure, "Removed node accepted an inline mutation");
+            helper.assertTrue(owner.containerMenu == owner.inventoryMenu, "Removed node menu was not retired");
+        }
+        helper.succeed();
     }
 
     private static ItemInteractionResult interact(

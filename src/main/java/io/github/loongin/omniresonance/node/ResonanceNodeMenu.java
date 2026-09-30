@@ -202,6 +202,13 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         }
         lastSequence = request.sequence();
         try {
+            // Native validity checks run on ticks; packets must not use a physical context that
+            // became invalid between them. The shared gate preserves authorized remote editors.
+            if (!service.canKeepOpen(player, this)) {
+                if (player.containerMenu == this) player.closeContainer();
+                else removed(player);
+                return failure(request, NodeMenuResponse.Reason.UNAVAILABLE, null);
+            }
             if (remoteConfiguration
                     && !(request instanceof NodeMenuRequest.BeginPolicyUpload
                             || request instanceof NodeMenuRequest.ResourceCatalog

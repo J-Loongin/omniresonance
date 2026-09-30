@@ -104,6 +104,54 @@ public final class NodeRoutingMenuGameTests {
     }
 
     @GameTest(template = "bootstrap")
+    public static void remoteConfigurationCanStillSaveOutsidePhysicalRange(GameTestHelper helper) throws Exception {
+        try (var f = new Fixture(helper)) {
+            var pos = helper.absolutePos(new BlockPos(2, 3, 2));
+            f.authority.link(SOURCE, place(helper, pos), new ManagedName("Remote"));
+            f.seedTunnels();
+            f.setDirectMode();
+            f.bindNode(CHANNEL);
+            var owner = player(helper, OWNER, pos.offset(500, 0, 500));
+            var edit = f.topology.acquireNode(owner, SOURCE, NODE);
+            var state = f.menus.bindingEdit(owner, SOURCE, NODE, TUNNEL, CHANNEL);
+            var menu = new ResonanceNodeMenu(
+                    182, owner.getInventory(), f.menus, pos, SESSION, new NodeMenuService.Initial(NODE, SOURCE, state));
+            menu.configureRemote(edit, state);
+            owner.containerMenu = menu;
+            var old = state.policy();
+            var changed = new io.github.loongin.omniresonance.transfer.ResourcePolicyEdit(
+                    old.intervalTicks() + 1,
+                    old.scope(),
+                    old.redstoneCondition(),
+                    old.filterPresetId(),
+                    old.filterMode(),
+                    old.fields(),
+                    old.rows(),
+                    old.retainedMissingIds(),
+                    old.discardPreviousDirectionFields());
+            helper.assertTrue(
+                    menu.handle(
+                                    owner,
+                                    new NodeMenuRequest.SaveResourcePolicy(
+                                            182, SESSION, 1, changed, state.workingFaces(), false))
+                            instanceof NodeMenuResponse.State,
+                    "Authorized remote editor was incorrectly subjected to physical range");
+            helper.assertTrue(
+                    f.source
+                                    .findDirectBinding(NODE, CHANNEL)
+                                    .orElseThrow()
+                                    .policy()
+                                    .intervalTicks()
+                            == changed.intervalTicks(),
+                    "Remote save did not apply the policy");
+            var retry = f.topology.acquireNode(owner, SOURCE, NODE);
+            f.topology.cancel(owner, retry);
+            menu.removed(owner);
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void remoteConfigurationMenuSharesEditorAndRejectsPhysicalOperations(GameTestHelper helper)
             throws Exception {
         try (var f = new Fixture(helper)) {
