@@ -150,7 +150,7 @@ class NodePresetPickerTest {
             assertEquals(
                     NodeRoutingView.tunnelList(host.body, true, 0, 0).rows(),
                     NodePresetPickerView.rows(host.body, true));
-            assertTrue(ResonanceNodeScreen.routeSearchKey(
+            assertTrue(TerminalInteractionPolicy.routeSearchKey(
                     org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER,
                     0,
                     0,
@@ -181,7 +181,7 @@ class NodePresetPickerTest {
                     () -> {}));
         }
         for (int key : new int[] {org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER, org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER}) {
-            assertFalse(ResonanceNodeScreen.routeSearchKey(
+            assertFalse(TerminalInteractionPolicy.routeSearchKey(
                     key,
                     0,
                     org.lwjgl.glfw.GLFW.GLFW_MOD_CONTROL,
@@ -194,7 +194,7 @@ class NodePresetPickerTest {
                         search.toggle(0);
                         events.add("toggle");
                     }));
-            assertFalse(ResonanceNodeScreen.routeSearchKey(
+            assertFalse(TerminalInteractionPolicy.routeSearchKey(
                     key,
                     0,
                     org.lwjgl.glfw.GLFW.GLFW_MOD_SHIFT,
@@ -207,19 +207,19 @@ class NodePresetPickerTest {
                         search.toggle(0);
                         events.add("toggle");
                     }));
-            assertFalse(ResonanceNodeScreen.routeSearchKey(
+            assertFalse(TerminalInteractionPolicy.routeSearchKey(
                     key, 0, 0, null, false, () -> events.add("close"), search, false, () -> {
                         search.toggle(0);
                         events.add("toggle");
                     }));
-            assertTrue(ResonanceNodeScreen.routeSearchKey(
+            assertTrue(TerminalInteractionPolicy.routeSearchKey(
                     key, 0, 0, null, true, () -> events.add("close"), search, true, () -> {
                         search.toggle(0);
                         events.add("toggle");
                     }));
             assertEquals("close", events.removeLast());
             assertFalse(search.expanded());
-            assertTrue(ResonanceNodeScreen.routeSearchKey(
+            assertTrue(TerminalInteractionPolicy.routeSearchKey(
                     key, 0, 0, null, false, () -> events.add("close"), search, true, () -> {
                         search.toggle(0);
                         events.add("toggle");

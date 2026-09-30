@@ -4,12 +4,13 @@ package io.github.loongin.omniresonance.client;
 import io.github.loongin.omniresonance.networking.NetworkTerminalRequest;
 import io.github.loongin.omniresonance.networking.NetworkTerminalState;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.glfw.GLFW;
 
-/** Pure input and navigation policy used by the terminal screen. */
+/** Shared client-thread input and navigation policy for terminal, node, exchange and AE screens. */
 final class TerminalInteractionPolicy {
     private TerminalInteractionPolicy() {}
 
@@ -86,6 +87,79 @@ final class TerminalInteractionPolicy {
             return BackAction.SHOW_COMPACT_LIST;
         }
         return BackAction.CLOSE_SCREEN;
+    }
+
+    /** Completes native click dispatch before validating page-owned focus. */
+    static boolean dispatchClick(
+            net.minecraft.client.gui.components.events.ContainerEventHandler owner, BooleanSupplier action) {
+        boolean handled = action.getAsBoolean();
+        var focused = owner.getFocused();
+        if (focused != null) {
+            for (var child : owner.children()) if (child == focused) return handled;
+            // Vanilla focuses the clicked child after its callback, even if that callback rebuilt the page.
+            owner.setFocused(null);
+            owner.setDragging(false);
+        }
+        return handled;
+    }
+
+    /** Dispatches through page-owned eligibility/actions; preserves text focus before close shortcuts.
+     * No world, protocol or screen lifetime is owned here. */
+    static boolean routeKey(
+            @Nullable GuiEventListener focused,
+            int keyCode,
+            int scanCode,
+            int modifiers,
+            BooleanSupplier shortcutPressed,
+            Runnable close,
+            BooleanSupplier searchAction) {
+        return dispatchKey(focused, keyCode, scanCode, modifiers, shortcutPressed, close, searchAction, true);
+    }
+
+    /** Node pages additionally require their active search state to be expanded before a focused search
+     * consumes Enter ahead of normal text handling. Keep this qualification distinct from page eligibility. */
+    static boolean routeSearchKey(
+            int keyCode,
+            int scanCode,
+            int modifiers,
+            @Nullable GuiEventListener focused,
+            boolean inventoryShortcut,
+            Runnable close,
+            ClientSearchState search,
+            boolean eligible,
+            Runnable toggle) {
+        return dispatchKey(
+                focused,
+                keyCode,
+                scanCode,
+                modifiers,
+                () -> inventoryShortcut,
+                close,
+                () -> ClientSearchState.handleToggleKey(keyCode, modifiers, eligible, toggle),
+                search.expanded());
+    }
+
+    private static boolean dispatchKey(
+            @Nullable GuiEventListener focused,
+            int keyCode,
+            int scanCode,
+            int modifiers,
+            BooleanSupplier shortcutPressed,
+            Runnable close,
+            BooleanSupplier searchAction,
+            boolean focusedSearchOwnsToggle) {
+        if (focusedSearchOwnsToggle
+                && focused instanceof TerminalSearchBox
+                && ClientSearchState.isToggleKey(keyCode, modifiers)
+                && searchAction.getAsBoolean()) return true;
+        if (focused instanceof TerminalEditBox field && field.ownsKey(keyCode)) {
+            return field.keyPressed(keyCode, scanCode, modifiers);
+        }
+        if (shortcutPressed.getAsBoolean()) {
+            close.run();
+            return true;
+        }
+        return searchAction.getAsBoolean();
     }
 
     static boolean inventoryShortcut(

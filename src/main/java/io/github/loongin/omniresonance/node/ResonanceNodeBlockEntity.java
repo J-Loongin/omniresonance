@@ -2,6 +2,7 @@
 package io.github.loongin.omniresonance.node;
 
 import io.github.loongin.omniresonance.registry.ModBlockEntities;
+import io.github.loongin.omniresonance.transfer.PipeConnections;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -46,33 +47,33 @@ public final class ResonanceNodeBlockEntity extends BlockEntity {
         setChanged();
     }
 
-    /** Server-owned, nonpersistent connection metadata: six faces each for items, fluids, FE and chemicals. */
-    private long pipeConnectionMask;
+    /** Server-owned, nonpersistent advertisement; native resource identities and packing belong to PipeConnections. */
+    private PipeConnections pipeConnections = PipeConnections.NONE;
 
     private Object externalIdentity = new Object();
 
     private @Nullable io.github.loongin.omniresonance.transfer.ExternalDomainInput externalInput;
 
     /** Publishes derived face/type availability on the server thread, never inventory or saved authority.
-     * Changed availability invalidates native capability caches; zero disconnects all marker interfaces. */
-    public void publishPipeConnections(long mask) {
+     * Changed availability invalidates native capability caches; NONE disconnects all marker interfaces. */
+    public void publishPipeConnections(PipeConnections connections) {
         requireServerThreadIfAttached();
-        if (mask < 0 || mask > 0xFFFFFFFFFL) throw new IllegalArgumentException("Invalid connection mask");
-        if (pipeConnectionMask == mask) return;
-        pipeConnectionMask = mask;
+        Objects.requireNonNull(connections);
+        if (pipeConnections.equals(connections)) return;
+        pipeConnections = connections;
         if (level instanceof ServerLevel serverLevel) serverLevel.invalidateCapabilities(worldPosition);
     }
 
-    /** Server-thread pure availability lookup for native/optional registration. Indices 0..5 denote item,
-     * fluid, FE, chemical, Source and soul; owns no resources and performs no simulation, mutation or discovery. */
-    public boolean pipeConnection(@Nullable net.minecraft.core.Direction side, int type) {
+    /** Server-thread pure availability lookup by named native connection type. Owns no resources and performs
+     * no simulation, mutation or discovery; unsided or unavailable physical identities are rejected. */
+    public boolean pipeConnection(@Nullable net.minecraft.core.Direction side, PipeConnections.Type type) {
         requireServerThreadIfAttached();
-        if (type < 0 || type > 5) throw new IllegalArgumentException("Unknown connection type");
+        Objects.requireNonNull(type);
         return level instanceof ServerLevel
                 && !isRemoved()
                 && side != null
                 && state().map(s -> s.linkState() == NodeLinkState.LINKED).orElse(false)
-                && (pipeConnectionMask & (1L << (type * 6 + side.get3DDataValue()))) != 0;
+                && pipeConnections.allows(type, side);
     }
 
     /** Opaque lifecycle token for delivery leases; pure server-thread read, no inventory ownership. */
@@ -159,7 +160,7 @@ public final class ResonanceNodeBlockEntity extends BlockEntity {
         }
         externalIdentity = new Object();
         publishExternalInput(null);
-        publishPipeConnections(0);
+        publishPipeConnections(PipeConnections.NONE);
         persistentState = NodePersistentState.fresh(replacementId);
         setChanged();
     }
@@ -174,7 +175,7 @@ public final class ResonanceNodeBlockEntity extends BlockEntity {
         super.loadAdditional(tag, registries);
         externalIdentity = new Object();
         publishExternalInput(null);
-        publishPipeConnections(0);
+        publishPipeConnections(PipeConnections.NONE);
         decoded = true;
         unavailableLogged = false;
         persistentState = NodePersistentState.decode(tag);
@@ -195,7 +196,7 @@ public final class ResonanceNodeBlockEntity extends BlockEntity {
     public void setRemoved() {
         externalIdentity = new Object();
         publishExternalInput(null);
-        publishPipeConnections(0);
+        publishPipeConnections(PipeConnections.NONE);
         super.setRemoved();
     }
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.compat.ae2;
 
+import io.github.loongin.omniresonance.networking.NetworkProtocol;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -141,8 +142,8 @@ public final class Ae2InterfacePayloads {
     }
 
     public static void register(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
-        var registrar =
-                event.registrar("29").executesOn(net.neoforged.neoforge.network.registration.HandlerThread.MAIN);
+        var registrar = event.registrar(NetworkProtocol.VERSION)
+                .executesOn(net.neoforged.neoforge.network.registration.HandlerThread.MAIN);
         registrar.playToServer(Request.TYPE, Request.CODEC, (request, context) -> {
             var player = (net.minecraft.server.level.ServerPlayer) context.player();
             var runtime = Ae2InterfaceRuntime.find(player.server);

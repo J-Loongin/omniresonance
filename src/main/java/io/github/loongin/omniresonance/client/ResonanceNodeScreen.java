@@ -5,7 +5,6 @@ import io.github.loongin.omniresonance.network.ManagedName;
 import io.github.loongin.omniresonance.network.TransferDirection;
 import io.github.loongin.omniresonance.networking.ManagementDownloadAssembler;
 import io.github.loongin.omniresonance.networking.ManagementTransferMessage;
-import io.github.loongin.omniresonance.networking.ManagementTransferPool;
 import io.github.loongin.omniresonance.networking.NodeChannelPage;
 import io.github.loongin.omniresonance.networking.NodeChannelSummary;
 import io.github.loongin.omniresonance.networking.NodeMenuNodeSummary;
@@ -74,11 +73,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     private @Nullable NodeResourcePolicyDraft itemDraft;
     private final ManagementDownloadAssembler downloads = new ManagementDownloadAssembler();
     private @Nullable NodeMenuResponse.Download policyDownload;
-    private @Nullable ResourcePolicyEdit uploadPolicy;
-    private @Nullable UUID uploadId;
-    private byte @Nullable [] uploadBytes;
-    private int uploadOffset;
-    private long transferDeadline;
+    private final NodePolicyUpload upload = new NodePolicyUpload();
     private final NodeResourceTypeCatalog resourceCatalog = new NodeResourceTypeCatalog();
     private @Nullable NodeResourceTypeCatalog.Request catalogRequest;
     private @Nullable NodeResourceTypeSelection resourceSelection;
@@ -153,22 +148,15 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             return;
         }
         if (response instanceof NodeMenuResponse.UploadReady ready) {
-            if (uploadPolicy != null
-                    && uploadId != null
-                    && uploadId.equals(ready.transfer())
-                    && interaction.pending() != null
-                    && interaction.pending().sequence() == ready.sequence()
-                    && uploadBytes == null) {
-                uploadBytes = ResourcePolicyEditCodec.encode(uploadPolicy);
-                uploadPolicy = null;
-            }
+            if (interaction.pending() != null && interaction.pending().sequence() == ready.sequence())
+                upload.ready(ready.transfer());
             return;
         }
         if (response instanceof NodeMenuResponse.Download download) {
             if (interaction.pending() == null
                     || interaction.pending().sequence() != download.sequence()
                     || policyDownload != null
-                    || uploadId != null) return;
+                    || upload.active()) return;
             policyDownload = download;
             var pin = new ManagementDownloadAssembler.Expected(
                     menu.sessionId(),
@@ -203,13 +191,10 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             rebuildIfActive();
             return;
         }
-        if (uploadId != null
+        if (upload.active()
                 && interaction.pending() != null
                 && response.sequence() == interaction.pending().sequence()) {
-            uploadId = null;
-            uploadBytes = null;
-            uploadPolicy = null;
-            uploadOffset = 0;
+            upload.clear();
         }
         boolean preserveChunkLocation = NodeMenuInteractionPolicy.preservesChunkToggleLocation(interaction, response);
         NodeMenuInteractionPolicy.EditKind previous = interaction.editKind();
@@ -244,7 +229,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         if (preserveChunkLocation && transition.accepted()) {
             interaction = transition.model();
             error = response instanceof NodeMenuResponse.Failure failure
-                    ? Component.translatable(failure.reason().translationKey())
+                    ? ManagementErrorText.node(failure.reason(), interaction.authoritative())
                     : null;
             rebuildIfActive();
             return;
@@ -332,7 +317,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         closeAfterDiscard &= interaction.discardConfirmation();
         pendingMode = null;
         error = response instanceof NodeMenuResponse.Failure failure
-                ? Component.translatable(failure.reason().translationKey())
+                ? ManagementErrorText.node(failure.reason(), interaction.authoritative())
                 : null;
         if (returnAfterBatch && interaction.authoritative() instanceof NodeMenuState.DirectTunnelList) {
             send(
@@ -429,18 +414,13 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     protected void containerTick() {
         clientTicks++;
         if (downloads.expire(clientTicks) && policyDownload != null) failPolicyTransfer();
-        if (uploadId != null && clientTicks >= transferDeadline) failPolicyTransfer();
-        if (uploadBytes != null && uploadOffset < uploadBytes.length) {
-            int end = Math.min(uploadBytes.length, uploadOffset + ManagementTransferPool.MAXIMUM_FRAGMENT_BYTES);
+        if (upload.expired(clientTicks)) failPolicyTransfer();
+        if (upload.hasNext()) {
+            var fragment = upload.next();
             PacketDistributor.sendToServer(new ManagementTransferMessage.Chunk(
-                    menu.sessionId(),
-                    uploadId,
-                    uploadOffset,
-                    java.util.Arrays.copyOfRange(uploadBytes, uploadOffset, end)));
-            uploadOffset = end;
-            if (end == uploadBytes.length) {
-                PacketDistributor.sendToServer(new ManagementTransferMessage.Finish(menu.sessionId(), uploadId));
-                uploadBytes = null;
+                    menu.sessionId(), upload.id(), fragment.offset(), fragment.bytes()));
+            if (!upload.hasNext()) {
+                PacketDistributor.sendToServer(new ManagementTransferMessage.Finish(menu.sessionId(), upload.id()));
             }
         }
         if (interaction.heartbeatDue(clientTicks)) {
@@ -695,7 +675,13 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         int left = dialog.x() + 12;
         int top = dialog.y() + 54;
         nameField = new TerminalEditBox(
-                font, left, top, formWidth, CONTROL_HEIGHT, Component.translatable("omniresonance.node_menu.name"));
+                font,
+                left,
+                top,
+                formWidth,
+                CONTROL_HEIGHT,
+                Component.translatable(
+                        NodeRoutingView.editorLabels(interaction.editKind()).field()));
         nameField.setMaxLength(EDIT_BOX_MAXIMUM_UTF16_UNITS);
         settingDraft = true;
         nameField.setValue(draft);
@@ -967,7 +953,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         if (!message.session().equals(menu.sessionId())) return;
         if (message instanceof ManagementTransferMessage.Abort
                 && ((policyDownload != null && policyDownload.transfer().equals(message.transfer()))
-                        || message.transfer().equals(uploadId))) {
+                        || message.transfer().equals(upload.id()))) {
             failPolicyTransfer();
             return;
         }
@@ -992,16 +978,13 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     }
 
     private void cancelPolicyTransfer() {
-        UUID id = policyDownload != null ? policyDownload.transfer() : uploadId;
+        UUID id = policyDownload != null ? policyDownload.transfer() : upload.id();
         if (id != null) {
             downloads.abort(menu.sessionId(), id);
             PacketDistributor.sendToServer(new ManagementTransferMessage.Abort(menu.sessionId(), id));
         }
         policyDownload = null;
-        uploadId = null;
-        uploadPolicy = null;
-        uploadBytes = null;
-        uploadOffset = 0;
+        upload.clear();
     }
 
     private void failPolicyTransfer() {
@@ -1315,16 +1298,12 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         }
         if (frameSize > NodePolicyFrames.MAXIMUM_BYTES) {
             UUID id = UUID.randomUUID();
-            uploadPolicy = policy;
-            uploadId = id;
-            uploadOffset = 0;
-            transferDeadline = clientTicks + 200;
+            upload.begin(id, policy, clientTicks);
             if (!send(
                     sequence ->
                             resourceSaveRequest(menu.containerId, menu.sessionId(), sequence, itemDraft, faceDraft, id),
                     NodeMenuInteractionPolicy.PendingKind.SAVE)) {
-                uploadId = null;
-                uploadPolicy = null;
+                upload.clear();
             }
             return;
         }
@@ -1667,7 +1646,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         try {
             canonical = new ManagedName(draft).value();
         } catch (IllegalArgumentException invalidName) {
-            error = Component.translatable(NodeMenuResponse.Reason.INVALID_NAME.translationKey());
+            error = ManagementErrorText.node(NodeMenuResponse.Reason.INVALID_NAME, interaction.authoritative());
             rebuildIfActive();
             return;
         }
@@ -2138,6 +2117,10 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        return TerminalInteractionPolicy.dispatchClick(this, () -> handleMouseClick(mouseX, mouseY, button));
+    }
+
+    private boolean handleMouseClick(double mouseX, double mouseY, int button) {
         ClientSearchState search = activeSearch();
         boolean searchWasExpanded = search.expanded();
         boolean handled = super.mouseClicked(mouseX, mouseY, button);
@@ -2151,7 +2134,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             navigateBack();
             return true;
         }
-        if (routeSearchKey(
+        if (TerminalInteractionPolicy.routeSearchKey(
                 keyCode,
                 scanCode,
                 modifiers,
@@ -2170,28 +2153,6 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                                 .play(TerminalClickButton.clickFeedback().createSound());
                 })) return true;
         return super.keyPressed(keyCode, scanCode, modifiers);
-    }
-
-    static boolean routeSearchKey(
-            int keyCode,
-            int scanCode,
-            int modifiers,
-            @Nullable net.minecraft.client.gui.components.events.GuiEventListener focused,
-            boolean inventoryShortcut,
-            Runnable close,
-            ClientSearchState search,
-            boolean eligible,
-            Runnable opened) {
-        if (focused instanceof TerminalSearchBox
-                && search.expanded()
-                && ClientSearchState.handleToggleKey(keyCode, modifiers, eligible, opened)) return true;
-        if (focused instanceof TerminalEditBox field && field.ownsKey(keyCode))
-            return field.keyPressed(keyCode, scanCode, modifiers);
-        if (inventoryShortcut) {
-            close.run();
-            return true;
-        }
-        return ClientSearchState.handleToggleKey(keyCode, modifiers, eligible, opened);
     }
 
     private void closeFromInventory() {
@@ -2676,7 +2637,15 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                     bodyBounds.bottom() - 13,
                     TerminalTheme.MUTED,
                     false);
-        } else if (error != null) {
+        } else if (error != null
+                && !TerminalDialogLayout.renderInputError(
+                        graphics,
+                        font,
+                        nameField,
+                        error,
+                        TerminalActionLayout.of(TerminalDialogLayout.editor(bodyBounds))
+                                .primary()
+                                .y())) {
             graphics.drawString(
                     font,
                     ellipsize(error.getString(), Math.max(0, bodyBounds.width() - 10)),
@@ -2781,24 +2750,16 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 TerminalTheme.MUTED);
     }
 
-    private void renderEditorHeading(GuiGraphics graphics, String networkName) {
+    private void renderEditorHeading(GuiGraphics graphics, String contextName) {
+        var labels = NodeRoutingView.editorLabels(interaction.editKind());
         var bounds = interaction.editKind() == NodeMenuInteractionPolicy.EditKind.MODE
                 ? bodyBounds
                 : TerminalDialogLayout.editor(bodyBounds);
         if (bounds != bodyBounds) TerminalDialogLayout.render(graphics, bodyBounds, bounds);
-        drawPair(
-                graphics,
-                bounds.x() + 12,
-                bounds.y() + 16,
-                "omniresonance.node_menu.network",
-                networkName,
-                bounds.right());
+        drawPair(graphics, bounds.x() + 12, bounds.y() + 16, labels.context(), contextName, bounds.right());
         graphics.drawString(
                 font,
-                Component.translatable(
-                        interaction.editKind() == NodeMenuInteractionPolicy.EditKind.MODE
-                                ? "omniresonance.node_menu.mode"
-                                : "omniresonance.node_menu.name"),
+                Component.translatable(labels.field()),
                 bounds.x() + 12,
                 bounds.y() + 42,
                 TerminalTheme.MUTED,

@@ -188,6 +188,7 @@ final class DomainInventoryView implements AutoCloseable {
 
     private void click(long id, int slot, int button) {
         if (!writable || !receiver.mirror().ready()) return;
+        if (id > 0 && !receiver.mirror().entries().containsKey(id)) return;
         boolean shift = Screen.hasShiftDown();
         boolean bulk = quickMove.click(slot, button, shift, net.minecraft.Util.getMillis());
         if (!clicks.offer(new TerminalClickQueue.Click(id, slot, button, shift, bulk))) return;
@@ -475,7 +476,12 @@ final class DomainInventoryView implements AutoCloseable {
             long id = search.ids().get(first + i);
             var entry = receiver.mirror().entries().get(id);
             var info = metadata.get(id);
-            if (entry == null || info == null) continue;
+            if (entry == null) {
+                var key = search.key(id);
+                if (key == null) continue;
+                info = new Metadata(new DomainLedger.Cursor(id, key, 0));
+            }
+            if (info == null) continue;
             var cell = new Cell(
                     geometry().gridX() + (i % columns()) * CELL, geometry().gridY() + (i / columns()) * CELL, id, info);
             cells.add(cell);
@@ -581,14 +587,14 @@ final class DomainInventoryView implements AutoCloseable {
         hovered = target;
         if (target == null) return;
         var entry = receiver.mirror().entries().get(target.id);
-        if (entry == null) return;
+        long amount = entry == null ? 0 : entry.amount();
         int width =
                 Math.max(1, Math.min(320, Minecraft.getInstance().getWindow().getGuiScaledWidth() - 24));
         int maximum = Math.max(1, (Minecraft.getInstance().getWindow().getGuiScaledHeight() - 24) / 10);
-        if (tooltipId != target.id || tooltipAmount != entry.amount() || tooltipWidth != width) {
+        if (tooltipId != target.id || tooltipAmount != amount || tooltipWidth != width) {
             if (tooltipId != target.id) tooltipScroll = 0;
             tooltipId = target.id;
-            tooltipAmount = entry.amount();
+            tooltipAmount = amount;
             tooltipWidth = width;
             var details = DomainInventoryTooltip.lines(
                     target.info.name,
@@ -597,7 +603,7 @@ final class DomainInventoryView implements AutoCloseable {
                     target.info.icon.isBarVisible(),
                     target.info.bucketUnits,
                     target.info.opaque,
-                    entry.amount(),
+                    amount,
                     target.info.unit);
             var wrapped = new ArrayList<net.minecraft.util.FormattedCharSequence>();
             for (Component detail : details) {
@@ -866,14 +872,20 @@ final class DomainInventoryView implements AutoCloseable {
         @Override
         protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
             var entry = receiver.mirror().entries().get(id);
-            if (entry == null) return;
+            long amount = entry == null ? 0 : entry.amount();
             renderSlot(graphics, getX(), getY(), isHoveredOrFocused());
             if (!info.fluid.isEmpty()) DomainFluidDisplay.render(graphics, info.fluid, getX() + 1, getY() + 1);
             else if (info.texture != null)
                 DomainFluidDisplay.render(graphics, info.texture, info.tint, getX() + 1, getY() + 1);
             else graphics.renderItem(info.icon, getX() + 1, getY() + 1);
-            if (entry.amount() != previousAmount) {
-                previousAmount = entry.amount();
+            if (amount == 0) {
+                graphics.pose().pushPose();
+                graphics.pose().translate(0, 0, 210);
+                graphics.fill(getX() + 1, getY() + 1, getRight() - 1, getBottom() - 1, 0x99000000);
+                graphics.pose().popPose();
+            }
+            if (amount != previousAmount) {
+                previousAmount = amount;
                 count = slotCount(previousAmount, info.bucketUnits);
                 countWidth = font.width(count);
             }

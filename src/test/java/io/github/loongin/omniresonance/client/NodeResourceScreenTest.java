@@ -289,7 +289,7 @@ class NodeResourceScreenTest {
         var selection = NodeResourceTypeSelection.overrides(draft(), Object::toString);
         assertEquals(TerminalHeaderLayout.Action.SEARCH, ResonanceNodeScreen.topBarAction(state(), true));
         int[] closed = {0};
-        assertTrue(ResonanceNodeScreen.routeSearchKey(
+        assertTrue(TerminalInteractionPolicy.routeSearchKey(
                 org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER,
                 0,
                 0,
@@ -303,7 +303,7 @@ class NodeResourceScreenTest {
         assertFalse(selection.search().expanded());
         var field = new TerminalEditBox(font(), 0, 0, 100, 20, Component.empty());
         field.setFocused(true);
-        assertTrue(ResonanceNodeScreen.routeSearchKey(
+        assertTrue(TerminalInteractionPolicy.routeSearchKey(
                 org.lwjgl.glfw.GLFW.GLFW_KEY_E,
                 0,
                 0,

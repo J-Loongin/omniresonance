@@ -18,6 +18,32 @@ final class TerminalDialogLayout {
         return centered(parent, 300, 124);
     }
 
+    static TerminalLayout.Rect inputFeedback(TerminalLayout.Rect field, int footerTop) {
+        int y = field.bottom() + 4;
+        return new TerminalLayout.Rect(field.x(), y, field.width(), Math.max(0, Math.min(10, footerTop - 2 - y)));
+    }
+
+    /** Returns false when no input anchor is present; callers may then use their non-form status area. */
+    static boolean renderInputError(
+            net.minecraft.client.gui.GuiGraphics graphics,
+            Font font,
+            @org.jetbrains.annotations.Nullable net.minecraft.client.gui.components.EditBox field,
+            Component error,
+            int footerTop) {
+        if (field == null || !field.visible) return false;
+        var bounds = inputFeedback(
+                new TerminalLayout.Rect(field.getX(), field.getY(), field.getWidth(), field.getHeight()), footerTop);
+        if (bounds.height() < font.lineHeight) return false;
+        graphics.drawString(
+                font,
+                TerminalText.body(Component.literal(TerminalText.ellipsize(font, error.getString(), bounds.width()))),
+                bounds.x(),
+                bounds.y(),
+                TerminalTheme.ERROR,
+                false);
+        return true;
+    }
+
     static TerminalLayout.Rect confirmation(TerminalLayout.Rect parent, Font font, Component message) {
         int width = Math.min(260, Math.max(0, parent.width() - 16));
         int lines =

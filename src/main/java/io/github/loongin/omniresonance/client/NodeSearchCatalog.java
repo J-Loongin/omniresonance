@@ -3,7 +3,7 @@ package io.github.loongin.omniresonance.client;
 
 import io.github.loongin.omniresonance.networking.NodeDirectoryPage;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 
@@ -12,7 +12,7 @@ final class NodeSearchCatalog {
     private final ClientCatalogWindow window = new ClientCatalogWindow(262144, 64);
     private final ArrayList<NodeDirectoryPage.Row> rows = new ArrayList<>();
     private final ArrayList<String> folded = new ArrayList<>();
-    private final HashSet<UUID> identities = new HashSet<>();
+    private final HashMap<UUID, Integer> identities = new HashMap<>();
     private long revision, matcherRevision = -1;
     private int total = -1;
     private String query;
@@ -49,7 +49,7 @@ final class NodeSearchCatalog {
         revision = batch.revision();
         total = batch.total();
         for (var row : values) {
-            if (!identities.add(row.node().nodeId())
+            if (identities.putIfAbsent(row.node().nodeId(), rows.size()) != null
                     || !rows.isEmpty() && rows.getLast().number() >= row.number()) {
                 clear();
                 throw new IllegalArgumentException("Duplicate or unordered node catalog");
@@ -59,6 +59,21 @@ final class NodeSearchCatalog {
             folded.add(
                     ClientTextSearch.fold(row.node().nodeName() + "\n" + p.getX() + ", " + p.getY() + ", " + p.getZ()));
         }
+    }
+
+    void update(NodeDirectoryPage.Row row) {
+        if (!ready()) return;
+        Integer index = identities.get(row.node().nodeId());
+        if (index == null) return;
+        var previous = rows.get(index);
+        if (row.node().revision() < previous.node().revision() || row.equals(previous)) return;
+        rows.set(index, row);
+        var p = row.node().position();
+        folded.set(
+                index,
+                ClientTextSearch.fold(row.node().nodeName() + "\n" + p.getX() + ", " + p.getY() + ", " + p.getZ()));
+        query = null;
+        result = List.of();
     }
 
     List<NodeDirectoryPage.Row> filter(String input) {

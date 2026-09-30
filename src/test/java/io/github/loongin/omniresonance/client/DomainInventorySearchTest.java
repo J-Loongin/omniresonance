@@ -15,6 +15,53 @@ import org.junit.jupiter.api.Test;
 
 class DomainInventorySearchTest {
     @Test
+    void shiftAppendsNewIdentitiesAndReusesRemovedIdentityPosition() {
+        var data = new TreeMap<Long, DomainLedger.Cursor>();
+        var a = new ResourceVariantKey(ResourceLocation.parse("minecraft:item"), new byte[] {1});
+        var b = new ResourceVariantKey(ResourceLocation.parse("minecraft:item"), new byte[] {2});
+        data.put(1L, new DomainLedger.Cursor(1, a, 64));
+        long[] version = {0};
+        var search = new DomainInventorySearch(
+                new DomainInventorySearch.Source() {
+                    public DomainLedger.Cursor after(long cursor, long ceiling) {
+                        var next = data.higherEntry(cursor);
+                        return next == null || next.getKey() > ceiling ? null : next.getValue();
+                    }
+
+                    public long maximumId() {
+                        return data.isEmpty() ? 0 : data.lastKey();
+                    }
+
+                    public long version() {
+                        return version[0];
+                    }
+                },
+                entry -> new DomainInventoryQuery.Document(
+                        entry.key().equals(a) ? "zinc" : "apple",
+                        "minecraft",
+                        "minecraft:test",
+                        "minecraft:item",
+                        List.of(),
+                        () -> ""));
+        search.tick(100, () -> true, false);
+        data.remove(1L);
+        data.put(2L, new DomainLedger.Cursor(2, b, 10));
+        version[0]++;
+        search.tick(100, () -> true, true);
+        assertEquals(List.of(1L, 2L), search.ids());
+        data.put(3L, new DomainLedger.Cursor(3, a, 32));
+        version[0]++;
+        search.tick(100, () -> true, true);
+        assertEquals(List.of(3L, 2L), search.ids());
+        data.remove(3L);
+        version[0]++;
+        search.tick(100, () -> true, true);
+        assertEquals(List.of(3L, 2L), search.ids());
+        search.tick(100, () -> true, false);
+        assertEquals(List.of(2L), search.ids());
+    }
+
+    @Test
     void boundedQueriesKeepPriorResultsOnSyntaxErrorAndShiftFreezesOnlyPublication() {
         var data = new TreeMap<Long, DomainLedger.Cursor>();
         for (int i = 1; i <= 1000; i++)

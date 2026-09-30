@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.transfer;
 
+import static io.github.loongin.omniresonance.transfer.fixtures.ItemSchedulerConfigurations.configuration;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -22,38 +23,53 @@ import net.minecraft.world.item.Items;
 import org.junit.jupiter.api.Test;
 
 class WorkingFacesSchedulerTest {
+    private static final HolderLookup.Provider PROVIDER =
+            HolderLookup.Provider.create(BuiltInRegistries.REGISTRY.stream().map(r -> r.asLookup()));
     private static final UUID NETWORK = new UUID(0, 1), CHANNEL = new UUID(0, 2);
     private static final int WEST_EAST =
             (1 << Direction.WEST.get3DDataValue()) | (1 << Direction.EAST.get3DDataValue());
+    private static final io.github.loongin.omniresonance.filter.ResourceFilterCompiler.Compiled ALLOW =
+            io.github.loongin.omniresonance.filter.ResourceFilterCompiler.compile(
+                    null,
+                    new io.github.loongin.omniresonance.filter.ResourceFilterCompiler.OwnerSnapshot(NETWORK, Map.of()),
+                    (type, tag) -> null);
     private final Map<Endpoint, FakeItemHandler> handlers = new HashMap<>();
     private final Map<Endpoint, Integer> discoveries = new HashMap<>();
-    private final List<ItemDirectScheduler.Configuration> configs = new ArrayList<>();
+    private final List<ResourceDirectScheduler.Configuration> configs = new ArrayList<>();
     private final RecoveryBuffer recovery = new RecoveryBuffer(() -> {});
-    private final ItemDirectScheduler scheduler = new ItemDirectScheduler(
-            new ItemDirectScheduler.Environment() {
-                public boolean active(ItemDirectScheduler.Configuration c) {
+    private final ResourceDirectScheduler scheduler =
+            new ResourceDirectScheduler(new ResourceDirectScheduler.Environment() {
+                public boolean active(ResourceDirectScheduler.Configuration c) {
                     return true;
                 }
 
-                public boolean allows(ItemDirectScheduler.Configuration c, ItemVariant v) {
-                    return true;
+                public List<net.minecraft.resources.ResourceLocation> registeredTypes() {
+                    return List.of(ResourceTypes.ITEM);
                 }
 
-                public ItemTransferEngine.Handle resolve(
-                        ItemDirectScheduler.Configuration c, TransferWorkBudget budget) {
-                    return resolve(c, Direction.DOWN, budget);
+                public ResourceDirectScheduler.FilterView filter(ResourceDirectScheduler.Configuration c) {
+                    return new ResourceDirectScheduler.FilterView(c.revision(), ALLOW);
                 }
 
-                public ItemTransferEngine.Handle resolve(
-                        ItemDirectScheduler.Configuration c, Direction face, TransferWorkBudget budget) {
+                public ResourceTransferEngine.Handle resolve(
+                        ResourceDirectScheduler.Configuration c,
+                        net.minecraft.resources.ResourceLocation type,
+                        Direction face,
+                        TransferWorkBudget budget) {
                     budget.beforeCall();
                     try {
                         Endpoint key = new Endpoint(c.nodeId(), face);
                         discoveries.merge(key, 1, Integer::sum);
                         FakeItemHandler handler = handlers.get(key);
                         if (handler == null) return null;
-                        return new ItemTransferEngine.Handle() {
-                            public FakeItemHandler handler() {
+                        return new ResourceTransferEngine.Handle() {
+                            private final ResourcePort port = new ItemResourcePort(handler, PROVIDER);
+
+                            public ResourcePort port() {
+                                return port;
+                            }
+
+                            public Object physicalIdentity() {
                                 return handler;
                             }
 
@@ -69,20 +85,18 @@ class WorkingFacesSchedulerTest {
                 public RecoveryBuffer recovery(UUID network) {
                     return recovery;
                 }
-            },
-            HolderLookup.Provider.create(BuiltInRegistries.REGISTRY.stream().map(r -> r.asLookup())));
+            });
 
-    private ItemDirectScheduler.Configuration config(int id, boolean input, int rate, long keep, int mask) {
+    private ResourceDirectScheduler.Configuration config(int id, boolean input, int rate, long keep, int mask) {
         ItemTransferPolicy policy = input
                 ? new ItemTransferPolicy.Input(100, rate, RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, keep)
                 : new ItemTransferPolicy.Output(100, rate, RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, 0);
-        var c = new ItemDirectScheduler.Configuration(
-                NETWORK, new UUID(1, id), CHANNEL, 0, policy, WorkingFaces.explicit(mask));
+        var c = configuration(NETWORK, new UUID(1, id), CHANNEL, 0, policy, WorkingFaces.explicit(mask));
         configs.add(c);
         return c;
     }
 
-    private FakeItemHandler face(ItemDirectScheduler.Configuration c, Direction face, int amount) {
+    private FakeItemHandler face(ResourceDirectScheduler.Configuration c, Direction face, int amount) {
         FakeItemHandler h = new FakeItemHandler(1);
         if (amount > 0) h.stacks[0] = new ItemStack(Items.IRON_INGOT, amount);
         handlers.put(new Endpoint(c.nodeId(), face), h);
@@ -179,7 +193,7 @@ class WorkingFacesSchedulerTest {
         assertEquals(16, amount(target));
         configs.set(
                 0,
-                new ItemDirectScheduler.Configuration(
+                configuration(
                         NETWORK,
                         in.nodeId(),
                         CHANNEL,
@@ -251,10 +265,7 @@ class WorkingFacesSchedulerTest {
         var in = config(1, true, 64, 16, WEST_EAST);
         var out = config(2, false, 256, 0, WEST_EAST);
         var policy = new ItemTransferPolicy.Input(1, 64, RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, 16);
-        configs.set(
-                0,
-                new ItemDirectScheduler.Configuration(
-                        NETWORK, in.nodeId(), CHANNEL, 0, policy, WorkingFaces.explicit(WEST_EAST)));
+        configs.set(0, configuration(NETWORK, in.nodeId(), CHANNEL, 0, policy, WorkingFaces.explicit(WEST_EAST)));
         for (Direction face : new Direction[] {Direction.WEST, Direction.EAST}) {
             var large = new FakeItemHandler(50);
             large.stacks[0] = new ItemStack(Items.IRON_INGOT, 48);
@@ -274,7 +285,7 @@ class WorkingFacesSchedulerTest {
         for (int tick = 0; tick < 10; tick++) {
             scheduler.tick(tick, settings, new TransferWorkBudget(10, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0));
             assertEquals(
-                    ItemDirectScheduler.Status.WAITING_BUDGET,
+                    ResourceDirectScheduler.Status.WAITING_BUDGET,
                     scheduler.status(in.nodeId(), CHANNEL),
                     "A deferred retention round must not become an idle inventory check");
         }
@@ -293,10 +304,7 @@ class WorkingFacesSchedulerTest {
         var in = config(1, true, 64, 16, 16);
         var out = config(2, false, 256, 0, WEST_EAST);
         var policy = new ItemTransferPolicy.Input(1, 64, RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, 16);
-        configs.set(
-                0,
-                new ItemDirectScheduler.Configuration(
-                        NETWORK, in.nodeId(), CHANNEL, 0, policy, WorkingFaces.explicit(16)));
+        configs.set(0, configuration(NETWORK, in.nodeId(), CHANNEL, 0, policy, WorkingFaces.explicit(16)));
         var source = new FakeItemHandler(5);
         source.stacks[0] = new ItemStack(Items.IRON_INGOT, 16);
         handlers.put(new Endpoint(in.nodeId(), Direction.WEST), source);
@@ -312,11 +320,11 @@ class WorkingFacesSchedulerTest {
                 ServerSettings.RecoveryLimits.defaults());
         activate();
         scheduler.tick(0, settings, new TransferWorkBudget(10, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0));
-        assertEquals(ItemDirectScheduler.Status.WAITING_BUDGET, scheduler.status(in.nodeId(), CHANNEL));
+        assertEquals(ResourceDirectScheduler.Status.WAITING_BUDGET, scheduler.status(in.nodeId(), CHANNEL));
         scheduler.tick(1, settings, new TransferWorkBudget(10, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0));
         scheduler.tick(2, settings, new TransferWorkBudget(10, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0));
         assertEquals(
-                ItemDirectScheduler.Status.IDLE,
+                ResourceDirectScheduler.Status.IDLE,
                 scheduler.status(in.nodeId(), CHANNEL),
                 "A completed retention scan must clear the prior temporary budget wait");
         assertEquals(16, amount(source));
@@ -335,10 +343,7 @@ class WorkingFacesSchedulerTest {
         var in = config(1, true, 64, 0, 16);
         var out = config(2, false, 64, 0, WEST_EAST);
         var policy = new ItemTransferPolicy.Input(1, 64, RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, 0);
-        configs.set(
-                0,
-                new ItemDirectScheduler.Configuration(
-                        NETWORK, in.nodeId(), CHANNEL, 0, policy, WorkingFaces.explicit(16)));
+        configs.set(0, configuration(NETWORK, in.nodeId(), CHANNEL, 0, policy, WorkingFaces.explicit(16)));
         var target = face(out, Direction.WEST, 0);
         var settings = new ServerSettings(
                 32,
@@ -352,10 +357,7 @@ class WorkingFacesSchedulerTest {
         activate();
         scheduler.tick(0, settings, new TransferWorkBudget(1000, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0));
         face(in, Direction.EAST, 64);
-        configs.set(
-                0,
-                new ItemDirectScheduler.Configuration(
-                        NETWORK, in.nodeId(), CHANNEL, 1, policy, WorkingFaces.explicit(32)));
+        configs.set(0, configuration(NETWORK, in.nodeId(), CHANNEL, 1, policy, WorkingFaces.explicit(32)));
         scheduler.replaceNetwork(NETWORK, configs, 1);
         scheduler.tick(1, settings, new TransferWorkBudget(1000, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0));
         assertEquals(0, amount(target));

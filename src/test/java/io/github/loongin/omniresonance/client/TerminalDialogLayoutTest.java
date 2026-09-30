@@ -8,6 +8,29 @@ import org.junit.jupiter.api.Test;
 
 class TerminalDialogLayoutTest {
     @Test
+    void presetImpactStartsBelowTheReservedInputFeedbackRow() {
+        var dialog = new TerminalLayout.Rect(0, 0, 300, 162);
+        var field = new TerminalLayout.Rect(12, 54, 276, 20);
+        var feedback = TerminalDialogLayout.inputFeedback(field, 134);
+        assertTrue(TerminalFilterView.impactTop(dialog) >= feedback.bottom() + 6);
+    }
+
+    @Test
+    void fieldFeedbackFollowsTheInputAndStaysAboveActions() {
+        for (int y : new int[] {35, 48, 52, 54}) {
+            var dialog = TerminalDialogLayout.editor(new TerminalLayout.Rect(0, 0, 380, 200));
+            var field = new TerminalLayout.Rect(dialog.x() + 12, dialog.y() + y, dialog.width() - 24, 20);
+            int footer = TerminalActionLayout.of(dialog).primary().y();
+            var feedback = TerminalDialogLayout.inputFeedback(field, footer);
+            assertEquals(field.x(), feedback.x());
+            assertEquals(field.width(), feedback.width());
+            assertEquals(field.bottom() + 4, feedback.y());
+            assertTrue(feedback.height() >= 9);
+            assertTrue(feedback.bottom() <= footer - 2);
+        }
+    }
+
+    @Test
     void confirmationGrowsWithExplanationAndRemainsInsideTheStableWindow() {
         for (int[] size : new int[][] {{320, 240}, {427, 240}, {960, 540}}) {
             var parent = TerminalLayout.calculate(size[0], size[1]).content();

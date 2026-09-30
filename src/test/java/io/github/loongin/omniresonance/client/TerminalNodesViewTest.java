@@ -126,6 +126,39 @@ class TerminalNodesViewTest {
     }
 
     @Test
+    void confirmedRenameImmediatelyReindexesExistingSearchResults() {
+        var catalog = new NodeSearchCatalog();
+        var old = row(true);
+        catalog.accept(new NodeDirectoryPage.Catalog(1, 0, 1), List.of(old));
+        assertEquals(List.of(old), catalog.filter("Node A"));
+        var n = old.node();
+        var renamed = new NodeDirectoryPage.Row(
+                new NodeMenuNodeSummary(
+                        n.networkId(),
+                        n.networkName(),
+                        n.nodeId(),
+                        "Changed",
+                        n.revision() + 1,
+                        n.dimension(),
+                        n.position(),
+                        n.form(),
+                        n.facing(),
+                        n.enabled(),
+                        n.chunkLoadingRequested(),
+                        n.mode()),
+                old.number(),
+                old.status(),
+                old.faces(),
+                old.configurations());
+        catalog.update(renamed);
+        assertTrue(catalog.filter("Node A").isEmpty());
+        assertEquals(List.of(renamed), catalog.filter("Changed"));
+        catalog.update(old);
+        assertEquals(List.of(renamed), catalog.filter("Changed"));
+        assertEquals(1, catalog.size());
+    }
+
+    @Test
     void compactTerminalKeepsNodeControlsInsideTheSharedFrame() {
         for (int width : new int[] {320, 427, 640}) {
             var body = NetworkSetupScreen.managementLayout(width, 240).content();

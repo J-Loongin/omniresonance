@@ -225,7 +225,7 @@ final class Ae2InterfaceScreen extends Screen {
 
     @Override
     public boolean keyPressed(int key, int scan, int mods) {
-        if (NetworkSetupScreen.routeKey(
+        if (TerminalInteractionPolicy.routeKey(
                 getFocused(),
                 key,
                 scan,
@@ -246,6 +246,10 @@ final class Ae2InterfaceScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double x, double y, int button) {
+        return TerminalInteractionPolicy.dispatchClick(this, () -> handleMouseClick(x, y, button));
+    }
+
+    private boolean handleMouseClick(double x, double y, int button) {
         boolean old = search.expanded();
         boolean result = super.mouseClicked(x, y, button);
         search.finishToggleClick(

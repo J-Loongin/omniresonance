@@ -112,6 +112,20 @@ public final class ItemVariant implements ResourceVariant {
             }
         }
         for (TypedDataComponent<?> component : components) {
+            Object defaultValue = item.components().get(component.type());
+            if (Objects.equals(defaultValue, component.value())) continue;
+            // Keep the registered default when its persistent value is unchanged. Some native
+            // components contain suppliers whose decoded instances do not compare by value.
+            // The caller still verifies the complete reconstructed identity before accepting it.
+            if (defaultValue != null) {
+                TypedDataComponent<?> defaultComponent =
+                        TypedDataComponent.createUnchecked(component.type(), defaultValue);
+                var ops = provider.createSerializationContext(NbtOps.INSTANCE);
+                if (defaultComponent
+                        .encodeValue(ops)
+                        .getOrThrow()
+                        .equals(component.encodeValue(ops).getOrThrow())) continue;
+            }
             patch.set(component);
         }
         return new ItemStack(BuiltInRegistries.ITEM.wrapAsHolder(item), amount, patch.build());

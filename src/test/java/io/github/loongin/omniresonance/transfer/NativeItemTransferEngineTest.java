@@ -15,25 +15,31 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import org.junit.jupiter.api.Test;
 
-final class ItemTransferEngineTest {
+final class NativeItemTransferEngineTest {
     private static final HolderLookup.Provider PROVIDER =
             HolderLookup.Provider.create(BuiltInRegistries.REGISTRY.stream().map(registry -> registry.asLookup()));
     private static final ItemVariant IRON = ItemVariant.from(new ItemStack(Items.IRON_INGOT), PROVIDER);
-    private final ItemTransferEngine engine = new ItemTransferEngine();
+    private final ResourceTransferEngine engine = new ResourceTransferEngine();
     private final RecoveryBuffer recovery = new RecoveryBuffer(() -> {});
     private final FakeItemHandler source = new FakeItemHandler(1), target = new FakeItemHandler(1);
     private final Endpoint s = new Endpoint(source), t = new Endpoint(target);
     private TransferWorkBudget budget = new TransferWorkBudget(1, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0);
 
-    private static final class Endpoint implements ItemTransferEngine.Handle {
+    private static final class Endpoint implements ResourceTransferEngine.Handle {
         final FakeItemHandler handler;
         boolean valid = true;
+        final ResourcePort port;
 
         Endpoint(FakeItemHandler handler) {
             this.handler = handler;
+            this.port = new ItemResourcePort(handler, PROVIDER);
         }
 
-        public FakeItemHandler handler() {
+        public ResourcePort port() {
+            return port;
+        }
+
+        public Object physicalIdentity() {
             return handler;
         }
 
@@ -42,13 +48,34 @@ final class ItemTransferEngineTest {
         }
     }
 
-    private ItemTransferEngine.Result transfer(int amount) {
+    private ResourceTransferEngine.Result transfer(int amount) {
         source.stacks[0] = IRON.stack(amount);
-        var result =
-                engine.commit(s, 0, t, 0, IRON, amount, recovery, ServerSettings.RecoveryLimits.defaults(), budget);
+        var result = engine.commitGreedy(
+                s, 0, t, 0, IRON, amount, recovery, ServerSettings.RecoveryLimits.defaults(), budget);
         assertEquals(source.calls + target.calls, budget.calls());
-        assertTrue(budget.calls() <= ItemTransferEngine.MAXIMUM_COMMIT_CALLS);
+        assertTrue(budget.calls() <= ResourceTransferEngine.MAXIMUM_GREEDY_CALLS);
         return result;
+    }
+
+    @Test
+    void quantityChangesReuseIdentityButComponentChangesDoNot() {
+        var port = new ItemResourcePort(source, PROVIDER);
+        source.stacks[0] = IRON.stack(256);
+        port.sourceViews(budget);
+        var first = port.peek(0, budget).orElseThrow().variant();
+        source.stacks[0] = IRON.stack(128);
+        var second = port.peek(0, budget).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertSame(first, second.variant());
+        assertEquals(128, second.quantity());
+        source.stacks[0].set(
+                net.minecraft.core.component.DataComponents.CUSTOM_NAME,
+                net.minecraft.network.chat.Component.literal("Changed"));
+        var changed = port.peek(0, budget).orElseThrow().variant();
+        org.junit.jupiter.api.Assertions.assertNotEquals(first.key(), changed.key());
+        source.stacks[0] = ItemStack.EMPTY;
+        assertTrue(port.peek(0, budget).isEmpty());
+        source.stacks[0] = IRON.stack(64);
+        assertEquals(first.key(), port.peek(0, budget).orElseThrow().variant().key());
     }
 
     @Test
@@ -86,7 +113,7 @@ final class ItemTransferEngineTest {
     void extractionThrowIsNeverRetriedOrGuessed() {
         source.throwExtract = true;
         var r = transfer(64);
-        assertEquals(ItemTransferEngine.Failure.UNKNOWN_MUTATION, r.failure());
+        assertEquals(ResourceTransferEngine.Failure.UNKNOWN_MUTATION, r.failure());
         assertNotNull(r.cause());
         assertEquals(1, source.extractionCalls);
         assertEquals(0, target.insertionCalls);
@@ -97,7 +124,7 @@ final class ItemTransferEngineTest {
     void insertionThrowDoesNotCompensateUnknownResult() {
         target.throwInsert = true;
         var r = transfer(64);
-        assertEquals(ItemTransferEngine.Failure.UNKNOWN_MUTATION, r.failure());
+        assertEquals(ResourceTransferEngine.Failure.UNKNOWN_MUTATION, r.failure());
         assertEquals(1, target.insertionCalls);
         assertEquals(0, source.insertionCalls);
         assertTrue(recovery.isEmpty());
@@ -107,7 +134,7 @@ final class ItemTransferEngineTest {
     void wrongActualIdentityCannotMergeIntoReservedVariant() {
         source.wrongExtraction = true;
         var r = transfer(64);
-        assertEquals(ItemTransferEngine.Failure.UNKNOWN_MUTATION, r.failure());
+        assertEquals(ResourceTransferEngine.Failure.UNKNOWN_MUTATION, r.failure());
         assertEquals(0, target.insertionCalls);
         assertTrue(recovery.isEmpty());
     }
@@ -136,9 +163,11 @@ final class ItemTransferEngineTest {
     void distinctFaceWrappersForOnePhysicalInventoryCannotLoop() {
         source.stacks[0] = IRON.stack(64);
         Object shared = new Object();
-        ItemTransferEngine.Handle a = new ItemTransferEngine.Handle() {
-            public FakeItemHandler handler() {
-                return source;
+        ResourceTransferEngine.Handle a = new ResourceTransferEngine.Handle() {
+            private final ResourcePort port = new ItemResourcePort(source, PROVIDER);
+
+            public ResourcePort port() {
+                return port;
             }
 
             public boolean valid() {
@@ -149,9 +178,11 @@ final class ItemTransferEngineTest {
                 return shared;
             }
         };
-        ItemTransferEngine.Handle b = new ItemTransferEngine.Handle() {
-            public FakeItemHandler handler() {
-                return target;
+        ResourceTransferEngine.Handle b = new ResourceTransferEngine.Handle() {
+            private final ResourcePort port = new ItemResourcePort(target, PROVIDER);
+
+            public ResourcePort port() {
+                return port;
             }
 
             public boolean valid() {
@@ -162,7 +193,7 @@ final class ItemTransferEngineTest {
                 return shared;
             }
         };
-        var r = engine.commit(a, 0, b, 0, IRON, 64, recovery, ServerSettings.RecoveryLimits.defaults(), budget);
+        var r = engine.commitGreedy(a, 0, b, 0, IRON, 64, recovery, ServerSettings.RecoveryLimits.defaults(), budget);
         assertEquals(0, r.moved());
         assertEquals(0, budget.calls());
     }
@@ -216,8 +247,9 @@ final class ItemTransferEngineTest {
                     1L);
         recovery.restore(occupied);
         source.stacks[0] = IRON.stack(64);
-        var r = engine.commit(s, 0, t, 0, IRON, 64, recovery, new ServerSettings.RecoveryLimits(64, 1048576), budget);
-        assertEquals(ItemTransferEngine.Failure.RECOVERY_FULL, r.failure());
+        var r = engine.commitGreedy(
+                s, 0, t, 0, IRON, 64, recovery, new ServerSettings.RecoveryLimits(64, 1048576), budget);
+        assertEquals(ResourceTransferEngine.Failure.RECOVERY_FULL, r.failure());
         assertEquals(64, source.stacks[0].getCount());
     }
 }

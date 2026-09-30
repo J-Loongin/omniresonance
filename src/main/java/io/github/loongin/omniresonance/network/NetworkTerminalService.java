@@ -623,6 +623,7 @@ public final class NetworkTerminalService {
                         case LOCK_EXPIRED -> NetworkTerminalResponse.Reason.LOCK_EXPIRED;
                         case STALE_REVISION -> NetworkTerminalResponse.Reason.STALE_REVISION;
                         case INVALID_REQUEST -> NetworkTerminalResponse.Reason.INVALID_REQUEST;
+                        case INVALID_NAME -> NetworkTerminalResponse.Reason.INVALID_NAME;
                         case NAME_CONFLICT -> NetworkTerminalResponse.Reason.NAME_CONFLICT;
                         case QUOTA_REACHED -> NetworkTerminalResponse.Reason.QUOTA_REACHED;
                     });
@@ -830,8 +831,8 @@ public final class NetworkTerminalService {
                     UUID token = session.sampleToken;
                     session.sampleSequence = 0;
                     session.sampleToken = null;
-                    if (token != null && session.presetEdit != null)
-                        filters().cancelSample(session.player, session.presetEdit, token);
+                    if (token != null && session.edits.preset() != null)
+                        filters().cancelSample(session.player, session.edits.preset(), token);
                     directReplies.accept(
                             session.player,
                             new NetworkTerminalResponse.Failure(
@@ -1033,26 +1034,19 @@ public final class NetworkTerminalService {
         cancelFilterTransfer(session);
         session.sampleSequence = 0;
         session.sampleToken = null;
-        if (session.presetEdit != null && filters != null) filters.cancel(player, session.presetEdit);
-        session.presetEdit = null;
-        if (session.edit != null) {
-            safeCancel(player, session.edit);
+        switch (session.edits.current()) {
+            case null -> {}
+            case TerminalEditSession.Preset lease -> {
+                if (filters != null) filters.cancel(player, lease.edit());
+            }
+            case TerminalEditSession.Topology lease -> safeCancel(player, lease.edit());
+            case TerminalEditSession.TopologyDeletion lease ->
+                safeCancel(player, lease.edit().edit());
+            case TerminalEditSession.NetworkRename lease -> safeCancel(player, lease.edit());
+            case TerminalEditSession.NetworkDeletion lease -> safeCancel(player, lease.edit());
+            case TerminalEditSession.Removal lease -> administration().cancel(player, lease.edit());
         }
-        if (session.deletion != null) {
-            safeCancel(player, session.deletion.edit());
-        }
-        session.edit = null;
-        session.deletion = null;
-        if (session.networkRename != null) {
-            safeCancel(player, session.networkRename);
-        }
-        if (session.networkDeletion != null) {
-            safeCancel(player, session.networkDeletion);
-        }
-        session.networkRename = null;
-        session.networkDeletion = null;
-        if (session.removal != null) administration().cancel(player, session.removal);
-        session.removal = null;
+        session.edits.clear();
     }
 
     private void cancelSessionEdit(ServerPlayer player, Session session) {
@@ -1126,7 +1120,7 @@ public final class NetworkTerminalService {
     }
 
     private static NetworkTopologyService.Edit requireEdit(Session session) {
-        return Objects.requireNonNull(session.edit, "terminal edit");
+        return Objects.requireNonNull(session.edits.topology(), "terminal edit");
     }
 
     private static void requireLayer(Session session, Layer expected) {
@@ -1170,25 +1164,27 @@ public final class NetworkTerminalService {
         }
         if (request instanceof NetworkTerminalRequest.BeginRenameNetwork) {
             requireLayer(session, Layer.NETWORK_SETTINGS);
-            session.networkRename = networkSettings().beginRename(sender, networkId);
+            session.edits.requireIdle();
+            session.edits.begin(
+                    new TerminalEditSession.NetworkRename(networkSettings().beginRename(sender, networkId)));
             session.layer = Layer.NETWORK_RENAME;
             return view(request, session, new NetworkTerminalState.NetworkRename(settingsSummary(sender, networkId)));
         }
         if (request instanceof NetworkTerminalRequest.RenameNetwork rename) {
             requireLayer(session, Layer.NETWORK_RENAME);
             NetworkSettingsService.RenameEdit edit =
-                    Objects.requireNonNull(session.networkRename, "network rename edit");
+                    Objects.requireNonNull(session.edits.networkRename(), "network rename edit");
             try {
                 networkSettings().rename(sender, edit, rename.name());
             } catch (NetworkSettingsService.Rejected rejected) {
                 if (rejected.reason() != NetworkSettingsService.Reason.INVALID_NAME
                         && rejected.reason() != NetworkSettingsService.Reason.NAME_CONFLICT) {
-                    session.networkRename = null;
+                    session.edits.clear();
                     session.layer = Layer.NETWORK_SETTINGS;
                 }
                 throw rejected;
             }
-            session.networkRename = null;
+            session.edits.clear();
             session.layer = Layer.NETWORK_SETTINGS;
             return view(request, session, networkSettingsState(sender, networkId));
         }
@@ -1199,18 +1195,20 @@ public final class NetworkTerminalService {
         }
         if (request instanceof NetworkTerminalRequest.RequestDeleteNetwork) {
             requireLayer(session, Layer.NETWORK_SETTINGS);
-            session.networkDeletion = networkSettings().beginDeletion(sender, networkId);
+            session.edits.requireIdle();
+            session.edits.begin(
+                    new TerminalEditSession.NetworkDeletion(networkSettings().beginDeletion(sender, networkId)));
             session.layer = Layer.NETWORK_DELETE;
-            return view(request, session, networkDeleteState(sender, networkId, session.networkDeletion));
+            return view(request, session, networkDeleteState(sender, networkId, session.edits.networkDeletion()));
         }
         if (request instanceof NetworkTerminalRequest.ConfirmDeleteNetwork) {
             requireLayer(session, Layer.NETWORK_DELETE);
             NetworkSettingsService.DeletionEdit deletion =
-                    Objects.requireNonNull(session.networkDeletion, "network deletion edit");
+                    Objects.requireNonNull(session.edits.networkDeletion(), "network deletion edit");
             try {
                 networkSettings().delete(sender, deletion);
             } catch (NetworkSettingsService.Rejected rejected) {
-                session.networkDeletion = null;
+                session.edits.clear();
                 session.layer = Layer.NETWORK_SETTINGS;
                 if (rejected.reason() == NetworkSettingsService.Reason.STALE_REVISION
                         || rejected.reason() == NetworkSettingsService.Reason.LOCK_EXPIRED
@@ -1226,7 +1224,7 @@ public final class NetworkTerminalService {
                 }
                 throw rejected;
             }
-            session.networkDeletion = null;
+            session.edits.clear();
             session.networkId = null;
             session.layer = Layer.DIRECTORY;
             closeDeletedNetworkSessions(networkId, session);
@@ -1282,7 +1280,9 @@ public final class NetworkTerminalService {
         }
         if (request instanceof NetworkTerminalRequest.RequestRemoveAdministrator remove) {
             requireLayer(session, Layer.MEMBERS);
-            session.removal = administration().beginRemoval(sender, networkId, remove.target());
+            session.edits.requireIdle();
+            session.edits.begin(
+                    new TerminalEditSession.Removal(administration().beginRemoval(sender, networkId, remove.target())));
             session.layer = Layer.ADMIN_REMOVE;
             return view(
                     request,
@@ -1293,11 +1293,11 @@ public final class NetworkTerminalService {
         }
         if (request instanceof NetworkTerminalRequest.ConfirmRemoveAdministrator) {
             requireLayer(session, Layer.ADMIN_REMOVE);
-            var edit = Objects.requireNonNull(session.removal, "removal");
+            var edit = Objects.requireNonNull(session.edits.removal(), "removal");
             try {
                 administration().remove(sender, edit);
             } catch (NetworkAdministrationService.Rejected rejected) {
-                session.removal = null;
+                session.edits.clear();
                 session.layer = Layer.MEMBERS;
                 return new NetworkTerminalResponse.Failure(
                         request.viewId(),
@@ -1306,7 +1306,7 @@ public final class NetworkTerminalService {
                         membershipReason(rejected.reason()),
                         members(sender, networkId, null, false, null));
             }
-            session.removal = null;
+            session.edits.clear();
             session.layer = Layer.MEMBERS;
             revokeAccess(edit.target(), networkId);
             return view(request, session, members(sender, networkId, null, false, null));
@@ -1323,7 +1323,8 @@ public final class NetworkTerminalService {
         }
         if (request instanceof NetworkTerminalRequest.BeginCreateTunnel begin) {
             requireLayer(session, Layer.TUNNELS);
-            session.edit = authority.acquireTunnelCollection(sender, networkId);
+            session.edits.requireIdle();
+            session.edits.begin(new TerminalEditSession.Topology(authority.acquireTunnelCollection(sender, networkId)));
             session.layer = Layer.TUNNEL_EDIT;
             return view(
                     request,
@@ -1341,7 +1342,9 @@ public final class NetworkTerminalService {
             if (!requireSelectedTunnel(session).equals(begin.tunnelId())) {
                 throw new IllegalArgumentException("Tunnel settings identity mismatch");
             }
-            session.edit = authority.acquireTunnel(sender, networkId, begin.tunnelId());
+            session.edits.requireIdle();
+            session.edits.begin(
+                    new TerminalEditSession.Topology(authority.acquireTunnel(sender, networkId, begin.tunnelId())));
             NetworkTopologyService.TunnelView tunnel = authority.inspectTunnel(sender, networkId, begin.tunnelId());
             session.layer = Layer.TUNNEL_EDIT;
             return view(
@@ -1358,7 +1361,7 @@ public final class NetworkTerminalService {
             }
             authority.createTunnel(
                     sender, edit, new ManagedName(create.tunnelName()), new ManagedName(create.initialChannelName()));
-            session.edit = null;
+            session.edits.clear();
             session.layer = Layer.TUNNELS;
             return view(request, session, tunnelList(sender, networkId, null, false));
         }
@@ -1369,7 +1372,7 @@ public final class NetworkTerminalService {
                 throw new IllegalArgumentException("Wrong tunnel rename edit kind");
             }
             authority.renameTunnel(sender, edit, new ManagedName(rename.name()));
-            session.edit = null;
+            session.edits.clear();
             UUID tunnelId = requireSelectedTunnel(session);
             NetworkTopologyService.TunnelView tunnel = authority.inspectTunnel(sender, networkId, tunnelId);
             session.layer = Layer.CHANNELS;
@@ -1415,42 +1418,48 @@ public final class NetworkTerminalService {
             if (!requireSelectedTunnel(session).equals(delete.tunnelId())) {
                 throw new IllegalArgumentException("Tunnel settings identity mismatch");
             }
-            session.deletion = authority.beginTunnelDeletion(sender, networkId, delete.tunnelId());
+            session.edits.requireIdle();
+            session.edits.begin(new TerminalEditSession.TopologyDeletion(
+                    authority.beginTunnelDeletion(sender, networkId, delete.tunnelId())));
             session.layer = Layer.DELETE;
             NetworkTopologyService.TunnelView tunnel = authority.inspectTunnel(sender, networkId, delete.tunnelId());
-            return view(request, session, deleteState(sender, networkId, tunnel, session.deletion));
+            return view(request, session, deleteState(sender, networkId, tunnel, session.edits.topologyDeletion()));
         }
         if (request instanceof NetworkTerminalRequest.ConfirmDelete) {
             requireLayer(session, Layer.DELETE);
-            NetworkTopologyService.DeletionEdit deletion = Objects.requireNonNull(session.deletion, "deletion");
+            NetworkTopologyService.DeletionEdit deletion =
+                    Objects.requireNonNull(session.edits.topologyDeletion(), "deletion");
             if (deletion.edit().kind() != NetworkTopologyService.Kind.TUNNEL) {
                 throw new IllegalArgumentException("Terminal deletion is not a tunnel");
             }
             authority.confirmTunnelDeletion(sender, deletion);
-            session.deletion = null;
+            session.edits.clear();
             session.tunnelId = null;
             session.layer = Layer.TUNNELS;
             return view(request, session, tunnelList(sender, networkId, null, false));
         }
         if (request instanceof NetworkTerminalRequest.Heartbeat) {
-            if (session.presetEdit != null) {
-                filters().heartbeat(sender, session.presetEdit);
+            if (session.edits.preset() != null) {
+                filters().heartbeat(sender, session.edits.preset());
                 return null;
             }
-            if (session.networkRename != null) {
-                networkSettings().heartbeat(sender, session.networkRename);
+            if (session.edits.networkRename() != null) {
+                networkSettings().heartbeat(sender, session.edits.networkRename());
                 return null;
             }
-            if (session.networkDeletion != null) {
-                networkSettings().heartbeat(sender, session.networkDeletion);
+            if (session.edits.networkDeletion() != null) {
+                networkSettings().heartbeat(sender, session.edits.networkDeletion());
                 return null;
             }
-            if (session.removal != null) {
-                administration().heartbeat(sender, session.removal);
+            if (session.edits.removal() != null) {
+                administration().heartbeat(sender, session.edits.removal());
                 return null;
             }
-            NetworkTopologyService.Edit edit =
-                    session.edit != null ? session.edit : session.deletion == null ? null : session.deletion.edit();
+            NetworkTopologyService.Edit edit = session.edits.topology() != null
+                    ? session.edits.topology()
+                    : session.edits.topologyDeletion() == null
+                            ? null
+                            : session.edits.topologyDeletion().edit();
             if (edit == null) {
                 throw new IllegalArgumentException("No terminal edit to renew");
             }
@@ -1672,8 +1681,9 @@ public final class NetworkTerminalService {
         if (request instanceof NetworkTerminalRequest.BeginResourceRule begin) {
             requireLayer(session, Layer.PRESET);
             if (!Objects.equals(session.presetId, begin.presetId())) throw new IllegalArgumentException("Wrong preset");
+            session.edits.requireIdle();
             var edit = filters().beginRule(actor, networkId, begin.presetId(), begin.ruleId(), begin.remove());
-            session.presetEdit = edit;
+            session.edits.begin(new TerminalEditSession.Preset(edit));
             session.layer = Layer.PRESET_EDIT;
             return view(
                     request,
@@ -1691,7 +1701,7 @@ public final class NetworkTerminalService {
         }
         if (request instanceof NetworkTerminalRequest.SampleResourceRule sample) {
             requireLayer(session, Layer.PRESET_EDIT);
-            var edit = Objects.requireNonNull(session.presetEdit);
+            var edit = Objects.requireNonNull(session.edits.preset());
             long startedTick = gameTick();
             session.sampleSequence = request.sequence();
             session.sampleStartedTick = startedTick;
@@ -1704,12 +1714,12 @@ public final class NetworkTerminalService {
                             sample.tank(),
                             () -> sessions.get(actor.getUUID()) == session
                                     && session.layer == Layer.PRESET_EDIT
-                                    && session.presetEdit == edit,
+                                    && session.edits.preset() == edit,
                             () -> session.sampleSequence == request.sequence() && gameTick() - startedTick < 200,
                             result -> {
                                 if (sessions.get(actor.getUUID()) != session
                                         || session.layer != Layer.PRESET_EDIT
-                                        || session.presetEdit != edit
+                                        || session.edits.preset() != edit
                                         || session.sampleSequence != request.sequence()
                                         || !Objects.equals(session.sampleToken, result.token())
                                         || gameTick() - startedTick >= 200) return;
@@ -1769,7 +1779,7 @@ public final class NetworkTerminalService {
         }
         if (request instanceof NetworkTerminalRequest.PrepareResourceRuleUpload upload) {
             requireLayer(session, Layer.PRESET_EDIT);
-            var edit = Objects.requireNonNull(session.presetEdit);
+            var edit = Objects.requireNonNull(session.edits.preset());
             filters().validateEdit(actor, edit);
             if (session.filterTransfer != null) throw new IllegalStateException("Transfer already active");
             pool().beginUpload(actor.getUUID(), session.id, upload.transferId(), upload.length(), gameTick());
@@ -1826,8 +1836,9 @@ public final class NetworkTerminalService {
                 if (!Objects.equals(session.presetId, begin.presetId()))
                     throw new IllegalArgumentException("Preset identity mismatch");
             }
+            session.edits.requireIdle();
             var edit = filters().begin(actor, networkId, begin.operation(), begin.presetId(), begin.originalRule());
-            session.presetEdit = edit;
+            session.edits.begin(new TerminalEditSession.Preset(edit));
             session.presetId = begin.presetId();
             session.layer = Layer.PRESET_EDIT;
             return view(
@@ -1842,8 +1853,8 @@ public final class NetworkTerminalService {
         }
         if (request instanceof NetworkTerminalRequest.SavePresetEdit save) {
             requireLayer(session, Layer.PRESET_EDIT);
-            UUID saved = filters().save(actor, Objects.requireNonNull(session.presetEdit), save.value());
-            session.presetEdit = null;
+            UUID saved = filters().save(actor, Objects.requireNonNull(session.edits.preset()), save.value());
+            session.edits.clear();
             session.presetId = saved;
             if (saved == null) {
                 session.layer = Layer.FILTERS;
@@ -1869,8 +1880,8 @@ public final class NetworkTerminalService {
             Session session,
             long sequence,
             @Nullable io.github.loongin.omniresonance.filter.ResourceRuleIntent intent) {
-        UUID saved = filters().saveRule(actor, Objects.requireNonNull(session.presetEdit), intent);
-        session.presetEdit = null;
+        UUID saved = filters().saveRule(actor, Objects.requireNonNull(session.edits.preset()), intent);
+        session.edits.clear();
         session.layer = Layer.PRESET;
         return new NetworkTerminalResponse.ViewState(
                 session.viewId,
@@ -1907,7 +1918,7 @@ public final class NetworkTerminalService {
                         gameTick(),
                         () -> io.github.loongin.omniresonance.networking.FullFilterCodec.snapshot(snapshot));
         session.filterTransfer = new FilterTransfer(
-                transfer, sequence, size, false, snapshot.id(), snapshot.revision(), session.presetEdit);
+                transfer, sequence, size, false, snapshot.id(), snapshot.revision(), session.edits.preset());
         session.filterTransfer.expiresTick = gameTick() + 200;
         return new NetworkTerminalResponse.RuleTransferReady(
                 session.viewId, session.id, sequence, transfer, size, false, sampleToken, tanks, tank);
@@ -1945,7 +1956,7 @@ public final class NetworkTerminalService {
                 || sessions.get(session.player.getUUID()) != session
                 || session.filterTransfer != transfer
                 || !Objects.equals(session.presetId, transfer.preset)
-                || session.presetEdit != transfer.edit
+                || session.edits.preset() != transfer.edit
                 || session.layer != (transfer.edit == null ? Layer.PRESET : Layer.PRESET_EDIT)) return false;
         var current = filters().summary(session.player, Objects.requireNonNull(session.networkId), transfer.preset);
         if (current == null || current.revision() != transfer.revision) return false;
@@ -2147,12 +2158,7 @@ public final class NetworkTerminalService {
         private @Nullable FilterTransfer filterTransfer;
         private long sampleSequence, sampleStartedTick;
         private @Nullable UUID sampleToken;
-        private @Nullable io.github.loongin.omniresonance.filter.ItemFilterService.Edit presetEdit;
-        private @Nullable NetworkTopologyService.Edit edit;
-        private @Nullable NetworkTopologyService.DeletionEdit deletion;
-        private @Nullable NetworkAdministrationService.RemovalEdit removal;
-        private @Nullable NetworkSettingsService.RenameEdit networkRename;
-        private @Nullable NetworkSettingsService.DeletionEdit networkDeletion;
+        private final TerminalEditSession edits = new TerminalEditSession();
         private List<NetworkAdministrationService.PlayerIdentity> candidates = List.of();
         private @Nullable UUID candidateSnapshotId;
         private int nextCandidateOffset;

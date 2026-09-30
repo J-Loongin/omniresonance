@@ -156,6 +156,21 @@ public final class NodeDirectoryService implements AutoCloseable {
             player.displayClientMessage(
                     net.minecraft.network.chat.Component.translatable("omniresonance.nodes.rejected"), true);
         }
+        if (!b.rejected
+                && (request.action() == NodeDirectoryRequest.Action.RENAME
+                        || request.action() == NodeDirectoryRequest.Action.SET_ENABLED)) {
+            var data = repository.findLoadedNetwork(network).orElseThrow();
+            var changed = data.findNode(request.node()).orElse(null);
+            if (changed != null) {
+                // Only the bounded visible window is patched; no full-catalog rebuild or optimistic value.
+                for (int i = 0; i < b.found.size(); i++) {
+                    if (b.found.get(i).node().nodeId().equals(changed.nodeId())) {
+                        b.found.set(i, row(player, network, data, changed));
+                        break;
+                    }
+                }
+            }
+        }
         if (request.action() != NodeDirectoryRequest.Action.QUERY && !b.pending && !b.snapshot.isEmpty()) {
             publish(b, repository.findLoadedNetwork(network).orElseThrow(), true);
             b.nextTick = server.overworld().getGameTime() + 20;

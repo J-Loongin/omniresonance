@@ -6,6 +6,7 @@ import io.github.loongin.omniresonance.filter.ResourceFilterCache;
 import io.github.loongin.omniresonance.filter.ResourceFilterCompiler;
 import io.github.loongin.omniresonance.filter.ResourceFilterPreset;
 import io.github.loongin.omniresonance.network.DirectNodeBinding;
+import io.github.loongin.omniresonance.network.DomainNodeConfiguration;
 import io.github.loongin.omniresonance.node.NetworkNodeDirectory;
 import io.github.loongin.omniresonance.node.NetworkNodeRecord;
 import io.github.loongin.omniresonance.node.NodeMode;
@@ -34,7 +35,6 @@ import org.jetbrains.annotations.Nullable;
  * with their last reference; a missing owner is retried only on activation or an explicit owner-library event, never per candidate.
  */
 public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirectScheduler.Environment {
-    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(ResourceDirectRuntime.class);
     private final MinecraftServer server;
     private final SavedNetworkRepository repository;
     private final NetworkNodeDirectory nodes;
@@ -474,7 +474,7 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
                 var entity = (io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity)
                         level.getBlockEntity(node.position().pos());
                 entity.publishExternalInput(null);
-                entity.publishPipeConnections(0);
+                entity.publishPipeConnections(PipeConnections.NONE);
             }
         }
         repository.onRuntimeChanged(null);
@@ -545,53 +545,57 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
     }
 
     private boolean outputActive(DomainOutputScheduler.Configuration c) {
-        var data = repository.findLoadedNetwork(c.networkId()).orElse(null);
-        var node = data == null ? null : data.findNode(c.nodeId()).orElse(null);
         var publication = outputPublications.get(c.nodeId());
-        if (node == null
-                || !node.enabled()
-                || node.mode() != NodeMode.DOMAIN
-                || node.revision() != c.revision()
-                || publication == null
-                || publication.configuration() != c
-                || data.domainConfiguration(c.nodeId()).orElse(null) != publication.binding()
-                || !publication.binding().configured()) return false;
-        var directory = nodes.byId(c.nodeId()).entry().orElse(null);
-        if (directory == null
-                || !directory.networkId().equals(c.networkId())
-                || !directory.record().equals(node)
-                || !endpoints.physical(node)
-                || repository.domainStorage(c.networkId()).state()
-                        == io.github.loongin.omniresonance.persistence.DomainStorage.State.UNAVAILABLE) return false;
-        var level = server.getLevel(node.position().dimension());
-        return c.policy().redstoneCondition() == RedstoneCondition.IGNORE
-                || level.hasNeighborSignal(node.position().pos())
-                        == (c.policy().redstoneCondition() == RedstoneCondition.SIGNAL);
+        return publication != null
+                && publication.configuration() == c
+                && activeDomainNode(
+                                c.networkId(),
+                                c.nodeId(),
+                                c.revision(),
+                                publication.binding(),
+                                c.policy().redstoneCondition())
+                        != null;
     }
 
     private boolean domainActive(DomainInputScheduler.Configuration c) {
-        var data = repository.findLoadedNetwork(c.networkId()).orElse(null);
-        var node = data == null ? null : data.findNode(c.nodeId()).orElse(null);
+        return activeInputNode(c) != null;
+    }
+
+    private @Nullable NetworkNodeRecord activeInputNode(DomainInputScheduler.Configuration c) {
         var publication = domainPublications.get(c.nodeId());
+        if (publication == null || publication.configuration() != c) return null;
+        return activeDomainNode(
+                c.networkId(),
+                c.nodeId(),
+                c.revision(),
+                publication.binding(),
+                c.policy().redstoneCondition());
+    }
+
+    /** Rechecks authority on the server thread without activating storage or retaining a cross-call snapshot.
+     * Callers validate their direction-specific publication before entering this shared physical/domain gate. */
+    private @Nullable NetworkNodeRecord activeDomainNode(
+            UUID networkId, UUID nodeId, long revision, DomainNodeConfiguration binding, RedstoneCondition redstone) {
+        var data = repository.findLoadedNetwork(networkId).orElse(null);
+        var node = data == null ? null : data.findNode(nodeId).orElse(null);
         if (node == null
                 || !node.enabled()
                 || node.mode() != NodeMode.DOMAIN
-                || node.revision() != c.revision()
-                || publication == null
-                || publication.configuration() != c
-                || data.domainConfiguration(c.nodeId()).orElse(null) != publication.binding()
-                || !publication.binding().configured()) return false;
-        var directory = nodes.byId(c.nodeId()).entry().orElse(null);
+                || node.revision() != revision
+                || data.domainConfiguration(nodeId).orElse(null) != binding
+                || !binding.configured()) return null;
+        var directory = nodes.byId(nodeId).entry().orElse(null);
         if (directory == null
-                || !directory.networkId().equals(c.networkId())
+                || !directory.networkId().equals(networkId)
                 || !directory.record().equals(node)
                 || !endpoints.physical(node)
-                || repository.domainStorage(c.networkId()).state()
-                        == io.github.loongin.omniresonance.persistence.DomainStorage.State.UNAVAILABLE) return false;
+                || repository.domainStorage(networkId).state()
+                        == io.github.loongin.omniresonance.persistence.DomainStorage.State.UNAVAILABLE) return null;
         var level = server.getLevel(node.position().dimension());
-        return c.policy().redstoneCondition() == RedstoneCondition.IGNORE
-                || level.hasNeighborSignal(node.position().pos())
-                        == (c.policy().redstoneCondition() == RedstoneCondition.SIGNAL);
+        return redstone == RedstoneCondition.IGNORE
+                        || level.hasNeighborSignal(node.position().pos()) == (redstone == RedstoneCondition.SIGNAL)
+                ? node
+                : null;
     }
 
     private long directSourceTurn(
@@ -837,22 +841,22 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         var entity = (io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity)
                 level.getBlockEntity(node.position().pos());
         var data = repository.findLoadedNetwork(entry.networkId()).orElse(null);
-        long mask = 0;
+        PipeConnections connections = PipeConnections.NONE;
         if (data != null && node.enabled()) {
             if (node.mode() == NodeMode.DOMAIN) {
                 var binding = data.domainConfiguration(id).orElse(null);
                 if (binding != null && binding.configured())
-                    mask = connectionMask(
+                    connections = PipeConnections.forScope(
                             binding.policy().scope(), binding.workingFaces().effectiveMask(node.facing()));
             } else if (node.mode() == NodeMode.DIRECT) {
                 for (var binding : data.directBindings(id))
-                    mask |= connectionMask(
-                            binding.policy().scope(), binding.workingFaces().effectiveMask(node.facing()));
+                    connections = connections.union(PipeConnections.forScope(
+                            binding.policy().scope(), binding.workingFaces().effectiveMask(node.facing())));
             }
         }
         var publication = domainPublications.get(id);
         Inbound input = null;
-        if (publication != null && node.enabled() && mask != 0) {
+        if (publication != null && node.enabled() && !connections.isEmpty()) {
             input = inbound.get(id);
             if (input == null || input.publication != publication || input.identity != entity.externalIdentity()) {
                 input = new Inbound(publication, entity.externalIdentity());
@@ -861,17 +865,7 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             }
         } else if (inbound.remove(id) != null) inboundPreparation = null;
         entity.publishExternalInput(input);
-        entity.publishPipeConnections(mask);
-    }
-
-    private static long connectionMask(ResourceScope scope, int faces) {
-        long mask = scope.includes(ResourceTypes.ITEM) ? faces : 0;
-        if (scope.includes(ResourceTypes.FLUID)) mask |= faces << 6;
-        if (scope.includes(ResourceTypes.ENERGY)) mask |= faces << 12;
-        if (scope.includes(ResourceTypes.CHEMICAL)) mask |= faces << 18;
-        if (scope.includes(ResourceTypes.SOURCE)) mask |= (long) faces << 24;
-        if (scope.includes(ResourceTypes.SOUL)) mask |= (long) faces << 30;
-        return mask;
+        entity.publishPipeConnections(connections);
     }
 
     private void prepareInbound(TransferWorkBudget budget) {
@@ -888,12 +882,16 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
         }
     }
 
-    private final class Inbound implements ExternalDomainInput {
+    private final class Inbound extends ExternalDomainDelivery {
         private final DomainPublication publication;
         private final Object identity;
-        private boolean failed;
 
         Inbound(DomainPublication publication, Object identity) {
+            super(
+                    filters,
+                    publication.filter(),
+                    publication.configuration().policy().filterMode(),
+                    clock);
             this.publication = publication;
             this.identity = identity;
         }
@@ -902,18 +900,15 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             requireThread();
             var c = publication.configuration();
             if (closed
-                    || failed
+                    || failed()
                     || side == null
                     || !c.policy().scope().includes(type)
                     || !adapters.types().contains(type)) return false;
             var domain = repository.inspectDomain(c.networkId());
             var ledger = domain == null ? null : domain.activatedLedger().orElse(null);
-            if (ledger == null || !ledger.isAvailable() || !domainActive(c)) return false;
-            var node = repository
-                    .findLoadedNetwork(c.networkId())
-                    .orElseThrow()
-                    .findNode(c.nodeId())
-                    .orElseThrow();
+            if (ledger == null || !ledger.isAvailable()) return false;
+            var node = activeInputNode(c);
+            if (node == null) return false;
             var entity = server.getLevel(node.position().dimension())
                     .getBlockEntity(node.position().pos());
             if (!(entity instanceof io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity physical)
@@ -921,54 +916,36 @@ public final class ResourceDirectRuntime implements AutoCloseable, ResourceDirec
             return (c.faces().effectiveMask(node.facing()) & (1 << side.get3DDataValue())) != 0;
         }
 
-        public long insert(Direction side, ResourceVariant variant, long maximum, boolean simulate) {
+        @Override
+        protected void requireServerThread() {
             requireThread();
-            if (maximum <= 0 || !available(side, variant.key().typeId())) return 0;
-            var c = publication.configuration();
-            Object token = publication.filter() == null ? unfilteredToken : filters.token(publication.filter());
-            if (publication.filter() != null) {
-                var compiled = filters.view(publication.filter()).compiled();
-                if (compiled == null) return 0;
-                Boolean allowed =
-                        compiled.fastDecision(variant.key().typeId(), c.policy().filterMode());
-                if (allowed == null) {
-                    long start = clock.getAsLong();
-                    long duration = (long) (currentSettings.scheduler().cpuBudgetMillisPerTick() * 1_000_000);
-                    var evaluation = compiled.evaluate(
-                            compiled.prepareCandidate(variant), c.policy().filterMode());
-                    int remaining = 4096;
-                    while (!evaluation.done() && remaining > 0 && clock.getAsLong() - start < duration) {
-                        remaining -= evaluation.step(Math.min(256, remaining));
-                    }
-                    if (!evaluation.done() || clock.getAsLong() - start >= duration) return 0;
-                    allowed = evaluation.allowed();
-                }
-                if (!allowed) return 0;
-            }
-            if (!available(side, variant.key().typeId())
-                    || publication.filter() != null
-                            && !java.util.Objects.equals(token, filters.token(publication.filter()))) return 0;
-            var ledger =
-                    repository.inspectDomain(c.networkId()).activatedLedger().orElseThrow();
-            long limit = currentSettings.storageVariantLimitPerNetwork();
-            long accepted = Math.min(maximum, ledger.insertCapacity(variant.key(), limit));
-            if (simulate || accepted == 0) return accepted;
-            try (var deposit =
-                    ledger.reserveDeposit(variant.key(), accepted, limit).orElse(null)) {
-                if (deposit == null
-                        || !available(side, variant.key().typeId())
-                        || publication.filter() != null
-                                && !java.util.Objects.equals(token, filters.token(publication.filter()))) return 0;
-                deposit.commit(accepted);
-            } catch (RuntimeException failure) {
-                failed = true;
-                ledger.invalidate();
-                LOGGER.error("External domain insertion failed; outcome must not be inferred or retried", failure);
-                throw failure;
-            }
+        }
+
+        @Override
+        protected io.github.loongin.omniresonance.storage.DomainLedger activatedLedger() {
+            return repository
+                    .inspectDomain(publication.configuration().networkId())
+                    .activatedLedger()
+                    .orElseThrow();
+        }
+
+        @Override
+        protected long variantLimit() {
+            return currentSettings.storageVariantLimitPerNetwork();
+        }
+
+        @Override
+        protected long matchingBudgetNanos() {
+            return (long) (currentSettings.scheduler().cpuBudgetMillisPerTick() * 1_000_000);
+        }
+
+        @Override
+        protected void moved(ResourceVariant variant, long accepted) {
             telemetry.moved(
-                    c.networkId(), variant.key().typeId(), server.overworld().getGameTime(), accepted);
-            return accepted;
+                    publication.configuration().networkId(),
+                    variant.key().typeId(),
+                    server.overworld().getGameTime(),
+                    accepted);
         }
     }
 

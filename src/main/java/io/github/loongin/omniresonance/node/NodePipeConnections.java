@@ -2,6 +2,7 @@
 package io.github.loongin.omniresonance.node;
 
 import io.github.loongin.omniresonance.registry.ModBlockEntities;
+import io.github.loongin.omniresonance.transfer.PipeConnections;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
 import net.neoforged.neoforge.energy.EnergyStorage;
@@ -23,7 +24,7 @@ public final class NodePipeConnections {
         event.registerBlockEntity(
                 Capabilities.ItemHandler.BLOCK,
                 ModBlockEntities.RESONANCE_TRANSFER_NODE.get(),
-                (entity, side) -> !entity.pipeConnection(side, 0)
+                (entity, side) -> !entity.pipeConnection(side, PipeConnections.Type.ITEM)
                         ? null
                         : entity.externalInput() == null
                                 ? ITEMS
@@ -31,7 +32,7 @@ public final class NodePipeConnections {
         event.registerBlockEntity(
                 Capabilities.FluidHandler.BLOCK,
                 ModBlockEntities.RESONANCE_TRANSFER_NODE.get(),
-                (entity, side) -> !entity.pipeConnection(side, 1)
+                (entity, side) -> !entity.pipeConnection(side, PipeConnections.Type.FLUID)
                         ? null
                         : entity.externalInput() == null
                                 ? FLUIDS
@@ -39,7 +40,7 @@ public final class NodePipeConnections {
         event.registerBlockEntity(
                 Capabilities.EnergyStorage.BLOCK,
                 ModBlockEntities.RESONANCE_TRANSFER_NODE.get(),
-                (entity, side) -> !entity.pipeConnection(side, 2)
+                (entity, side) -> !entity.pipeConnection(side, PipeConnections.Type.ENERGY)
                         ? null
                         : entity.externalInput() == null ? ENERGY : new EnergyInput(entity.externalInput(), side));
     }

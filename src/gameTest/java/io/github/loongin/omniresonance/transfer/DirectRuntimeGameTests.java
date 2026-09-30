@@ -5,23 +5,17 @@ import io.github.loongin.omniresonance.bootstrap.OmniResonanceMod;
 import io.github.loongin.omniresonance.config.ServerSettings;
 import io.github.loongin.omniresonance.filter.FilterMode;
 import io.github.loongin.omniresonance.network.ManagedName;
-import io.github.loongin.omniresonance.network.NetworkMetadata;
 import io.github.loongin.omniresonance.network.TransferDirection;
 import io.github.loongin.omniresonance.network.WorkingFaces;
 import io.github.loongin.omniresonance.node.AbstractResonanceNodeBlock;
-import io.github.loongin.omniresonance.node.NetworkNodeDirectory;
 import io.github.loongin.omniresonance.node.NetworkNodeRecord;
 import io.github.loongin.omniresonance.node.NodeForm;
-import io.github.loongin.omniresonance.node.NodeMode;
 import io.github.loongin.omniresonance.node.NodePersistentState;
 import io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity;
 import io.github.loongin.omniresonance.persistence.NetworkSavedData;
 import io.github.loongin.omniresonance.persistence.SavedNetworkRepository;
 import io.github.loongin.omniresonance.registry.ModBlocks;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -40,423 +34,11 @@ import net.minecraft.world.level.storage.DimensionDataStorage;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
-/** M2 saved-binding assertions migrated to ResourceDirectRuntime, with retained standalone legacy-cache coverage. */
+/** World scenarios for DirectRuntimeGameTests. */
 @GameTestHolder(OmniResonanceMod.MOD_ID)
 @PrefixGameTestTemplate(false)
-public final class ItemDirectTransferGameTests {
-    private ItemDirectTransferGameTests() {}
-
-    @GameTest(template = "bootstrap", timeoutTicks = 160)
-    public static void realMekanismItemPipeDeliversDirectlyToDomainInput(GameTestHelper helper) throws Exception {
-        if (!net.neoforged.fml.ModList.get().isLoaded("mekanism")) {
-            helper.succeed();
-            return;
-        }
-        var f = new Fixture(helper);
-        UUID id = f.node(2, TransferDirection.INPUT);
-        var n = f.data.findNode(id).orElseThrow();
-        n = f.data.setNodeMode(id, n.revision(), NodeMode.DOMAIN, true).orElseThrow();
-        f.data.saveDomainConfiguration(
-                id,
-                n.revision(),
-                new StoredResourcePolicy(ResourceTransferPolicy.defaults(TransferDirection.INPUT), java.util.Map.of()),
-                WorkingFaces.attachedFace(),
-                true);
-        f.sync();
-        helper.runAfterDelay(5, () -> {
-            var entity = (ResonanceNodeBlockEntity) helper.getLevel().getBlockEntity(f.pos(2));
-            var tag = new CompoundTag();
-            NodePersistentState.linked(id).writeOwnedFields(tag);
-            entity.loadCustomOnly(tag, helper.getLevel().registryAccess());
-            f.start();
-            f.tick(0);
-            NativeDeliveryPipe.place(helper, f.pos(2).below());
-            helper.runAfterDelay(80, () -> {
-                try {
-                    var ledger = f.repository
-                            .domainStorage(f.network)
-                            .activatedLedger()
-                            .orElseThrow();
-                    var iron = ItemVariant.from(
-                            new ItemStack(Items.IRON_INGOT), helper.getLevel().registryAccess());
-                    helper.assertTrue(ledger.amount(iron.key()) == 1, "Native item pipe did not deliver to the domain");
-                    var handler = helper.getLevel()
-                            .getCapability(
-                                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
-                                    f.pos(2),
-                                    Direction.DOWN);
-                    helper.assertTrue(handler.extractItem(0, 64, false).isEmpty(), "Delivery slot exposed extraction");
-                    helper.succeed();
-                } finally {
-                    helper.getLevel().setBlockAndUpdate(f.pos(2).below().east(), Blocks.AIR.defaultBlockState());
-                    try {
-                        f.close();
-                    } catch (Exception error) {
-                        throw new IllegalStateException(error);
-                    }
-                }
-            });
-        });
-    }
-
-    private static final class NativeDeliveryPipe {
-        static void place(GameTestHelper helper, BlockPos pos) {
-            var level = helper.getLevel();
-            level.setBlockAndUpdate(
-                    pos,
-                    mekanism.common.registries.MekanismBlocks.BASIC_LOGISTICAL_TRANSPORTER
-                            .get()
-                            .defaultBlockState());
-            level.setBlockAndUpdate(pos.east(), Blocks.CHEST.defaultBlockState());
-            ((ChestBlockEntity) level.getBlockEntity(pos.east())).setItem(0, new ItemStack(Items.IRON_INGOT));
-            var pipe = ((mekanism.common.tile.transmitter.TileEntityLogisticalTransporter) level.getBlockEntity(pos))
-                    .getTransmitter();
-            pipe.setConnectionTypeRaw(Direction.EAST, mekanism.common.lib.transmitter.ConnectionType.PULL);
-            pipe.refreshConnections();
-        }
-    }
-
-    @GameTest(template = "bootstrap")
-    public static void externalDeliveryHonorsFiltersAndRejectsIncompleteMatching(GameTestHelper helper)
-            throws Exception {
-        try (var f = new Fixture(helper)) {
-            UUID node = f.node(2, TransferDirection.INPUT);
-            UUID preset = new UUID(781, 1);
-            var owner = f.repository.createOwner(f.owner, null);
-            var rules = new java.util.ArrayList<io.github.loongin.omniresonance.filter.ResourceFilterRule>();
-            for (int i = 0; i < 5000; i++)
-                rules.add(new io.github.loongin.omniresonance.filter.ResourceFilterRule.Match(
-                        new UUID(782, i + 1),
-                        ResourceTypes.ITEM,
-                        io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.exact(
-                                net.minecraft.resources.ResourceLocation.parse("minecraft:stone")),
-                        io.github.loongin.omniresonance.filter.ComponentCondition.idOnly()));
-            rules.add(new io.github.loongin.omniresonance.filter.ResourceFilterRule.Match(
-                    new UUID(782, 5001),
-                    ResourceTypes.ITEM,
-                    io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.wholeType(),
-                    io.github.loongin.omniresonance.filter.ComponentCondition.idOnly()));
-            owner.putPreset(
-                    new io.github.loongin.omniresonance.filter.ResourceFilterPreset(
-                            preset, new ManagedName("Delivery"), 0, rules),
-                    0,
-                    -1,
-                    -1);
-            var n = f.data.findNode(node).orElseThrow();
-            n = f.data.setNodeMode(node, n.revision(), NodeMode.DOMAIN, true).orElseThrow();
-            f.data.saveDomainConfiguration(
-                    node,
-                    n.revision(),
-                    new StoredResourcePolicy(
-                            new ResourceTransferPolicy.Input(
-                                    1,
-                                    ResourceScope.all(),
-                                    RedstoneCondition.IGNORE,
-                                    preset,
-                                    FilterMode.WHITELIST,
-                                    java.util.Map.of(),
-                                    0),
-                            java.util.Map.of()),
-                    WorkingFaces.attachedFace(),
-                    true);
-            f.sync();
-            f.start();
-            f.tick(0);
-            var handler = helper.getLevel()
-                    .getCapability(
-                            net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
-                            f.pos(2),
-                            Direction.DOWN);
-            var iron = new ItemStack(Items.IRON_INGOT, 16);
-            var ledger = f.repository.domainStorage(f.network).activatedLedger().orElseThrow();
-            long revision = ledger.revision();
-            owner.setDirty(false);
-            f.data.setDirty(false);
-            for (int i = 0; i < 20; i++)
-                helper.assertTrue(
-                        handler.insertItem(0, iron, true).getCount() == 16, "Simulation advanced unready filter work");
-            helper.assertTrue(
-                    ledger.revision() == revision && !owner.isDirty() && !f.data.isDirty(),
-                    "Simulation dirtied authority");
-            for (int tick = 1; tick < 300; tick++) f.tick(tick);
-            helper.assertTrue(
-                    handler.insertItem(0, iron, false).getCount() == 16 && ledger.revision() == revision,
-                    "Over-budget candidate was partially committed");
-            owner.putPreset(
-                    new io.github.loongin.omniresonance.filter.ItemFilterPreset(
-                            preset,
-                            new ManagedName("Delivery"),
-                            1,
-                            java.util.Set.of(net.minecraft.resources.ResourceLocation.parse("minecraft:iron_ingot"))),
-                    owner.presetLibraryRevision(),
-                    -1,
-                    -1);
-            f.runtime.ownerLibraryChanged(f.owner);
-            helper.assertTrue(
-                    handler.insertItem(0, iron, true).getCount() == 16, "Stale filter accepted before preparation");
-            for (int tick = 300; tick < 304; tick++) f.tick(tick);
-            helper.assertTrue(
-                    handler.insertItem(0, new ItemStack(Items.GOLD_INGOT, 16), false)
-                                    .getCount()
-                            == 16,
-                    "Filter admitted forbidden resource");
-            helper.assertTrue(
-                    handler.insertItem(0, iron, true).isEmpty() && ledger.revision() == revision,
-                    "Prepared matching rejected or dirtied a valid resource");
-            helper.assertTrue(
-                    handler.insertItem(0, iron, false).isEmpty()
-                            && ledger.amount(ItemVariant.from(
-                                                    iron, helper.getLevel().registryAccess())
-                                            .key())
-                                    == 16,
-                    "Prepared valid delivery failed");
-        }
-        helper.succeed();
-    }
-
-    @GameTest(template = "bootstrap")
-    public static void domainInputAcceptsExternalItemsWithoutExposingItsInventory(GameTestHelper helper)
-            throws Exception {
-        try (var f = new Fixture(helper, io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create())) {
-            UUID id = f.node(2, TransferDirection.INPUT);
-            var n = f.data.findNode(id).orElseThrow();
-            n = f.data.setNodeMode(id, n.revision(), NodeMode.DOMAIN, true).orElseThrow();
-            var policy = new ResourceTransferPolicy.Input(
-                    100,
-                    ResourceScope.all(),
-                    RedstoneCondition.IGNORE,
-                    null,
-                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
-                    java.util.Map.of(
-                            ResourceTypes.ITEM,
-                            new ResourceTransferPolicy.InputOverride(1, ResourceTransferPolicy.BatchMode.EXACT, 64)),
-                    100);
-            f.data.saveDomainConfiguration(
-                    id,
-                    n.revision(),
-                    new StoredResourcePolicy(policy, java.util.Map.of()),
-                    WorkingFaces.attachedFace(),
-                    true);
-            f.sync();
-            f.start();
-            f.tick(0);
-            var handler = helper.getLevel()
-                    .getCapability(
-                            net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
-                            f.pos(2),
-                            Direction.DOWN);
-            helper.assertTrue(handler != null && handler.getSlots() > 0, "Input node has no external delivery slot");
-            var stack = new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT, 32);
-            var key =
-                    ItemVariant.from(stack, helper.getLevel().registryAccess()).key();
-            var ledger = f.repository.domainStorage(f.network).activatedLedger().orElseThrow();
-            long revision = ledger.revision();
-            helper.assertTrue(
-                    handler.insertItem(0, stack, true).isEmpty()
-                            && ledger.amount(key) == 0
-                            && ledger.revision() == revision,
-                    "Delivery simulation mutated storage or applied active quota");
-            helper.assertTrue(
-                    handler.insertItem(0, stack, false).isEmpty() && stack.getCount() == 32 && ledger.amount(key) == 32,
-                    "Delivery failed to conserve items independently of active batch/rate/retention");
-            helper.assertTrue(
-                    handler.getStackInSlot(0).isEmpty()
-                            && handler.extractItem(0, 64, false).isEmpty()
-                            && ledger.amount(key) == 32,
-                    "External handler exposed domain inventory");
-            io.github.loongin.omniresonance.transfer.ExternalResourceDeliveryChecks.verify(helper, f.pos(2), ledger);
-            var physical = (ResonanceNodeBlockEntity) helper.getLevel().getBlockEntity(f.pos(2));
-            var restored = new CompoundTag();
-            NodePersistentState.linked(id).writeOwnedFields(restored);
-            physical.loadCustomOnly(restored, helper.getLevel().registryAccess());
-            helper.assertTrue(
-                    handler.insertItem(0, stack, false).getCount() == 32,
-                    "Old delivery lease survived identity reload");
-            f.runtime.nodeChanged(id);
-            f.tick(1);
-            var oldHandler = handler;
-            handler = helper.getLevel()
-                    .getCapability(
-                            net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
-                            f.pos(2),
-                            Direction.DOWN);
-            helper.assertTrue(
-                    handler != null
-                            && handler.insertItem(0, stack, true).isEmpty()
-                            && oldHandler.insertItem(0, stack, true).getCount() == 32,
-                    "New lifecycle revived an old external capability");
-            n = f.data.findNode(id).orElseThrow();
-            f.data.setNodeEnabled(id, n.revision(), false);
-            f.sync();
-            helper.assertTrue(
-                    handler.insertItem(0, stack, true).getCount() == 32
-                            && handler.insertItem(0, stack, false).getCount() == 32
-                            && ledger.amount(key) == 32,
-                    "Stale external handler bypassed disabled authority before reconciliation");
-            n = f.data.findNode(id).orElseThrow();
-            n = f.data.setNodeEnabled(id, n.revision(), true).orElseThrow();
-            f.data.saveDomainConfiguration(
-                    id,
-                    n.revision(),
-                    new StoredResourcePolicy(
-                            new ResourceTransferPolicy.Input(
-                                    1,
-                                    ResourceScope.all(),
-                                    RedstoneCondition.SIGNAL,
-                                    null,
-                                    FilterMode.WHITELIST,
-                                    java.util.Map.of(),
-                                    0),
-                            java.util.Map.of()),
-                    WorkingFaces.attachedFace(),
-                    true);
-            f.sync();
-            f.runtime.networkChanged(f.network);
-            f.tick(1);
-            var redstoneHandler = helper.getLevel()
-                    .getCapability(
-                            net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
-                            f.pos(2),
-                            Direction.DOWN);
-            helper.assertTrue(
-                    redstoneHandler.insertItem(0, stack, true).getCount() == 32,
-                    "Inactive redstone gate accepted input");
-            helper.getLevel().setBlockAndUpdate(f.pos(2).east(), Blocks.REDSTONE_BLOCK.defaultBlockState());
-            try {
-                helper.assertTrue(
-                        redstoneHandler.insertItem(0, stack, true).isEmpty() && ledger.amount(key) == 32,
-                        "Live redstone gate was ignored or simulation mutated storage");
-            } finally {
-                helper.getLevel().setBlockAndUpdate(f.pos(2).east(), Blocks.AIR.defaultBlockState());
-            }
-            n = f.data.findNode(id).orElseThrow();
-            f.data.saveDomainConfiguration(
-                    id,
-                    n.revision(),
-                    new StoredResourcePolicy(
-                            ResourceTransferPolicy.defaults(TransferDirection.OUTPUT), java.util.Map.of()),
-                    WorkingFaces.attachedFace(),
-                    true);
-            f.sync();
-            helper.assertTrue(
-                    redstoneHandler.insertItem(0, stack, false).getCount() == 32 && ledger.amount(key) == 32,
-                    "Stale input lease accepted after direction changed to output");
-        }
-        helper.succeed();
-    }
-
-    @GameTest(template = "bootstrap")
-    public static void connectionMarkersFollowConfiguredFacesWithoutExposingInventory(GameTestHelper helper)
-            throws Exception {
-        try (var f = new Fixture(helper)) {
-            UUID node = f.node(2, TransferDirection.OUTPUT);
-            f.start();
-            f.tick(0);
-            var level = helper.getLevel();
-            var pos = f.pos(2);
-            var items = level.getCapability(
-                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK, pos, Direction.DOWN);
-            helper.assertTrue(
-                    items != null && items.getSlots() == 0, "Configured item face has no empty connection marker");
-            helper.assertTrue(
-                    level.getCapability(
-                                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
-                                    pos,
-                                    Direction.UP)
-                            == null,
-                    "Unselected face exposed an interface");
-            helper.assertTrue(
-                    level.getCapability(
-                                    net.neoforged.neoforge.capabilities.Capabilities.EnergyStorage.BLOCK,
-                                    pos,
-                                    Direction.DOWN)
-                            == null,
-                    "Item-only policy exposed energy");
-            var current = f.data.findNode(node).orElseThrow();
-            f.data.setNodeEnabled(node, current.revision(), false);
-            f.sync();
-            f.runtime.networkChanged(f.network);
-            f.tick(1);
-            helper.assertTrue(
-                    level.getCapability(
-                                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
-                                    pos,
-                                    Direction.DOWN)
-                            == null,
-                    "Disabled node kept its connection marker");
-            current = f.data.findNode(node).orElseThrow();
-            current = f.data.setNodeEnabled(node, current.revision(), true).orElseThrow();
-            current = f.data.setNodeMode(node, current.revision(), NodeMode.DOMAIN, true)
-                    .orElseThrow();
-            var policy = new ResourceTransferPolicy.Input(
-                    1,
-                    ResourceScope.customSet(java.util.Set.of(ResourceTypes.ENERGY)),
-                    RedstoneCondition.IGNORE,
-                    null,
-                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
-                    java.util.Map.of(),
-                    0);
-            f.data.saveDomainConfiguration(
-                    node,
-                    current.revision(),
-                    new StoredResourcePolicy(policy, java.util.Map.of()),
-                    WorkingFaces.explicit(1 << Direction.EAST.get3DDataValue()),
-                    true);
-            f.sync();
-            f.runtime.networkChanged(f.network);
-            f.tick(2);
-            helper.assertTrue(
-                    level.getCapability(
-                                    net.neoforged.neoforge.capabilities.Capabilities.EnergyStorage.BLOCK,
-                                    pos,
-                                    Direction.EAST)
-                            != null,
-                    "Domain energy face did not publish its connection marker");
-            helper.assertTrue(
-                    level.getCapability(
-                                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
-                                    pos,
-                                    Direction.DOWN)
-                            == null,
-                    "Domain mode switch retained a stale item marker");
-            var entity = (ResonanceNodeBlockEntity) level.getBlockEntity(pos);
-            helper.assertTrue(!entity.pipeConnection(Direction.EAST, 3), "Energy-only configuration exposed chemicals");
-            current = f.data.findNode(node).orElseThrow();
-            var chemical = new ResourceTransferPolicy.Input(
-                    1,
-                    ResourceScope.customSet(java.util.Set.of(ResourceTypes.CHEMICAL)),
-                    RedstoneCondition.IGNORE,
-                    null,
-                    io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
-                    java.util.Map.of(),
-                    0);
-            f.data.saveDomainConfiguration(
-                    node,
-                    current.revision(),
-                    new StoredResourcePolicy(chemical, java.util.Map.of()),
-                    WorkingFaces.explicit(1 << Direction.UP.get3DDataValue()),
-                    true);
-            f.sync();
-            f.runtime.networkChanged(f.network);
-            f.tick(3);
-            helper.assertTrue(
-                    entity.pipeConnection(Direction.UP, 3)
-                            && !entity.pipeConnection(Direction.EAST, 3)
-                            && !entity.pipeConnection(Direction.EAST, 2),
-                    "Chemical-only configuration did not replace the previous resource and face selection");
-            f.runtime.close();
-            helper.assertTrue(
-                    !entity.pipeConnection(Direction.UP, 3), "Closed runtime kept chemical connection metadata");
-            helper.assertTrue(
-                    level.getCapability(
-                                    net.neoforged.neoforge.capabilities.Capabilities.EnergyStorage.BLOCK,
-                                    pos,
-                                    Direction.EAST)
-                            == null,
-                    "Closing runtime retained connection metadata");
-        }
-        helper.succeed();
-    }
+public final class DirectRuntimeGameTests {
+    private DirectRuntimeGameTests() {}
 
     @GameTest(template = "bootstrap")
     public static void loadedNodeDoesNotLoadUnselectedOrSelectedDistantChunk(GameTestHelper helper) throws Exception {
@@ -483,16 +65,17 @@ public final class ItemDirectTransferGameTests {
                     GlobalPos.of(level.dimension(), pos),
                     NodeForm.BLOCK,
                     Direction.EAST);
-            helper.assertTrue(!level.isLoaded(pos.east()), "Fixture adjacent target already loaded");
-            try (ItemEndpointCache cache = new ItemEndpointCache(level.getServer(), ignored -> {})) {
+            helper.assertTrue(!level.isLoaded(pos.east()), "TransferWorldFixture adjacent target already loaded");
+            try (ResourceEndpointCache cache =
+                    new ResourceEndpointCache(level.getServer(), ResourceAdapterDirectory.nativeDefaults(), 64)) {
                 TransferWorkBudget budget = new TransferWorkBudget(100, 1000, 1000, () -> 0);
                 helper.assertTrue(
                         cache.physical(node), "Node validation incorrectly depends on attached target loading");
                 helper.assertTrue(
-                        cache.resolve(node, Direction.EAST, budget) == null && budget.calls() == 0,
+                        cache.resolve(node, Direction.EAST, ResourceTypes.ITEM, budget) == null && budget.calls() == 0,
                         "Unloaded selected target discovered capability");
                 helper.assertTrue(!level.isLoaded(pos.east()), "Selected target lookup loaded a chunk");
-                cache.resolve(node, Direction.WEST, budget);
+                cache.resolve(node, Direction.WEST, ResourceTypes.ITEM, budget);
                 helper.assertTrue(budget.calls() == 1, "Loaded alternate face blocked by unloaded attachment");
                 helper.assertTrue(!level.isLoaded(pos.east()), "Alternate lookup loaded unselected chunk");
             }
@@ -504,7 +87,7 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void explicitFacesUseSeparateCachesAndOneQuota(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID in = f.node(1, TransferDirection.INPUT), out = f.node(7, TransferDirection.OUTPUT);
             var inputPolicy =
                     new ItemTransferPolicy.Input(20, 64, RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, 16);
@@ -554,7 +137,7 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void savedDefaultBindingsRunAndStopCleanly(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID in = f.node(1, TransferDirection.INPUT), out = f.node(4, TransferDirection.OUTPUT);
             f.chest(1).setItem(0, new ItemStack(Items.IRON_INGOT, 64));
             f.start();
@@ -571,7 +154,7 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void sharedQuotaRetentionAndChannelSeparation(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID a = f.node(1, TransferDirection.INPUT),
                     b = f.node(4, TransferDirection.INPUT),
                     out = f.node(7, TransferDirection.OUTPUT);
@@ -607,7 +190,7 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void redstoneNodeAndTunnelGatesApplyBeforeCapability(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID in = f.node(1, TransferDirection.INPUT);
             f.node(4, TransferDirection.OUTPUT);
             f.policy(in, new ItemTransferPolicy.Input(1, 64, RedstoneCondition.SIGNAL, null, FilterMode.WHITELIST, 0));
@@ -638,7 +221,7 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void onlyAttachedFurnaceSideIsQueried(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             f.node(1, TransferDirection.INPUT);
             UUID out = f.node(4, TransferDirection.OUTPUT);
             f.chest(1).setItem(0, new ItemStack(Items.IRON_ORE, 64));
@@ -681,7 +264,7 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void missingPhysicalIdentityAndUnloadedTargetNeverDiscover(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID in = f.node(1, TransferDirection.INPUT);
             f.node(4, TransferDirection.OUTPUT);
             f.chest(1).setItem(0, new ItemStack(Items.IRON_INGOT, 64));
@@ -696,7 +279,8 @@ public final class ItemDirectTransferGameTests {
             helper.assertTrue(f.chest(1).getItem(0).getCount() == 64, "Mismatched source extracted");
             // Keep this non-loading probe separate from the far-chunk hydration fixture.
             BlockPos unloaded = new BlockPos(-29998000, 80, 29998000);
-            helper.assertTrue(!helper.getLevel().isLoaded(unloaded), "Fixture far target was already loaded");
+            helper.assertTrue(
+                    !helper.getLevel().isLoaded(unloaded), "TransferWorldFixture far target was already loaded");
             NetworkNodeRecord distant = NetworkNodeRecord.fresh(
                     UUID.randomUUID(),
                     1,
@@ -704,11 +288,12 @@ public final class ItemDirectTransferGameTests {
                     GlobalPos.of(helper.getLevel().dimension(), unloaded),
                     NodeForm.BLOCK,
                     Direction.EAST);
-            try (ItemEndpointCache cache =
-                    new ItemEndpointCache(helper.getLevel().getServer(), id -> {})) {
+            try (ResourceEndpointCache cache = new ResourceEndpointCache(
+                    helper.getLevel().getServer(), ResourceAdapterDirectory.nativeDefaults(), 64)) {
                 TransferWorkBudget budget = new TransferWorkBudget(1, 100, 100, () -> 0);
                 helper.assertTrue(
-                        cache.resolve(distant, budget) == null && budget.calls() == 0,
+                        cache.resolve(distant, distant.facing(), ResourceTypes.ITEM, budget) == null
+                                && budget.calls() == 0,
                         "Unloaded endpoint discovered a capability");
             }
             helper.assertTrue(!helper.getLevel().isLoaded(unloaded), "Endpoint lookup loaded a chunk");
@@ -718,18 +303,19 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void capabilityInvalidationAndUnloadRetireOldHandles(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID in = f.node(1, TransferDirection.INPUT);
             NetworkNodeRecord node = f.data.findNode(in).orElseThrow();
-            java.util.concurrent.atomic.AtomicInteger wakes = new java.util.concurrent.atomic.AtomicInteger();
-            try (ItemEndpointCache cache =
-                    new ItemEndpointCache(helper.getLevel().getServer(), id -> wakes.incrementAndGet())) {
+            try (ResourceEndpointCache cache = new ResourceEndpointCache(
+                    helper.getLevel().getServer(), ResourceAdapterDirectory.nativeDefaults(), 64)) {
                 TransferWorkBudget budget = new TransferWorkBudget(100, 1000, 1000, () -> 0);
-                var old = cache.resolve(node, budget);
+                var old = cache.resolve(node, node.facing(), ResourceTypes.ITEM, budget);
                 helper.assertTrue(old != null && old.valid(), "Loaded capability missing");
                 helper.getLevel().invalidateCapabilities(f.pos(1).below());
-                helper.assertTrue(wakes.get() == 1 && !old.valid(), "Invalidation did not retire exact handle");
-                var renewed = cache.resolve(node, budget);
+                helper.assertTrue(
+                        cache.drainInvalidatedNodes().equals(java.util.List.of(in)) && !old.valid(),
+                        "Invalidation did not retire exact handle");
+                var renewed = cache.resolve(node, node.facing(), ResourceTypes.ITEM, budget);
                 helper.assertTrue(renewed != null && renewed.valid(), "Capability did not rediscover after callback");
                 cache.unload(helper.getLevel().dimension(), new net.minecraft.world.level.ChunkPos(f.pos(1)));
                 helper.assertTrue(cache.size() == 0 && !renewed.valid(), "Chunk unload retained live handler");
@@ -741,7 +327,7 @@ public final class ItemDirectTransferGameTests {
     @GameTest(template = "bootstrap")
     public static void channelIsolationAndOwnerLibraryCreationInvalidateMissingPreset(GameTestHelper helper)
             throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID in = f.node(1, TransferDirection.INPUT), out = f.node(4, TransferDirection.OUTPUT);
             UUID other = UUID.randomUUID(), presetId = UUID.randomUUID();
             var tunnel = f.data.findTunnel(f.tunnel).orElseThrow();
@@ -805,7 +391,7 @@ public final class ItemDirectTransferGameTests {
     @GameTest(template = "bootstrap")
     public static void knownRemainderSurvivesNativeSaveAndReload(GameTestHelper helper) throws Exception {
         for (boolean domainAvailable : new boolean[] {true, false}) {
-            try (Fixture f = new Fixture(helper)) {
+            try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
                 if (!domainAvailable) f.data.markStorageBuckets(1L);
                 var source = new io.github.loongin.omniresonance.transfer.fixtures.FakeItemHandler(1);
                 var target = new io.github.loongin.omniresonance.transfer.fixtures.FakeItemHandler(1);
@@ -875,7 +461,7 @@ public final class ItemDirectTransferGameTests {
     @GameTest(template = "bootstrap")
     public static void resourceRuntimeInvalidationRemovalAndUnselectedOwnerCleanup(GameTestHelper helper)
             throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID in = f.node(1, TransferDirection.INPUT), out = f.node(4, TransferDirection.OUTPUT);
             var source = ResourceEndpointGameTests.place(helper, f.pos(1).below());
             var target = ResourceEndpointGameTests.place(helper, f.pos(4).below());
@@ -920,7 +506,7 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void resourceRuntimeSharedPresetRetiresAfterFinalBinding(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID in = f.node(1, TransferDirection.INPUT), out = f.node(4, TransferDirection.OUTPUT);
             UUID presetId = new UUID(40, 1);
             var owner = f.repository.createOwner(f.owner, null);
@@ -963,7 +549,7 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void authoritativeAllPolicyTransfersAllThreeNativeTypes(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID input = f.node(1, TransferDirection.INPUT), output = f.node(4, TransferDirection.OUTPUT);
             var source = ResourceEndpointGameTests.place(helper, f.pos(1).below());
             var target = ResourceEndpointGameTests.place(helper, f.pos(4).below());
@@ -1024,7 +610,7 @@ public final class ItemDirectTransferGameTests {
                     throw new AssertionError("Excluded external adapter factory invoked");
                 });
         directory.freeze();
-        try (Fixture f = new Fixture(helper, directory)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper, directory)) {
             helper.assertTrue(
                     f.repository.resourceAdapters() == directory
                             && f.repository.registeredResourceTypes().contains(externalType),
@@ -1089,7 +675,7 @@ public final class ItemDirectTransferGameTests {
 
     @GameTest(template = "bootstrap")
     public static void legacySavedItemBindingNeverEnablesFluidOrEnergy(GameTestHelper helper) throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             f.node(1, TransferDirection.INPUT);
             f.node(4, TransferDirection.OUTPUT);
             var source = ResourceEndpointGameTests.place(helper, f.pos(1).below());
@@ -1115,7 +701,7 @@ public final class ItemDirectTransferGameTests {
     @GameTest(template = "bootstrap")
     public static void nativeSamplingAndLogisticsBothProgressWithOneSharedCallPerTick(GameTestHelper helper)
             throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             f.node(1, TransferDirection.INPUT);
             f.node(4, TransferDirection.OUTPUT);
             f.chest(1).setItem(0, new ItemStack(Items.IRON_INGOT, 8));
@@ -1184,7 +770,7 @@ public final class ItemDirectTransferGameTests {
     @GameTest(template = "bootstrap")
     public static void fullOwnerRulesDriveNativeTypesAndMissingReferenceBlocksUntilRestored(GameTestHelper helper)
             throws Exception {
-        try (Fixture f = new Fixture(helper)) {
+        try (TransferWorldFixture f = new TransferWorldFixture(helper)) {
             UUID input = f.node(1, TransferDirection.INPUT), output = f.node(4, TransferDirection.OUTPUT);
             var source = ResourceEndpointGameTests.place(helper, f.pos(1).below());
             var target = ResourceEndpointGameTests.place(helper, f.pos(4).below());
@@ -1296,412 +882,5 @@ public final class ItemDirectTransferGameTests {
                     target.energy.getEnergyStored() == 2000, "Restored reference did not wake native runtime");
         }
         helper.succeed();
-    }
-
-    @GameTest(template = "bootstrap")
-    public static void configuredDomainInputRunsAllNativeTypesAndLegacyPendingDoesNotRun(GameTestHelper helper)
-            throws Exception {
-        try (Fixture f = new Fixture(helper)) {
-            UUID input = f.node(1, TransferDirection.INPUT);
-            var node = f.data.findNode(input).orElseThrow();
-            node = f.data.setNodeMode(input, node.revision(), NodeMode.DOMAIN, true)
-                    .orElseThrow();
-            node = f.data.setDomainConfiguration(input, node.revision(), TransferDirection.INPUT, false);
-            var source = ResourceEndpointGameTests.place(helper, f.pos(1).below());
-            var items = new io.github.loongin.omniresonance.transfer.fixtures.FakeItemHandler(1);
-            items.stacks[0] = new ItemStack(Items.IRON_INGOT, 64);
-            source.items = items;
-            source.fluid.setFluid(new net.neoforged.neoforge.fluids.FluidStack(
-                    net.minecraft.world.level.material.Fluids.WATER, 3000));
-            source.energy.receiveEnergy(50000, false);
-            var iron = ItemVariant.from(items.stacks[0], helper.getLevel().registryAccess());
-            var water =
-                    FluidVariant.from(source.fluid.getFluid(), helper.getLevel().registryAccess());
-            f.sync();
-            f.start();
-            f.tick(0);
-            helper.assertTrue(
-                    items.stacks[0].getCount() == 64 && source.itemCalls == 0,
-                    "Pending legacy domain input ran before full save");
-            helper.assertTrue(
-                    f.repository.domainStorage(f.network).state()
-                            == io.github.loongin.omniresonance.persistence.DomainStorage.State.NOT_LOADED,
-                    "Pending legacy domain activated storage");
-            f.data.saveDomainConfiguration(
-                    input,
-                    node.revision(),
-                    new StoredResourcePolicy(
-                            ResourceTransferPolicy.defaults(TransferDirection.INPUT), java.util.Map.of()),
-                    WorkingFaces.explicit(1),
-                    false);
-            f.sync();
-            f.tick(1);
-            var ledger = f.repository.domainStorage(f.network).activate().orElseThrow();
-            helper.assertTrue(
-                    ledger.amount(iron.key()) == 64
-                            && ledger.amount(water.key()) == 3000
-                            && ledger.amount(EnergyVariant.INSTANCE.key()) == 50000,
-                    "Live domain input did not transfer all native resources");
-            helper.assertTrue(
-                    items.stacks[0].isEmpty() && source.fluid.isEmpty() && source.energy.getEnergyStored() == 0,
-                    "Live domain input did not conserve source quantities");
-        }
-        helper.succeed();
-    }
-
-    @GameTest(template = "bootstrap")
-    public static void directInputPrecedesDomainFallbackAtTheSamePhysicalSource(GameTestHelper helper)
-            throws Exception {
-        for (boolean crossNetwork : new boolean[] {false, true}) {
-            try (Fixture f = new Fixture(helper)) {
-                UUID domainNetwork = f.network;
-                NetworkSavedData domainData = f.data;
-                if (crossNetwork) {
-                    domainNetwork = new UUID(713, 1);
-                    f.repository.createNetwork(new NetworkMetadata(
-                            domainNetwork, f.owner, new ManagedName("Domain fallback"), 1, Set.of()));
-                    domainData = f.repository.findLoadedNetwork(domainNetwork).orElseThrow();
-                }
-                UUID direct = f.node(1, TransferDirection.INPUT);
-                f.node(4, TransferDirection.OUTPUT);
-                f.policy(
-                        direct,
-                        new ItemTransferPolicy.Input(1, 64, RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, 0));
-                BlockPos sourcePosition = f.pos(1).below();
-                f.chest(1).setItem(0, new ItemStack(Items.IRON_INGOT, 64));
-                f.chest(1).setItem(1, new ItemStack(Items.IRON_INGOT, 36));
-                var iron = ItemVariant.from(
-                        f.chest(1).getItem(0), helper.getLevel().registryAccess());
-                BlockPos domainPosition = sourcePosition.east();
-                f.positions.add(domainPosition);
-                helper.getLevel()
-                        .setBlock(
-                                domainPosition,
-                                ModBlocks.RESONANCE_TRANSFER_NODE
-                                        .get()
-                                        .defaultBlockState()
-                                        .setValue(AbstractResonanceNodeBlock.FACING, Direction.WEST),
-                                3);
-                var entity = (ResonanceNodeBlockEntity) helper.getLevel().getBlockEntity(domainPosition);
-                UUID id = entity.state().orElseThrow().nodeId();
-                CompoundTag tag = new CompoundTag();
-                NodePersistentState.linked(id).writeOwnedFields(tag);
-                entity.loadCustomOnly(tag, helper.getLevel().registryAccess());
-                var node = domainData.createNode(
-                        id,
-                        new ManagedName("Domain input"),
-                        GlobalPos.of(helper.getLevel().dimension(), domainPosition),
-                        NodeForm.BLOCK,
-                        Direction.WEST);
-                node = domainData
-                        .setNodeMode(id, node.revision(), NodeMode.DOMAIN, false)
-                        .orElseThrow();
-                node = domainData.saveDomainConfiguration(
-                        id,
-                        node.revision(),
-                        new StoredResourcePolicy(
-                                ResourceTransferPolicy.defaults(TransferDirection.INPUT), java.util.Map.of()),
-                        WorkingFaces.explicit(1 << Direction.WEST.get3DDataValue()),
-                        false);
-                f.nodes.add(new NetworkNodeDirectory.Entry(domainNetwork, node));
-                f.start();
-                f.tick(0);
-                var ledger =
-                        f.repository.domainStorage(domainNetwork).activate().orElseThrow();
-                helper.assertTrue(
-                        f.chest(4).getItem(0).getCount() == 64, "Domain input stole direct input's due allowance");
-                helper.assertTrue(
-                        ledger.amount(iron.key()) == 36
-                                && f.chest(1).getItem(0).isEmpty()
-                                && f.chest(1).getItem(1).isEmpty(),
-                        "Domain did not receive the remaining source resources");
-            }
-        }
-        helper.succeed();
-    }
-
-    @GameTest(template = "bootstrap")
-    public static void domainInputFilterBlocksThenWakesAfterOwnerLibraryCreation(GameTestHelper helper)
-            throws Exception {
-        try (Fixture f = new Fixture(helper)) {
-            UUID id = f.node(1, TransferDirection.INPUT);
-            var node = f.data.findNode(id).orElseThrow();
-            node = f.data.setNodeMode(id, node.revision(), NodeMode.DOMAIN, true)
-                    .orElseThrow();
-            UUID preset = new UUID(710, 1);
-            var policy = new ResourceTransferPolicy.Input(
-                    1,
-                    ResourceScope.all(),
-                    RedstoneCondition.IGNORE,
-                    preset,
-                    FilterMode.WHITELIST,
-                    java.util.Map.of(),
-                    0);
-            f.data.saveDomainConfiguration(
-                    id,
-                    node.revision(),
-                    new StoredResourcePolicy(policy, java.util.Map.of()),
-                    WorkingFaces.explicit(1),
-                    false);
-            f.chest(1).setItem(0, new ItemStack(Items.IRON_INGOT, 64));
-            var key = ItemVariant.from(f.chest(1).getItem(0), helper.getLevel().registryAccess())
-                    .key();
-            f.sync();
-            f.start();
-            for (int tick = 0; tick < 5; tick++) f.tick(tick);
-            helper.assertTrue(f.chest(1).getItem(0).getCount() == 64, "Missing domain filter was ignored");
-            var library = f.repository.createOwner(f.owner, null);
-            library.putPreset(
-                    new io.github.loongin.omniresonance.filter.ItemFilterPreset(
-                            preset,
-                            new ManagedName("Iron"),
-                            0,
-                            Set.of(net.minecraft.resources.ResourceLocation.parse("minecraft:iron_ingot"))),
-                    0,
-                    -1,
-                    -1);
-            f.runtime.ownerLibraryChanged(f.owner);
-            for (int tick = 5; tick < 15; tick++) f.tick(tick);
-            helper.assertTrue(
-                    f.chest(1).getItem(0).isEmpty()
-                            && f.repository
-                                            .domainStorage(f.network)
-                                            .activate()
-                                            .orElseThrow()
-                                            .amount(key)
-                                    == 64,
-                    "Domain filter did not resume after valid owner preset appeared");
-        }
-        helper.succeed();
-    }
-
-    @GameTest(template = "bootstrap")
-    public static void liveDomainOutputsAllocateByPriorityAndTransferAllNativeTypes(GameTestHelper helper)
-            throws Exception {
-        try (Fixture f = new Fixture(helper)) {
-            UUID high = f.node(1, TransferDirection.OUTPUT), low = f.node(4, TransferDirection.OUTPUT);
-            UUID preset = new UUID(720, 1);
-            var owner = f.repository.createOwner(f.owner, null);
-            owner.putPreset(
-                    new io.github.loongin.omniresonance.filter.ItemFilterPreset(
-                            preset,
-                            new ManagedName("Iron"),
-                            0,
-                            Set.of(net.minecraft.resources.ResourceLocation.parse("minecraft:iron_ingot"))),
-                    0,
-                    -1,
-                    -1);
-            for (UUID id : List.of(high, low)) {
-                var node = f.data.findNode(id).orElseThrow();
-                node = f.data.setNodeMode(id, node.revision(), NodeMode.DOMAIN, true)
-                        .orElseThrow();
-                var policy = new ResourceTransferPolicy.Output(
-                        1,
-                        ResourceScope.customSet(Set.of(ResourceTypes.ITEM)),
-                        RedstoneCondition.IGNORE,
-                        preset,
-                        FilterMode.WHITELIST,
-                        java.util.Map.of(ResourceTypes.ITEM, new ResourceTransferPolicy.OutputOverride(100)),
-                        id.equals(high) ? 10 : 0);
-                f.data.saveDomainConfiguration(
-                        id,
-                        node.revision(),
-                        new StoredResourcePolicy(policy, java.util.Map.of()),
-                        WorkingFaces.explicit(1),
-                        false);
-            }
-            var highTarget = ResourceEndpointGameTests.place(helper, f.pos(1).below());
-            var lowTarget = ResourceEndpointGameTests.place(helper, f.pos(4).below());
-            var highItems = new io.github.loongin.omniresonance.transfer.fixtures.FakeItemHandler(1);
-            var lowItems = new io.github.loongin.omniresonance.transfer.fixtures.FakeItemHandler(1);
-            highItems.capacity = 60;
-            highTarget.items = highItems;
-            lowTarget.items = lowItems;
-            var iron = ItemVariant.from(
-                    new ItemStack(Items.IRON_INGOT), helper.getLevel().registryAccess());
-            var ledger = f.repository.domainStorage(f.network).activate().orElseThrow();
-            try (var deposit = ledger.reserveDeposit(iron.key(), 100, -1).orElseThrow()) {
-                deposit.commit(100);
-            }
-            f.sync();
-            f.start();
-            for (int tick = 0; tick < 10; tick++) f.tick(tick);
-            helper.assertTrue(
-                    highItems.stacks[0].getCount() == 60 && lowItems.stacks[0].getCount() == 40,
-                    "Live domain output priority did not allocate 60/40");
-            helper.assertTrue(
-                    ledger.amount(iron.key()) == 0 && f.data.recovery().isEmpty(),
-                    "Live domain output lost known quantities");
-        }
-        try (Fixture f = new Fixture(helper)) {
-            UUID id = f.node(1, TransferDirection.OUTPUT), preset = new UUID(720, 2);
-            var node = f.data.findNode(id).orElseThrow();
-            node = f.data.setNodeMode(id, node.revision(), NodeMode.DOMAIN, true)
-                    .orElseThrow();
-            var rules = new java.util.ArrayList<io.github.loongin.omniresonance.filter.ResourceFilterRule>();
-            for (net.minecraft.resources.ResourceLocation type :
-                    List.of(ResourceTypes.ITEM, ResourceTypes.FLUID, ResourceTypes.ENERGY))
-                rules.add(new io.github.loongin.omniresonance.filter.ResourceFilterRule.Match(
-                        new UUID(721, rules.size()),
-                        type,
-                        io.github.loongin.omniresonance.filter.ResourceFilterRule.Selector.wholeType(),
-                        io.github.loongin.omniresonance.filter.ComponentCondition.idOnly()));
-            f.repository
-                    .createOwner(f.owner, null)
-                    .putPreset(
-                            new io.github.loongin.omniresonance.filter.ResourceFilterPreset(
-                                    preset, new ManagedName("All resources"), 0, rules),
-                            0,
-                            -1,
-                            -1);
-            f.data.saveDomainConfiguration(
-                    id,
-                    node.revision(),
-                    new StoredResourcePolicy(
-                            new ResourceTransferPolicy.Output(
-                                    1,
-                                    ResourceScope.all(),
-                                    RedstoneCondition.IGNORE,
-                                    preset,
-                                    FilterMode.WHITELIST,
-                                    java.util.Map.of(),
-                                    0),
-                            java.util.Map.of()),
-                    WorkingFaces.explicit(1),
-                    false);
-            var target = ResourceEndpointGameTests.place(helper, f.pos(1).below());
-            var iron = ItemVariant.from(
-                    new ItemStack(Items.IRON_INGOT), helper.getLevel().registryAccess());
-            var water = FluidVariant.from(
-                    new net.neoforged.neoforge.fluids.FluidStack(net.minecraft.world.level.material.Fluids.WATER, 1),
-                    helper.getLevel().registryAccess());
-            var ledger = f.repository.domainStorage(f.network).activate().orElseThrow();
-            ResourceVariant[] variants = {iron, water, EnergyVariant.INSTANCE};
-            long[] amounts = {64, 3000, 50000};
-            for (int i = 0; i < variants.length; i++)
-                try (var deposit =
-                        ledger.reserveDeposit(variants[i].key(), amounts[i], -1).orElseThrow()) {
-                    deposit.commit(amounts[i]);
-                }
-            f.sync();
-            f.start();
-            for (int tick = 0; tick < 10; tick++) f.tick(tick);
-            helper.assertTrue(
-                    target.items.getStackInSlot(0).getCount() == 64
-                            && target.fluid.getFluidAmount() == 3000
-                            && target.energy.getEnergyStored() == 50000
-                            && ledger.variantCount() == 0,
-                    "Live output did not transfer all native types");
-        }
-        helper.succeed();
-    }
-
-    private static final class Fixture implements AutoCloseable {
-        final GameTestHelper helper;
-        final Path path;
-        final SavedNetworkRepository repository;
-        final NetworkSavedData data;
-        final DimensionDataStorage storage;
-        final UUID network = UUID.randomUUID(),
-                owner = UUID.randomUUID(),
-                tunnel = UUID.randomUUID(),
-                channel = UUID.randomUUID();
-        final NetworkNodeDirectory nodes = new NetworkNodeDirectory(List.of());
-        final List<BlockPos> positions = new ArrayList<>();
-        ResourceDirectRuntime runtime;
-
-        Fixture(GameTestHelper helper) throws Exception {
-            this(helper, ResourceAdapterDirectory.nativeDefaults());
-        }
-
-        Fixture(GameTestHelper helper, ResourceAdapterDirectory directory) throws Exception {
-            this.helper = helper;
-            path = Files.createTempDirectory("omniresonance-item-direct-");
-            storage = new DimensionDataStorage(
-                    path.toFile(), DataFixers.getDataFixer(), helper.getLevel().registryAccess());
-            repository = new SavedNetworkRepository(storage, path, directory);
-            repository.createNetwork(
-                    new NetworkMetadata(network, owner, new ManagedName("Transfer test"), 0, Set.of()));
-            data = repository.findLoadedNetwork(network).orElseThrow();
-            data.createTunnel(tunnel, new ManagedName("Main"), channel, new ManagedName("Items"), -1);
-        }
-
-        BlockPos pos(int x) {
-            return helper.absolutePos(new BlockPos(x, 3, 2));
-        }
-
-        UUID node(int x, TransferDirection direction) {
-            BlockPos pos = pos(x);
-            positions.add(pos);
-            helper.getLevel().setBlock(pos.below(), Blocks.CHEST.defaultBlockState(), 3);
-            helper.getLevel()
-                    .setBlock(
-                            pos,
-                            ModBlocks.RESONANCE_TRANSFER_NODE
-                                    .get()
-                                    .defaultBlockState()
-                                    .setValue(AbstractResonanceNodeBlock.FACING, Direction.DOWN),
-                            3);
-            ResonanceNodeBlockEntity entity =
-                    (ResonanceNodeBlockEntity) helper.getLevel().getBlockEntity(pos);
-            UUID id = entity.state().orElseThrow().nodeId();
-            CompoundTag tag = new CompoundTag();
-            NodePersistentState.linked(id).writeOwnedFields(tag);
-            entity.loadCustomOnly(tag, helper.getLevel().registryAccess());
-            NetworkNodeRecord n = data.createNode(
-                    id,
-                    new ManagedName("Node " + x),
-                    GlobalPos.of(helper.getLevel().dimension(), pos),
-                    NodeForm.BLOCK,
-                    Direction.DOWN);
-            n = data.setNodeMode(id, n.revision(), NodeMode.DIRECT, false).orElseThrow();
-            n = data.setDirectBinding(
-                    id,
-                    n.revision(),
-                    channel,
-                    ItemTransferPolicy.defaults(direction),
-                    WorkingFaces.attachedFace(),
-                    false,
-                    -1);
-            nodes.add(new NetworkNodeDirectory.Entry(network, n));
-            return id;
-        }
-
-        void policy(UUID id, ItemTransferPolicy policy) {
-            NetworkNodeRecord n = data.findNode(id).orElseThrow();
-            data.setDirectBinding(id, n.revision(), channel, policy, false, -1);
-            sync();
-        }
-
-        void sync() {
-            for (NetworkNodeRecord n : data.nodes()) {
-                var previous = nodes.byId(n.nodeId()).entry().orElseThrow();
-                if (!previous.record().equals(n)) nodes.update(previous, new NetworkNodeDirectory.Entry(network, n));
-            }
-        }
-
-        ChestBlockEntity chest(int x) {
-            return (ChestBlockEntity) helper.getLevel().getBlockEntity(pos(x).below());
-        }
-
-        void start() {
-            runtime = new ResourceDirectRuntime(
-                    helper.getLevel().getServer(), repository, nodes, ServerSettings.defaults(), () -> 0);
-        }
-
-        void tick(long tick) {
-            runtime.tick(tick, ServerSettings.defaults());
-        }
-
-        public void close() throws Exception {
-            if (runtime != null) runtime.close();
-            for (BlockPos pos : positions) {
-                helper.getLevel().setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
-                helper.getLevel().setBlock(pos.below(), Blocks.AIR.defaultBlockState(), 3);
-            }
-            try (var files = Files.walk(path)) {
-                for (Path p : files.sorted(Comparator.reverseOrder()).toList()) Files.delete(p);
-            }
-        }
     }
 }

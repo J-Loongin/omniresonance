@@ -5,6 +5,7 @@ import com.buuz135.industrialforegoingsouls.block_network.SoulNetwork;
 import com.buuz135.industrialforegoingsouls.capabilities.ISoulHandler;
 import com.buuz135.industrialforegoingsouls.capabilities.SoulCapabilities;
 import com.hrznstudio.titanium.block_network.NetworkManager;
+import io.github.loongin.omniresonance.transfer.PipeConnections;
 import io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -35,9 +36,10 @@ public final class SoulResources {
         event.registerBlockEntity(
                 SoulCapabilities.BLOCK,
                 io.github.loongin.omniresonance.registry.ModBlockEntities.RESONANCE_TRANSFER_NODE.get(),
-                (entity, side) -> entity.pipeConnection(side, 5) && entity.externalInput() != null
-                        ? new Input(entity.externalInput(), side)
-                        : null);
+                (entity, side) ->
+                        entity.pipeConnection(side, PipeConnections.Type.SOUL) && entity.externalInput() != null
+                                ? new Input(entity.externalInput(), side)
+                                : null);
         event.registerBlock(
                 BLOCK,
                 (level, pos, state, entity, side) -> level instanceof ServerLevel server && entity != null

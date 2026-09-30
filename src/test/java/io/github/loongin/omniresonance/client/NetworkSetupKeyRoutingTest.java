@@ -20,7 +20,7 @@ final class NetworkSetupKeyRoutingTest {
             inventory.setKey(InputConstants.Type.KEYSYM.getOrCreate(key));
             ClientSearchState search = new ClientSearchState();
             int[] closes = {0};
-            assertTrue(NetworkSetupScreen.routeKey(
+            assertTrue(TerminalInteractionPolicy.routeKey(
                     null,
                     key,
                     0,
@@ -39,7 +39,7 @@ final class NetworkSetupKeyRoutingTest {
             KeyMapping inventory = inventoryKey();
             ClientSearchState search = new ClientSearchState();
             int[] closes = {0};
-            assertTrue(NetworkSetupScreen.routeKey(
+            assertTrue(TerminalInteractionPolicy.routeKey(
                     null,
                     key,
                     0,
@@ -65,7 +65,7 @@ final class NetworkSetupKeyRoutingTest {
         field.setFocused(true);
         ClientSearchState search = new ClientSearchState();
         int[] closes = {0};
-        assertTrue(NetworkSetupScreen.routeKey(
+        assertTrue(TerminalInteractionPolicy.routeKey(
                 field,
                 GLFW.GLFW_KEY_ENTER,
                 0,
@@ -91,7 +91,7 @@ final class NetworkSetupKeyRoutingTest {
         int[] closes = {0};
         for (int key : new int[] {GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER}) {
             boolean before = search.expanded();
-            assertTrue(NetworkSetupScreen.routeKey(
+            assertTrue(TerminalInteractionPolicy.routeKey(
                     field,
                     key,
                     0,
@@ -101,8 +101,8 @@ final class NetworkSetupKeyRoutingTest {
                     () -> ClientSearchState.handleToggleKey(key, 0, true, () -> search.toggle(0))));
             assertEquals(!before, search.expanded());
         }
-        assertTrue(
-                NetworkSetupScreen.routeKey(field, GLFW.GLFW_KEY_E, 0, 0, () -> true, () -> closes[0]++, () -> false));
+        assertTrue(TerminalInteractionPolicy.routeKey(
+                field, GLFW.GLFW_KEY_E, 0, 0, () -> true, () -> closes[0]++, () -> false));
         assertEquals(0, closes[0]);
     }
 

@@ -2,6 +2,7 @@
 package io.github.loongin.omniresonance.compat.ars;
 
 import com.hollingsworth.arsnouveau.api.source.ISourceCap;
+import io.github.loongin.omniresonance.transfer.PipeConnections;
 import io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory;
 import net.minecraft.core.Direction;
 import net.neoforged.neoforge.capabilities.BlockCapability;
@@ -16,9 +17,10 @@ public final class ArsResources {
         event.registerBlockEntity(
                 BLOCK,
                 io.github.loongin.omniresonance.registry.ModBlockEntities.RESONANCE_TRANSFER_NODE.get(),
-                (entity, side) -> entity.pipeConnection(side, 4) && entity.externalInput() != null
-                        ? new Input(entity.externalInput(), side)
-                        : null);
+                (entity, side) ->
+                        entity.pipeConnection(side, PipeConnections.Type.SOURCE) && entity.externalInput() != null
+                                ? new Input(entity.externalInput(), side)
+                                : null);
     }
 
     private record Input(io.github.loongin.omniresonance.transfer.ExternalDomainInput input, Direction side)

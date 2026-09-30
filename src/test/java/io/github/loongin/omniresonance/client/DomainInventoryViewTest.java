@@ -67,6 +67,29 @@ class DomainInventoryViewTest {
             assertEquals(cell.getX(), hover.area().x());
             org.junit.jupiter.api.Assertions.assertNull(
                     view.recipeHover(body.right() + 1, body.bottom() + 1, provider));
+            int x = cell.getX(), y = cell.getY();
+            var removed = io.github.loongin.omniresonance.networking.DomainInventoryRecordCodec.encode(
+                    new io.github.loongin.omniresonance.storage.DomainLedger.Change(1, variant.key(), 0, 1));
+            view.accept(new DomainInventoryFrame.Data(session, 1, 3, false, removed.length, 0, removed));
+            view.tick(true, () -> 0);
+            assertEquals(4, widgets.size(), "The zero placeholder must remain while Shift is held");
+            assertEquals(x, widgets.getLast().getX());
+            assertEquals(y, widgets.getLast().getY());
+            org.junit.jupiter.api.Assertions.assertNull(view.recipeHover(x + 1, y + 1, provider));
+            var returned = io.github.loongin.omniresonance.networking.DomainInventoryRecordCodec.encode(
+                    new io.github.loongin.omniresonance.storage.DomainLedger.Change(2, variant.key(), 8, 2));
+            view.accept(new DomainInventoryFrame.Data(session, 1, 4, false, returned.length, 0, returned));
+            view.tick(true, () -> 0);
+            assertEquals(4, widgets.size());
+            assertEquals(x, widgets.getLast().getX());
+            assertEquals(y, widgets.getLast().getY());
+            assertTrue(view.recipeHover(x + 1, y + 1, provider) != null);
+            var emptyAgain = io.github.loongin.omniresonance.networking.DomainInventoryRecordCodec.encode(
+                    new io.github.loongin.omniresonance.storage.DomainLedger.Change(2, variant.key(), 0, 3));
+            view.accept(new DomainInventoryFrame.Data(session, 1, 5, false, emptyAgain.length, 0, emptyAgain));
+            view.tick(true, () -> 0);
+            view.tick(false, () -> 0);
+            assertEquals(3, widgets.size(), "Releasing Shift removes the empty placeholder");
         }
     }
 

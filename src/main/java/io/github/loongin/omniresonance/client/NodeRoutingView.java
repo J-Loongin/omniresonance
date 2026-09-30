@@ -8,6 +8,18 @@ import net.minecraft.network.chat.Component;
 
 /** Node-specific labels and search placement, using the shared routing-row geometry. */
 final class NodeRoutingView {
+    record EditorLabels(String context, String field) {}
+
+    static EditorLabels editorLabels(NodeMenuInteractionPolicy.EditKind kind) {
+        if (kind == NodeMenuInteractionPolicy.EditKind.CHANNEL)
+            return new EditorLabels("omniresonance.node_menu.tunnel", "omniresonance.node_menu.channel.name");
+        return new EditorLabels(
+                "omniresonance.node_menu.network",
+                kind == NodeMenuInteractionPolicy.EditKind.MODE
+                        ? "omniresonance.node_menu.mode"
+                        : "omniresonance.node_menu.name");
+    }
+
     private static final int SEARCH_TOP = 18;
     private static final int SEARCH_HEIGHT = 20;
 

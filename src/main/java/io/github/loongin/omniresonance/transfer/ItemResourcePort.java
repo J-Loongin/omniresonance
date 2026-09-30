@@ -10,6 +10,11 @@ import net.neoforged.neoforge.items.IItemHandler;
 
 /** Server-thread-owned item boundary. Each view is a real slot; see ResourcePort for bound refresh ownership. */
 public final class ItemResourcePort implements ResourcePort {
+    /** One owned immutable-identity snapshot per cached port. Count changes do not invalidate it; a different
+     * item/component set or empty peek does. Retirement follows the endpoint/port lifetime, with no global cache. */
+    private ItemStack identitySnapshot = ItemStack.EMPTY;
+
+    private @org.jetbrains.annotations.Nullable ItemVariant cachedVariant;
     private final IItemHandler handler;
     private final HolderLookup.Provider provider;
     private int sourceViews = -1;
@@ -47,9 +52,18 @@ public final class ItemResourcePort implements ResourcePort {
     public Optional<ResourceAmount> peek(int sourceView, TransferWorkBudget budget) {
         validateView(sourceView, sourceViews);
         ItemStack stack = ItemHandlerCalls.peek(handler, sourceView, budget);
-        return stack.isEmpty()
-                ? Optional.empty()
-                : Optional.of(new ResourceAmount(ItemVariant.from(stack, provider), stack.getCount()));
+        if (stack.isEmpty()) {
+            identitySnapshot = ItemStack.EMPTY;
+            cachedVariant = null;
+            return Optional.empty();
+        }
+        if (cachedVariant == null || !ItemStack.isSameItemSameComponents(identitySnapshot, stack)) {
+            var snapshot = stack.copyWithCount(1);
+            var variant = ItemVariant.from(snapshot, provider);
+            identitySnapshot = snapshot;
+            cachedVariant = variant;
+        }
+        return Optional.of(new ResourceAmount(cachedVariant, stack.getCount()));
     }
 
     @Override

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.compat.mekanism;
 
+import io.github.loongin.omniresonance.transfer.PipeConnections;
 import io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory;
 import mekanism.api.MekanismAPI;
 import mekanism.api.chemical.IChemicalHandler;
@@ -53,7 +54,7 @@ public final class MekanismResources {
         event.registerBlockEntity(
                 BLOCK,
                 io.github.loongin.omniresonance.registry.ModBlockEntities.RESONANCE_TRANSFER_NODE.get(),
-                (entity, side) -> !entity.pipeConnection(side, 3)
+                (entity, side) -> !entity.pipeConnection(side, PipeConnections.Type.CHEMICAL)
                         ? null
                         : entity.externalInput() == null
                                 ? CONNECTION

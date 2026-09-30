@@ -172,6 +172,10 @@ final class TerminalNodesView {
             return;
         }
         if (!value.available()) catalog.clear();
+        else {
+            for (var row : value.rows()) catalog.update(row);
+            if (value.selected() != null) catalog.update(value.selected());
+        }
         boolean wasPending = pending;
         boolean preserveNameInput = !wasPending
                 && modal == Modal.RENAME
@@ -930,7 +934,12 @@ final class TerminalNodesView {
                     false);
             if (modal != Modal.RENAME) lines(g, List.of(dialogMessage()), r.x() + 10, r.y() + 35, r.width() - 20);
             if (modal == Modal.RENAME && page != null && page.rejected())
-                lines(g, List.of(text("rejected")), r.x() + 10, r.y() + 63, r.width() - 20);
+                TerminalDialogLayout.renderInputError(
+                        g,
+                        font,
+                        nameField,
+                        text("rejected"),
+                        TerminalActionLayout.of(r).primary().y());
         }
     }
 }

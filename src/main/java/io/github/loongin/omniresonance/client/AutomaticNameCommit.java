@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.client;
 
-import io.github.loongin.omniresonance.networking.NetworkTerminalState;
 import io.github.loongin.omniresonance.networking.NodeMenuState;
 import java.util.Objects;
 import org.jetbrains.annotations.Nullable;
@@ -42,14 +41,6 @@ record AutomaticNameCommit(@Nullable Target pending, boolean submitting) {
         return resolve(reached);
     }
 
-    Resolution resolveTerminal(boolean successfulState, @Nullable NetworkTerminalState state) {
-        Target reached =
-                successfulState && state instanceof NetworkTerminalState.TunnelEdit edit && edit.existing() == null
-                        ? Target.TUNNEL
-                        : null;
-        return resolve(reached);
-    }
-
     private Resolution resolve(@Nullable Target reached) {
         if (pending == null || submitting) {
             return new Resolution(idle(), null);
@@ -60,7 +51,6 @@ record AutomaticNameCommit(@Nullable Target pending, boolean submitting) {
 
     enum Target {
         NODE_LINK,
-        TUNNEL,
         CHANNEL
     }
 

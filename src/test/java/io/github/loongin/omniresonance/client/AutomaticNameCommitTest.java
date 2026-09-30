@@ -12,7 +12,6 @@ import io.github.loongin.omniresonance.networking.NodeMenuNodeSummary;
 import io.github.loongin.omniresonance.networking.NodeMenuState;
 import io.github.loongin.omniresonance.networking.NodeNetworkSummary;
 import io.github.loongin.omniresonance.networking.NodeTunnelSummary;
-import io.github.loongin.omniresonance.networking.TunnelSummary;
 import io.github.loongin.omniresonance.node.NodeForm;
 import io.github.loongin.omniresonance.node.NodeMode;
 import java.util.UUID;
@@ -38,13 +37,11 @@ final class AutomaticNameCommitTest {
     }
 
     @Test
-    void matchingTunnelCreationStateCommitsOnce() {
-        AutomaticNameCommit.Resolution resolution = AutomaticNameCommit.idle()
-                .arm(AutomaticNameCommit.Target.TUNNEL)
-                .resolveTerminal(true, new NetworkTerminalState.TunnelEdit(networkSummary(), null, "Tunnel 3"));
-
-        assertEquals(AutomaticNameCommit.Target.TUNNEL, resolution.commit());
-        assertTrue(resolution.next().submitting());
+    void tunnelCreationStartsWithAnEmptyDraftForExplicitNaming() {
+        var state = new NetworkTerminalState.TunnelEdit(networkSummary(), null, "Tunnel 3");
+        var draft = NetworkSetupScreen.resolveTopologyDraft(new TerminalFilterView(() -> {}), null, state, "", false);
+        assertEquals("", draft.value());
+        assertFalse(draft.dirty());
     }
 
     @Test
@@ -59,17 +56,8 @@ final class AutomaticNameCommitTest {
                                 new io.github.loongin.omniresonance.networking.NodeChannelSummary(
                                         new UUID(5, 1), "Channel", 0, 1, 0, null),
                                 null));
-        AutomaticNameCommit.Resolution tunnelRename = AutomaticNameCommit.idle()
-                .arm(AutomaticNameCommit.Target.TUNNEL)
-                .resolveTerminal(
-                        true,
-                        new NetworkTerminalState.TunnelEdit(
-                                networkSummary(), new TunnelSummary(new UUID(5, 2), "Tunnel", 0, true, 1, 0), null));
-
         assertNull(channelRename.commit());
-        assertNull(tunnelRename.commit());
         assertFalse(channelRename.next().armed());
-        assertFalse(tunnelRename.next().armed());
     }
 
     @Test

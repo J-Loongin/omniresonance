@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.compat.mekanism;
 
+import io.github.loongin.omniresonance.transfer.PipeConnections;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
@@ -56,7 +57,7 @@ public final class PipeConnectionGameTests {
                                 node.state().orElseThrow().nodeId())
                         .writeOwnedFields(tag);
                 node.loadCustomOnly(tag, level.registryAccess());
-                node.publishPipeConnections(1 << (18 + Direction.EAST.get3DDataValue()));
+                node.publishPipeConnections(PipeConnections.only(PipeConnections.Type.CHEMICAL, Direction.EAST));
             });
             h.runAfterDelay(10, () -> {
                 var marker = level.getCapability(MekanismResources.BLOCK, pos.west(), Direction.EAST);
@@ -111,7 +112,7 @@ public final class PipeConnectionGameTests {
                         "Disabled chemical face allowed transfer");
                 var node = (io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity)
                         level.getBlockEntity(pos.west());
-                node.publishPipeConnections(0);
+                node.publishPipeConnections(PipeConnections.NONE);
                 h.assertTrue(
                         level.getCapability(MekanismResources.BLOCK, pos.west(), Direction.EAST) == null
                                 && marker.extractChemical(100, mekanism.api.Action.EXECUTE)
@@ -160,7 +161,9 @@ public final class PipeConnectionGameTests {
                                     node.state().orElseThrow().nodeId())
                             .writeOwnedFields(tag);
                     node.loadCustomOnly(tag, level.registryAccess());
-                    node.publishPipeConnections((1 << Direction.EAST.get3DDataValue()) * (1 + 64 + 4096));
+                    node.publishPipeConnections(PipeConnections.only(PipeConnections.Type.ITEM, Direction.EAST)
+                            .union(PipeConnections.only(PipeConnections.Type.FLUID, Direction.EAST))
+                            .union(PipeConnections.only(PipeConnections.Type.ENERGY, Direction.EAST)));
                 }
             });
             h.runAfterDelay(10, () -> {

@@ -371,6 +371,11 @@ public final class NetworkTerminalSettingsGameTests {
                                     "Renamed",
                                     false,
                                     null));
+                    helper.assertTrue(
+                            pages.getLast().rows().stream()
+                                    .anyMatch(row -> row.node().nodeId().equals(target)
+                                            && row.node().nodeName().equals("Renamed")),
+                            "Rename acknowledgement must update the visible row before the periodic refresh");
                     browser.tick();
                     browser.tick();
                     helper.assertTrue(
@@ -1029,6 +1034,42 @@ public final class NetworkTerminalSettingsGameTests {
                     "Missing, forged or cancelled edit changed authority through terminal route");
             helper.succeed();
         }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void invalidPresetNamesKeepTheEditAndReturnTheNameReason(GameTestHelper helper) throws IOException {
+        try (Fixture fixture = new Fixture(helper)) {
+            ServerPlayer owner = player(helper, OWNER);
+            fixture.open(owner, OWNER_VIEW, OWNER_SESSION);
+            fixture.terminal.handle(
+                    owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK));
+            fixture.terminal.handle(owner, new NetworkTerminalRequest.OpenFilters(OWNER_VIEW, OWNER_SESSION, 2));
+            fixture.terminal.handle(
+                    owner,
+                    new NetworkTerminalRequest.BeginPresetEdit(
+                            OWNER_VIEW,
+                            OWNER_SESSION,
+                            3,
+                            io.github.loongin.omniresonance.filter.PresetEditOperation.CREATE,
+                            null));
+            long sequence = 4;
+            for (String value : java.util.List.of("", "   ")) {
+                var response = fixture.terminal.handle(
+                        owner, new NetworkTerminalRequest.SavePresetEdit(OWNER_VIEW, OWNER_SESSION, sequence++, value));
+                helper.assertTrue(
+                        response instanceof NetworkTerminalResponse.Failure rejected
+                                && rejected.reason() == NetworkTerminalResponse.Reason.INVALID_NAME,
+                        "Empty preset names must report INVALID_NAME: " + response);
+                helper.assertTrue(fixture.repository.findOwner(OWNER).isEmpty(), "Invalid name created owner data");
+            }
+            state(
+                    helper,
+                    fixture.terminal.handle(
+                            owner,
+                            new NetworkTerminalRequest.SavePresetEdit(OWNER_VIEW, OWNER_SESSION, sequence, "Valid")),
+                    NetworkTerminalState.Preset.class);
+        }
+        helper.succeed();
     }
 
     @GameTest(template = "bootstrap")

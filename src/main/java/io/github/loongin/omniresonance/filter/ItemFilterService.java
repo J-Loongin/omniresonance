@@ -47,6 +47,7 @@ public final class ItemFilterService {
         LOCK_EXPIRED,
         STALE_REVISION,
         INVALID_REQUEST,
+        INVALID_NAME,
         NAME_CONFLICT,
         QUOTA_REACHED
     }
@@ -281,7 +282,7 @@ public final class ItemFilterService {
                 case DELETE -> throw rejected(Reason.INVALID_REQUEST);
             };
         } catch (IllegalArgumentException failure) {
-            throw rejected(Reason.INVALID_REQUEST);
+            throw rejected(Reason.INVALID_NAME);
         }
         List<ResourceFilterRule> rules = previous == null ? new ArrayList<>() : new ArrayList<>(previous.rules());
         if (edit.operation() == PresetEditOperation.ADD_RULE

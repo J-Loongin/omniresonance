@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.transfer;
 
+import static io.github.loongin.omniresonance.transfer.fixtures.ItemSchedulerConfigurations.configuration;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -21,33 +22,55 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import org.junit.jupiter.api.Test;
 
-final class ItemDirectSchedulerTest {
+final class NativeItemSchedulerTest {
     private static final HolderLookup.Provider PROVIDER =
             HolderLookup.Provider.create(BuiltInRegistries.REGISTRY.stream().map(registry -> registry.asLookup()));
     private static final UUID NETWORK = new UUID(0, 1), CHANNEL = new UUID(0, 2);
+    private static final io.github.loongin.omniresonance.filter.ResourceFilterCompiler.Compiled ALLOW =
+            io.github.loongin.omniresonance.filter.ResourceFilterCompiler.compile(
+                    null,
+                    new io.github.loongin.omniresonance.filter.ResourceFilterCompiler.OwnerSnapshot(NETWORK, Map.of()),
+                    (type, tag) -> null);
     private final Map<UUID, FakeItemHandler> handlers = new HashMap<>();
     private final Set<UUID> disabled = new HashSet<>(), filtered = new HashSet<>();
     private final Map<UUID, Integer> discoveries = new HashMap<>();
     private final RecoveryBuffer recovery = new RecoveryBuffer(() -> {});
-    private final List<ItemDirectScheduler.Configuration> configs = new ArrayList<>();
-    private final java.util.concurrent.atomic.AtomicInteger encodings = new java.util.concurrent.atomic.AtomicInteger();
-    private final ItemDirectScheduler runtime = new ItemDirectScheduler(
-            new ItemDirectScheduler.Environment() {
-                public boolean active(ItemDirectScheduler.Configuration c) {
+    private final List<ResourceDirectScheduler.Configuration> configs = new ArrayList<>();
+    private final ResourceDirectScheduler runtime =
+            new ResourceDirectScheduler(new ResourceDirectScheduler.Environment() {
+                public boolean active(ResourceDirectScheduler.Configuration c) {
                     return !disabled.contains(c.nodeId());
                 }
 
-                public boolean allows(ItemDirectScheduler.Configuration c, ItemVariant v) {
-                    return !filtered.contains(c.nodeId());
+                public List<net.minecraft.resources.ResourceLocation> registeredTypes() {
+                    return List.of(ResourceTypes.ITEM);
                 }
 
-                public ItemTransferEngine.Handle resolve(ItemDirectScheduler.Configuration c, TransferWorkBudget b) {
+                public ResourceDirectScheduler.FilterView filter(ResourceDirectScheduler.Configuration c) {
+                    return new ResourceDirectScheduler.FilterView(
+                            filtered.contains(c.nodeId()),
+                            filtered.contains(c.nodeId())
+                                    ? io.github.loongin.omniresonance.filter.ResourceFilterCompiler.unavailable(NETWORK)
+                                    : ALLOW);
+                }
+
+                public ResourceTransferEngine.Handle resolve(
+                        ResourceDirectScheduler.Configuration c,
+                        net.minecraft.resources.ResourceLocation type,
+                        net.minecraft.core.Direction face,
+                        TransferWorkBudget b) {
                     b.beforeCall();
                     try {
                         discoveries.merge(c.nodeId(), 1, Integer::sum);
                         FakeItemHandler h = handlers.get(c.nodeId());
-                        return new ItemTransferEngine.Handle() {
-                            public FakeItemHandler handler() {
+                        return new ResourceTransferEngine.Handle() {
+                            private final ResourcePort port = new ItemResourcePort(h, PROVIDER);
+
+                            public ResourcePort port() {
+                                return port;
+                            }
+
+                            public Object physicalIdentity() {
                                 return h;
                             }
 
@@ -63,13 +86,9 @@ final class ItemDirectSchedulerTest {
                 public RecoveryBuffer recovery(UUID n) {
                     return recovery;
                 }
-            },
-            stack -> {
-                encodings.incrementAndGet();
-                return ItemVariant.from(stack, PROVIDER);
             });
 
-    private ItemDirectScheduler.Configuration input(int id, int amount, int rate, long keep, int slots) {
+    private ResourceDirectScheduler.Configuration input(int id, int amount, int rate, long keep, int slots) {
         return add(
                 id,
                 amount,
@@ -77,7 +96,7 @@ final class ItemDirectSchedulerTest {
                 new ItemTransferPolicy.Input(20, rate, RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, keep));
     }
 
-    private ItemDirectScheduler.Configuration output(int id, int rate, int priority) {
+    private ResourceDirectScheduler.Configuration output(int id, int rate, int priority) {
         return add(
                 id,
                 0,
@@ -86,12 +105,30 @@ final class ItemDirectSchedulerTest {
                         20, rate, RedstoneCondition.IGNORE, null, FilterMode.WHITELIST, priority));
     }
 
-    private ItemDirectScheduler.Configuration add(int id, int amount, int slots, ItemTransferPolicy policy) {
+    private ResourceDirectScheduler.Configuration add(int id, int amount, int slots, ItemTransferPolicy policy) {
         UUID node = new UUID(1, id);
         FakeItemHandler h = new FakeItemHandler(slots);
         if (amount > 0) h.stacks[0] = new ItemStack(Items.IRON_INGOT, amount);
         handlers.put(node, h);
-        var c = new ItemDirectScheduler.Configuration(NETWORK, node, CHANNEL, 0, policy);
+        ResourceTransferPolicy converted = ResourceTransferPolicy.legacy(policy);
+        ResourceTransferPolicy selected = converted instanceof ResourceTransferPolicy.Input in
+                ? new ResourceTransferPolicy.Input(
+                        in.intervalTicks(),
+                        in.scope(),
+                        in.redstoneCondition(),
+                        CHANNEL,
+                        in.filterMode(),
+                        in.resourcePolicyOverrides(),
+                        in.keepCount())
+                : new ResourceTransferPolicy.Output(
+                        converted.intervalTicks(),
+                        converted.scope(),
+                        converted.redstoneCondition(),
+                        CHANNEL,
+                        converted.filterMode(),
+                        ((ResourceTransferPolicy.Output) converted).resourcePolicyOverrides(),
+                        ((ResourceTransferPolicy.Output) converted).priority());
+        var c = configuration(NETWORK, node, CHANNEL, 0, selected);
         configs.add(c);
         return c;
     }
@@ -106,7 +143,7 @@ final class ItemDirectSchedulerTest {
         return b;
     }
 
-    private int amount(ItemDirectScheduler.Configuration c) {
+    private int amount(ResourceDirectScheduler.Configuration c) {
         return handlers.get(c.nodeId()).stacks[0].getCount();
     }
 
@@ -139,7 +176,7 @@ final class ItemDirectSchedulerTest {
         handlers.get(in.nodeId()).throwExtract = true;
         activate();
         tick(0, 1000);
-        assertEquals(ItemDirectScheduler.Status.FAILED, runtime.status(in.nodeId(), CHANNEL));
+        assertEquals(ResourceDirectScheduler.Status.FAILED, runtime.status(in.nodeId(), CHANNEL));
     }
 
     @Test
@@ -188,9 +225,8 @@ final class ItemDirectSchedulerTest {
         var out = output(2, 64, 0);
         activate();
         UUID next = new UUID(0, 99);
-        List<ItemDirectScheduler.Configuration> moved = new ArrayList<>();
-        for (var c : configs)
-            moved.add(new ItemDirectScheduler.Configuration(next, c.nodeId(), c.channelId(), c.revision(), c.policy()));
+        List<ResourceDirectScheduler.Configuration> moved = new ArrayList<>();
+        for (var c : configs) moved.add(configuration(next, c.nodeId(), c.channelId(), c.revision(), c.policy()));
         runtime.replaceNetwork(next, moved, 0);
         runtime.replaceNetwork(NETWORK, List.of(), 0);
         tick(0, 1000);
@@ -225,8 +261,8 @@ final class ItemDirectSchedulerTest {
         runtime.replaceNetwork(
                 secondNetwork,
                 List.of(
-                        new ItemDirectScheduler.Configuration(secondNetwork, b.nodeId(), CHANNEL, 0, b.policy()),
-                        new ItemDirectScheduler.Configuration(secondNetwork, outB.nodeId(), CHANNEL, 0, outB.policy())),
+                        configuration(secondNetwork, b.nodeId(), CHANNEL, 0, b.policy()),
+                        configuration(secondNetwork, outB.nodeId(), CHANNEL, 0, outB.policy())),
                 0);
         boolean committed = false;
         for (int tick = 0; tick < 30; tick++) {
@@ -234,7 +270,7 @@ final class ItemDirectSchedulerTest {
             int mutations = handlers.get(a.nodeId()).extractionCalls + handlers.get(b.nodeId()).extractionCalls;
             if (mutations > 0) {
                 assertEquals(1, mutations);
-                assertTrue(budget.calls() <= ItemTransferEngine.MAXIMUM_COMMIT_CALLS);
+                assertTrue(budget.calls() <= ResourceTransferEngine.MAXIMUM_GREEDY_CALLS);
                 committed = true;
                 break;
             }
@@ -262,7 +298,7 @@ final class ItemDirectSchedulerTest {
         activate();
         for (int i = 0; i < 25; i++) {
             var b = tick(i, 1);
-            assertTrue(b.calls() <= ItemTransferEngine.MAXIMUM_COMMIT_CALLS);
+            assertTrue(b.calls() <= ResourceTransferEngine.MAXIMUM_GREEDY_CALLS);
         }
         assertEquals(64, amount(out));
         assertEquals(64, amount(in));
@@ -275,7 +311,7 @@ final class ItemDirectSchedulerTest {
         activate();
         for (int i = 0; i < 10; i++) tick(i, 1);
         assertEquals(0, amount(out));
-        assertEquals(ItemDirectScheduler.Status.WAITING_BUDGET, runtime.status(in.nodeId(), CHANNEL));
+        assertEquals(ResourceDirectScheduler.Status.WAITING_BUDGET, runtime.status(in.nodeId(), CHANNEL));
         handlers.get(in.nodeId()).stacks[0] = new ItemStack(Items.IRON_INGOT, 40);
         tick(10, 1000);
         assertEquals(8, amount(out));
@@ -368,7 +404,7 @@ final class ItemDirectSchedulerTest {
         assertEquals(64, amount(output));
         assertEquals(60, amount(second));
         assertEquals(1, handlers.get(first.nodeId()).insertionCalls);
-        assertEquals(ItemDirectScheduler.Status.FAILED, runtime.status(first.nodeId(), CHANNEL));
+        assertEquals(ResourceDirectScheduler.Status.FAILED, runtime.status(first.nodeId(), CHANNEL));
         assertTrue(recovery.isEmpty());
     }
 
@@ -389,13 +425,15 @@ final class ItemDirectSchedulerTest {
     }
 
     @Test
-    void stableVariantIsEncodedOnceAcrossRepeatedNativeLimits() {
+    void nativeLimitedExtractionStillFulfillsTheConfiguredWindow() {
         var in = input(1, 256, 256, 0, 1);
-        output(2, 256, 0);
+        var out = output(2, 256, 0);
         handlers.get(in.nodeId()).extractionLimit = 64;
         activate();
         tick(0, 1000);
-        assertEquals(1, encodings.get());
+        assertEquals(256, amount(out));
+        assertEquals(0, amount(in));
+        assertEquals(4, handlers.get(in.nodeId()).extractionCalls);
     }
 
     @Test

@@ -541,7 +541,6 @@ public final class ResourceDirectScheduler {
                 if (!t.target.port().typeId().equals(t.type))
                     throw new IllegalArgumentException("Wrong resource port type");
                 out.faceCursor = (face + 1) % 6;
-                t.selectedGroup.cursors[t.index] = (t.selectedIndex + 1) % t.selectedGroup.outputs.size();
                 t.stage = Stage.TARGET_VIEWS;
             }
             case TARGET_VIEWS -> {
@@ -638,6 +637,9 @@ public final class ResourceDirectScheduler {
         t.output = out;
         t.selectedGroup = g;
         t.selectedIndex = index;
+        // Reserve the next preparation turn now, before other inputs can select the same start.
+        // This cursor chooses attempts, not a resource reservation or a promise of acceptance.
+        g.cursors[t.index] = (index + 1) % g.outputs.size();
         t.targetMatch = null;
         t.stage = Stage.TARGET_FILTER;
     }

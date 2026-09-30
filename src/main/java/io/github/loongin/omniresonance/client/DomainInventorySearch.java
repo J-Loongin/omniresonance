@@ -2,11 +2,14 @@
 package io.github.loongin.omniresonance.client;
 
 import io.github.loongin.omniresonance.storage.DomainLedger;
+import io.github.loongin.omniresonance.transfer.ResourceVariantKey;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeSet;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -42,6 +45,8 @@ final class DomainInventorySearch implements AutoCloseable {
     private @Nullable Job job;
     private @Nullable List<Long> pending;
     private List<Long> visible = List.of();
+    private Map<Long, ResourceVariantKey> visibleKeys = Map.of();
+    private Map<Long, ResourceVariantKey> pendingKeys = Map.of();
     private long completedVersion = -1;
     private long displayVersion;
     private boolean pendingChanged;
@@ -86,6 +91,11 @@ final class DomainInventorySearch implements AutoCloseable {
         return visible;
     }
 
+    @Nullable
+    ResourceVariantKey key(long id) {
+        return visibleKeys.get(id);
+    }
+
     long displayVersion() {
         return displayVersion;
     }
@@ -97,6 +107,7 @@ final class DomainInventorySearch implements AutoCloseable {
     private void invalidate() {
         job = null;
         pending = null;
+        pendingKeys = Map.of();
         completedVersion = -1;
     }
 
@@ -106,8 +117,18 @@ final class DomainInventorySearch implements AutoCloseable {
             invalidate();
         }
         if (pending != null && !frozen) publish();
-        if (job == null && source.version() != completedVersion) job = new Job(source.maximumId(), source.version());
+        if (job != null && job.frozen != frozen) job = null;
+        if (job == null && source.version() != completedVersion)
+            job = new Job(source.maximumId(), source.version(), frozen);
         for (int work = 0; work < maximumWork && job != null && workAvailable.getAsBoolean(); work++) {
+            if (job.frozen && job.seed < job.comparedAgainst.size()) {
+                long id = job.comparedAgainst.get(job.seed++);
+                var key = visibleKeys.get(id);
+                job.positions.put(key, job.pinned.size());
+                job.pinned.add(id);
+                job.pinnedKeys.put(id, key);
+                continue;
+            }
             if (job.output == null) {
                 var entry = source.after(job.cursor, job.ceiling);
                 if (entry == null) {
@@ -116,7 +137,23 @@ final class DomainInventorySearch implements AutoCloseable {
                 }
                 job.cursor = entry.sequence();
                 var text = describe.apply(entry);
-                if (query.matches(text)) job.sorted.add(new Row(entry, text));
+                if (query.matches(text)) {
+                    job.sorted.add(new Row(entry, text));
+                    job.keys.put(entry.sequence(), entry.key());
+                    if (job.frozen) {
+                        Integer index = job.positions.get(entry.key());
+                        if (index == null) {
+                            job.positions.put(entry.key(), job.pinned.size());
+                            job.pinned.add(entry.sequence());
+                            job.pinnedChanged = true;
+                        } else {
+                            long previous = job.pinned.set(index, entry.sequence());
+                            job.pinnedKeys.remove(previous);
+                            job.pinnedChanged |= previous != entry.sequence();
+                        }
+                        job.pinnedKeys.put(entry.sequence(), entry.key());
+                    }
+                }
             } else if (job.output.hasNext()) {
                 long id = job.output.next().entry().sequence();
                 int index = job.result.size();
@@ -124,9 +161,16 @@ final class DomainInventorySearch implements AutoCloseable {
                 job.result.add(id);
             } else {
                 pending = Collections.unmodifiableList(job.result);
+                pendingKeys = job.keys;
                 pendingChanged = job.changed
                         || job.result.size() != job.comparedAgainst.size()
-                        || visible != job.comparedAgainst;
+                        || visible != job.comparedAgainst
+                        || job.pinnedChanged;
+                if (frozen && job.pinnedChanged) {
+                    visible = Collections.unmodifiableList(job.pinned);
+                    visibleKeys = job.pinnedKeys;
+                    displayVersion = Math.incrementExact(displayVersion);
+                }
                 completedVersion = job.version;
                 job = null;
                 if (!frozen) publish();
@@ -137,9 +181,11 @@ final class DomainInventorySearch implements AutoCloseable {
     private void publish() {
         if (pendingChanged) {
             visible = pending;
+            visibleKeys = pendingKeys;
             displayVersion = Math.incrementExact(displayVersion);
         }
         pending = null;
+        pendingKeys = Map.of();
     }
 
     private Comparator<Row> comparator() {
@@ -190,13 +236,20 @@ final class DomainInventorySearch implements AutoCloseable {
         final TreeSet<Row> sorted = new TreeSet<>(comparator());
         final ArrayList<Long> result = new ArrayList<>();
         final List<Long> comparedAgainst = visible;
-        boolean changed;
+        final boolean frozen;
+        final Map<Long, ResourceVariantKey> keys = new HashMap<>();
+        final Map<ResourceVariantKey, Integer> positions = new HashMap<>();
+        final ArrayList<Long> pinned = new ArrayList<>();
+        final Map<Long, ResourceVariantKey> pinnedKeys = new HashMap<>();
+        boolean changed, pinnedChanged;
+        int seed;
         long cursor;
 
         @Nullable
         Iterator<Row> output;
 
-        Job(long ceiling, long version) {
+        Job(long ceiling, long version, boolean frozen) {
+            this.frozen = frozen;
             this.ceiling = ceiling;
             this.version = version;
         }
@@ -207,6 +260,8 @@ final class DomainInventorySearch implements AutoCloseable {
         job = null;
         pending = null;
         visible = List.of();
+        visibleKeys = Map.of();
+        pendingKeys = Map.of();
         completedVersion = -1;
     }
 }

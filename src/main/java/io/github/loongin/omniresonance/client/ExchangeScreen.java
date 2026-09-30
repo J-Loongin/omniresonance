@@ -16,7 +16,6 @@ import io.netty.buffer.Unpooled;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -107,8 +106,9 @@ final class ExchangeScreen extends Screen {
     private int interval = 1, firstRow, visibleRows;
     private boolean allTypes = true, history, owner, opened, pending, dirty, submitted, leaving, editingExisting;
     private @Nullable ExchangeRequest outstanding;
-    private byte[] downloaded, upload;
-    private int downloadOffset, downloadKind, uploadOffset;
+    private byte[] downloaded;
+    private final ClientUploadBuffer upload = new ClientUploadBuffer();
+    private int downloadOffset, downloadKind;
     private @Nullable Component message, dialogText;
     private @Nullable Runnable dialogAction;
     private @Nullable Code shownCode;
@@ -177,8 +177,7 @@ final class ExchangeScreen extends Screen {
         downloadOffset = 0;
         message = null;
         if (body.length > ManagementTransferPool.MAXIMUM_FRAGMENT_BYTES) {
-            upload = body;
-            uploadOffset = 0;
+            upload.begin(body);
             send(ExchangeRequest.UPLOAD, body.length, new byte[0]);
         } else {
             submitted = write;
@@ -197,7 +196,7 @@ final class ExchangeScreen extends Screen {
         try {
             if (frame.kind() == ExchangeFrame.ERROR) {
                 String reason = new String(frame.body(), StandardCharsets.UTF_8);
-                upload = null;
+                upload.clear();
                 downloaded = null;
                 downloadOffset = 0;
                 if (reason.equals("session_expired") || reason.equals("stale_request") || reason.equals("committed")) {
@@ -216,15 +215,12 @@ final class ExchangeScreen extends Screen {
             owner = frame.owner();
             uncertain = false;
             if (frame.kind() == ExchangeFrame.ACK) {
-                if (upload == null) throw new IllegalArgumentException("Unexpected upload acknowledgement");
-                if (uploadOffset < upload.length) {
-                    int end = Math.min(upload.length, uploadOffset + ManagementTransferPool.MAXIMUM_FRAGMENT_BYTES);
-                    byte[] chunk = Arrays.copyOfRange(upload, uploadOffset, end);
-                    int start = uploadOffset;
-                    uploadOffset = end;
-                    send(ExchangeRequest.CHUNK, start, chunk);
+                if (!upload.active()) throw new IllegalArgumentException("Unexpected upload acknowledgement");
+                if (upload.hasNext()) {
+                    var fragment = upload.next();
+                    send(ExchangeRequest.CHUNK, fragment.offset(), fragment.bytes());
                 } else {
-                    upload = null;
+                    upload.clear();
                     submitted = true;
                     send(ExchangeRequest.COMMIT, 0, new byte[0]);
                 }
@@ -259,7 +255,7 @@ final class ExchangeScreen extends Screen {
             rebuild();
         } catch (RuntimeException failure) {
             uncertain = true;
-            upload = null;
+            upload.clear();
             downloaded = null;
             pending = false;
             message = text("error.unavailable");
@@ -1237,7 +1233,7 @@ final class ExchangeScreen extends Screen {
         }
         if (pending && tick - sentTick > 240) {
             pending = false;
-            upload = null;
+            upload.clear();
             downloaded = null;
             uncertain = true;
             message = text(submitted ? "unknown_result" : "timeout");
@@ -1325,13 +1321,12 @@ final class ExchangeScreen extends Screen {
         }
         if (dialogText != null && message != null && dialogSubmit != null) {
             var d = TerminalDialogLayout.editor(layout.window());
-            g.drawString(
+            TerminalDialogLayout.renderInputError(
+                    g,
                     font,
-                    TerminalText.ellipsize(font, message.getString(), d.width() - 24),
-                    d.x() + 12,
-                    d.y() + 74,
-                    TerminalTheme.ERROR,
-                    false);
+                    input,
+                    message,
+                    TerminalActionLayout.of(d).primary().y());
         }
     }
 
@@ -1356,6 +1351,10 @@ final class ExchangeScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double x, double y, int button) {
+        return TerminalInteractionPolicy.dispatchClick(this, () -> handleMouseClick(x, y, button));
+    }
+
+    private boolean handleMouseClick(double x, double y, int button) {
         boolean was = search.expanded();
         boolean handled = super.mouseClicked(x, y, button);
         search.finishToggleClick(
@@ -1369,7 +1368,7 @@ final class ExchangeScreen extends Screen {
 
     @Override
     public boolean keyPressed(int key, int scan, int modifiers) {
-        if (NetworkSetupScreen.routeKey(
+        if (TerminalInteractionPolicy.routeKey(
                 getFocused(),
                 key,
                 scan,
@@ -1455,7 +1454,7 @@ final class ExchangeScreen extends Screen {
             return;
         }
         leaving = true;
-        upload = null;
+        upload.clear();
         downloaded = null;
         if (root) {
             parent.closeFromConfiguration();
@@ -1475,7 +1474,7 @@ final class ExchangeScreen extends Screen {
     @Override
     public void removed() {
         if (!leaving) parent.closeFromConfiguration();
-        upload = null;
+        upload.clear();
         downloaded = null;
     }
 

@@ -727,7 +727,7 @@ final class TerminalFilterView {
                     font,
                     TerminalText.body(impact),
                     body.x() + 12,
-                    body.y() + 82,
+                    impactTop(body),
                     body.width() - 24,
                     TerminalTheme.MUTED);
             if (!edit.impact().complete())
@@ -735,7 +735,7 @@ final class TerminalFilterView {
                         font,
                         TerminalText.body(label("incomplete")),
                         body.x() + 12,
-                        body.y() + 104,
+                        impactTop(body) + 22,
                         body.width() - 24,
                         TerminalTheme.ERROR);
         } else if (!management) {
@@ -846,8 +846,12 @@ final class TerminalFilterView {
         return true;
     }
 
+    static int impactTop(TerminalLayout.Rect dialog) {
+        return dialog.y() + 96;
+    }
+
     static TerminalLayout.Rect editorBounds(TerminalLayout.Rect body, NetworkTerminalState.PresetEdit edit) {
-        return TerminalDialogLayout.centered(body, 300, edit.impact().complete() ? 148 : 168);
+        return TerminalDialogLayout.centered(body, 300, edit.impact().complete() ? 162 : 182);
     }
 
     private @Nullable EditBox buildFull(

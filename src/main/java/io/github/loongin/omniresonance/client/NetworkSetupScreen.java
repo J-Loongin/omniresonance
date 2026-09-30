@@ -15,7 +15,6 @@ import io.github.loongin.omniresonance.networking.TunnelSummary;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.function.BooleanSupplier;
 import java.util.function.LongFunction;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
@@ -341,7 +340,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     private boolean topologyDraftDirty;
     private boolean topologyDiscardConfirmation;
     private boolean closeAfterDiscard;
-    private AutomaticNameCommit automaticNameCommit = AutomaticNameCommit.idle();
     private String draft = "";
     private String topologyDraft = "";
     private TerminalInteractionPolicy.DraftState draftState = TerminalInteractionPolicy.DraftState.clear();
@@ -418,7 +416,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         memberBackPending = false;
         pendingOperation = PendingOperation.NONE;
         pendingPageRequest = PagedListScroll.PageRequest.NONE;
-        automaticNameCommit = AutomaticNameCommit.idle();
     }
 
     void closeForReplacement() {
@@ -542,12 +539,10 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         }
         if (response instanceof NetworkTerminalResponse.Failure failure) {
             clearFilterTransfer();
-            automaticNameCommit =
-                    automaticNameCommit.resolveTerminal(false, failure.state()).next();
             if (completed == PendingOperation.CREATE) {
                 applyCreateResult(false);
             }
-            error = Component.translatable(failure.reason().translationKey());
+            error = ManagementErrorText.terminal(failure.reason(), topologyState, completed == PendingOperation.CREATE);
             if (failure.state() != null) {
                 if (closeAfterDiscard
                         && topologyDiscardConfirmation
@@ -592,17 +587,11 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                     && topologyDiscardConfirmation
                     && TerminalInteractionPolicy.sameEditor(previous, topologyState);
             if (!preserveClosingDraft) initializeTopologyDraft(previous, topologyState);
-            AutomaticNameCommit.Resolution automatic = automaticNameCommit.resolveTerminal(true, topologyState);
-            automaticNameCommit = automatic.next();
             error = null;
             errorAllowsRetry = false;
             if (!preserveClosingDraft) {
                 topologyDiscardConfirmation = false;
                 closeAfterDiscard = false;
-            }
-            if (automatic.commit() == AutomaticNameCommit.Target.TUNNEL) {
-                submitTopologyName();
-                return;
             }
             if (continueMemberCandidates()) return;
             switch (domainShortcut.resolve(topologyState, pendingOperation != PendingOperation.NONE)) {
@@ -657,7 +646,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
             return;
         }
         if (response instanceof NetworkTerminalResponse.Failure failure) {
-            error = Component.translatable(failure.reason().translationKey());
+            error = ManagementErrorText.terminal(failure.reason(), topologyState, createOverlay);
             errorAllowsRetry = true;
             rebuildIfActive();
             return;
@@ -865,7 +854,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                     bounds,
                     target,
                     () -> openCreateOverlay(false),
-                    this::beginAutomaticTunnelCreate,
+                    this::beginTunnelCreate,
                     () -> sendMemberAction(new TerminalMemberView.Action.OpenCandidates()),
                     this::runFilterAction);
         } else if (action == TerminalHeaderLayout.Action.SEARCH) {
@@ -1158,9 +1147,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
             nameField = inventoryView.build(font, content, this::addRenderableWidget, this::removeWidget);
             return;
         }
-        if (automaticNameCommit.suppressEditor()) {
-            return;
-        }
         switch (topologyState) {
             case NetworkTerminalState.Filters filters -> buildFilterView(filters);
             case NetworkTerminalState.Preset preset -> buildFilterView(preset);
@@ -1177,9 +1163,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
             case NetworkTerminalState.TunnelEdit edit ->
                 buildTopologyNameEdit(
                         edit.existing() == null,
-                        edit.existing() == null
-                                ? edit.suggestedName()
-                                : edit.existing().name());
+                        edit.existing() == null ? "" : edit.existing().name());
             case NetworkTerminalState.DeleteConfirmation ignored -> buildTopologyDeleteConfirmation();
             case NetworkTerminalState.TunnelSettings settings -> buildTunnelSettings(settings);
         }
@@ -1652,7 +1636,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                 footer.primary().x(),
                 footer.primary().y(),
                 half,
-                creating ? "omniresonance.terminal.create" : "omniresonance.terminal.save",
+                "omniresonance.terminal.save",
                 this::submitTopologyName,
                 true,
                 true);
@@ -1837,7 +1821,8 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
             canonical = new ManagedName(draft).value();
         } catch (IllegalArgumentException invalidName) {
             confirmation = false;
-            error = Component.translatable(NetworkTerminalResponse.Reason.INVALID_NAME.translationKey());
+            error = ManagementErrorText.terminal(
+                    NetworkTerminalResponse.Reason.INVALID_NAME, topologyState, createOverlay);
             errorAllowsRetry = false;
             rebuildIfActive();
             return;
@@ -1866,7 +1851,8 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         try {
             canonical = new ManagedName(topologyDraft).value();
         } catch (IllegalArgumentException invalidName) {
-            error = Component.translatable(NetworkTerminalResponse.Reason.INVALID_NAME.translationKey());
+            error = ManagementErrorText.terminal(
+                    NetworkTerminalResponse.Reason.INVALID_NAME, topologyState, createOverlay);
             rebuildIfActive();
             return;
         }
@@ -1886,15 +1872,12 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         }
     }
 
-    private void beginAutomaticTunnelCreate() {
-        boolean sent = sendTopology(sequence -> new NetworkTerminalRequest.BeginCreateTunnel(
+    private void beginTunnelCreate() {
+        sendTopology(sequence -> new NetworkTerminalRequest.BeginCreateTunnel(
                 viewId,
                 requireSessionId(),
                 sequence,
                 Component.translatable("omniresonance.terminal.tunnel.prefix").getString()));
-        if (sent) {
-            automaticNameCommit = automaticNameCommit.arm(AutomaticNameCommit.Target.TUNNEL);
-        }
     }
 
     static boolean completeTopologySend(TerminalFilterView filters, boolean sent) {
@@ -1954,10 +1937,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         }
         if (current instanceof NetworkTerminalState.TunnelEdit edit) {
             return new TopologyDraft(
-                    edit.existing() == null
-                            ? edit.suggestedName()
-                            : edit.existing().name(),
-                    false);
+                    edit.existing() == null ? "" : edit.existing().name(), false);
         }
         if (!(current instanceof NetworkTerminalState.DeleteConfirmation)
                 && !(current instanceof NetworkTerminalState.NetworkDelete)
@@ -2248,7 +2228,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
             navigateBack();
             return true;
         }
-        if (routeKey(
+        if (TerminalInteractionPolicy.routeKey(
                 getFocused(),
                 keyCode,
                 scanCode,
@@ -2274,27 +2254,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
-    static boolean routeKey(
-            @Nullable GuiEventListener focused,
-            int keyCode,
-            int scanCode,
-            int modifiers,
-            BooleanSupplier shortcutPressed,
-            Runnable close,
-            BooleanSupplier memberSearch) {
-        if (focused instanceof TerminalSearchBox
-                && ClientSearchState.isToggleKey(keyCode, modifiers)
-                && memberSearch.getAsBoolean()) return true;
-        if (focused instanceof TerminalEditBox field && field.ownsKey(keyCode)) {
-            return field.keyPressed(keyCode, scanCode, modifiers);
-        }
-        if (shortcutPressed.getAsBoolean()) {
-            close.run();
-            return true;
-        }
-        return memberSearch.getAsBoolean();
-    }
-
     static boolean dispatchNodeClick(
             java.util.function.Supplier<TerminalNodesView> current, java.util.function.BooleanSupplier dispatch) {
         TerminalNodesView target = current.get();
@@ -2306,6 +2265,10 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        return TerminalInteractionPolicy.dispatchClick(this, () -> handleMouseClick(mouseX, mouseY, button));
+    }
+
+    private boolean handleMouseClick(double mouseX, double mouseY, int button) {
         if (inventoryView != null && client.isDomainMouseKey(button)) {
             client.domainShortcutClosed();
             requestShortcutClose();
@@ -2645,6 +2608,28 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         }
     }
 
+    private boolean renderNameError(GuiGraphics graphics) {
+        if (error == null || nameField == null) return false;
+        boolean editor = topologyState instanceof NetworkTerminalState.TunnelEdit
+                || topologyState instanceof NetworkTerminalState.NetworkRename
+                || topologyState instanceof NetworkTerminalState.PresetEdit edit
+                        && (edit.operation() == io.github.loongin.omniresonance.filter.PresetEditOperation.CREATE
+                                || edit.operation() == io.github.loongin.omniresonance.filter.PresetEditOperation.RENAME
+                                || edit.operation() == io.github.loongin.omniresonance.filter.PresetEditOperation.COPY);
+        return editor
+                && TerminalDialogLayout.renderInputError(
+                        graphics,
+                        font,
+                        nameField,
+                        error,
+                        TerminalActionLayout.of(
+                                        topologyState instanceof NetworkTerminalState.PresetEdit edit
+                                                ? TerminalFilterView.editorBounds(layout.content(), edit)
+                                                : TerminalDialogLayout.editor(layout.content()))
+                                .primary()
+                                .y());
+    }
+
     private void renderTopologyBody(GuiGraphics graphics, NetworkTerminalState state) {
         if (inventoryView != null) {
             inventoryView.renderBody(graphics, font);
@@ -2652,7 +2637,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         }
         if (TerminalFilterView.supports(state)) {
             filterView.render(graphics, font, layout, state, topologyDraft);
-            if (error != null)
+            if (error != null && !renderNameError(graphics))
                 graphics.drawString(
                         font,
                         ellipsize(error.getString(), layout.content().width() - 16),
@@ -2664,7 +2649,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         }
         if (TerminalMemberView.supports(state)) {
             memberView.render(graphics, font, layout);
-            if (error != null)
+            if (error != null && !renderNameError(graphics))
                 graphics.drawString(
                         font,
                         ellipsize(error.getString(), layout.content().width() - 16),
@@ -2676,15 +2661,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         }
         TerminalLayout.Rect content = layout.content();
         TerminalTheme.renderPanel(graphics, content);
-        if (automaticNameCommit.suppressEditor()) {
-            drawCenteredWrapped(
-                    graphics,
-                    Component.translatable("omniresonance.terminal.topology.pending"),
-                    content,
-                    TerminalTheme.MUTED,
-                    -5);
-            return;
-        }
         if (TerminalNetworkSettingsView.supports(state)) {
             TerminalNetworkSettingsView.render(graphics, font, layout, state);
         } else if (state instanceof NetworkTerminalState.NetworkRoot root) {
@@ -2773,7 +2749,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                     content.bottom() - 13,
                     TerminalTheme.MUTED,
                     false);
-        } else if (error != null) {
+        } else if (error != null && !renderNameError(graphics)) {
             graphics.drawString(
                     font,
                     ellipsize(error.getString(), content.width() - 10),
@@ -2895,15 +2871,13 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                 modalBounds.y() + 24,
                 TerminalTheme.MUTED,
                 false);
-        if (error != null) {
-            graphics.drawString(
+        if (error != null)
+            TerminalDialogLayout.renderInputError(
+                    graphics,
                     font,
-                    ellipsize(error.getString(), Math.max(0, modalBounds.width() - 16)),
-                    modalBounds.x() + 8,
-                    modalBounds.y() + 72,
-                    TerminalTheme.ERROR,
-                    false);
-        }
+                    nameField,
+                    error,
+                    TerminalActionLayout.of(modalBounds).primary().y());
     }
 
     private void renderTopologyDiscardConfirmation(GuiGraphics graphics) {
