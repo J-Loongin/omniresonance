@@ -203,7 +203,11 @@ class TerminalNodesViewTest {
                                 key(widgets, "rename"),
                                 key(widgets, "highlight"),
                                 key(widgets, "teleport"))
-                        : List.of(key(widgets, "enable"), key(widgets, "highlight"), key(widgets, "teleport"));
+                        : List.of(
+                                key(widgets, "enable"),
+                                key(widgets, "rename"),
+                                key(widgets, "highlight"),
+                                key(widgets, "teleport"));
                 var pane = view.editorBounds();
                 for (var control : controls) {
                     var row = controls.stream()
@@ -662,9 +666,7 @@ class TerminalNodesViewTest {
         assertTrue(key(widgets, "enable").active);
         assertTrue(key(widgets, "highlight").active);
         assertFalse(key(widgets, "teleport").active, "No local operator must leave teleport disabled");
-        assertFalse(widgets.stream()
-                .anyMatch(w -> w.getMessage().getContents() instanceof TranslatableContents value
-                        && value.getKey().equals("omniresonance.nodes.rename")));
+        assertTrue(key(widgets, "rename").active);
         assertFalse(view.back());
         assertTrue(widgets.stream().anyMatch(w -> w.getMessage().getString().equals("Node A")));
     }

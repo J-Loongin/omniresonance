@@ -527,7 +527,6 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 : node.nodeName();
         if (node != null
                 && !menu.remoteConfiguration()
-                && node.enabled()
                 && interaction.editKind() == NodeMenuInteractionPolicy.EditKind.NONE) {
             int nameWidth = names.node().width();
             nodeTitleBounds = new TerminalLayout.Rect(left, y, 0, CONTROL_HEIGHT);

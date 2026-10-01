@@ -385,9 +385,6 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         if (node == null || linkedNetworkId == null || editKind != EditKind.NONE) {
             return invalid(request);
         }
-        if (!node.enabled()) {
-            return failure(request, NodeMenuResponse.Reason.NODE_DISABLED, state);
-        }
         NodeManagementService.LinkedEdit edit = service.management().acquireLinked(player, linkedNetworkId, nodeId);
         editToken = edit.token();
         editNetworkId = linkedNetworkId;

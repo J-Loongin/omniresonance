@@ -545,7 +545,7 @@ final class TerminalNodesView {
     private void buildDetail() {
         var rect = layout.detail();
         var node = page.selected().node();
-        int[] operations = node.enabled() ? new int[] {0, 1, 2, 3} : new int[] {0, 2, 3};
+        int[] operations = {0, 1, 2, 3};
         for (int slot = 0; slot < operations.length; slot++) {
             int i = operations[slot];
             final int action = i;

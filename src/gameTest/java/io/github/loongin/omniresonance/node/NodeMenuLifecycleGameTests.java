@@ -204,6 +204,45 @@ public final class NodeMenuLifecycleGameTests {
         helper.succeed();
     }
 
+    @GameTest(template = "bootstrap")
+    public static void disabledPhysicalNodeCanBeRenamedWithoutEnablingIt(GameTestHelper helper) throws IOException {
+        BlockPos pos = helper.absolutePos(new BlockPos(2, 3, 2));
+        try (Fixture fixture = new Fixture(helper, true)) {
+            var entity = place(helper, pos, NODE, ModBlocks.RESONANCE_TRANSFER_NODE.get(), Direction.DOWN);
+            fixture.authority.link(NETWORK, entity, new ManagedName("Node"));
+            var owner = player(helper, OWNER, pos);
+            var edit = fixture.management.acquireLinked(owner, NETWORK, NODE);
+            var disabled =
+                    fixture.management.setEnabled(owner, NETWORK, edit.node().revision(), false, edit.token());
+            var menu = fixture.menus.createMenu(14, owner, pos, SESSION);
+            owner.containerMenu = menu;
+            helper.assertTrue(
+                    menu.handle(owner, new NodeMenuRequest.BeginRename(14, SESSION, 1))
+                                    instanceof NodeMenuResponse.State result
+                            && result.state() instanceof NodeMenuState.LinkedRename,
+                    "Disabled node did not open its rename editor");
+            helper.assertTrue(
+                    menu.handle(owner, new NodeMenuRequest.Rename(14, SESSION, 2, "Disabled renamed"))
+                            instanceof NodeMenuResponse.State,
+                    "Disabled node rename failed");
+            var check = fixture.management.acquireLinked(owner, NETWORK, NODE);
+            helper.assertTrue(
+                    !check.node().enabled()
+                            && check.node().name().value().equals("Disabled renamed")
+                            && check.node().mode() == disabled.mode()
+                            && check.node().chunkLoadingRequested() == disabled.chunkLoadingRequested(),
+                    "Rename changed disabled state or other node settings");
+            fixture.management.cancel(owner, check.token());
+            helper.assertTrue(
+                    menu.handle(owner, new NodeMenuRequest.BeginMode(14, SESSION, 3))
+                                    instanceof NodeMenuResponse.Failure rejected
+                            && rejected.reason() == NodeMenuResponse.Reason.NODE_DISABLED,
+                    "Disabled node unexpectedly allowed configuration editing");
+            menu.removed(owner);
+        }
+        helper.succeed();
+    }
+
     private static ItemInteractionResult interact(
             GameTestHelper helper, ServerPlayer player, BlockPos pos, InteractionHand hand) {
         BlockState state = helper.getLevel().getBlockState(pos);

@@ -476,14 +476,11 @@ public final class NodeManagementService implements AutoCloseable {
         return linked;
     }
 
-    /** Renames one enabled exact-revision node and releases its lease after the committed directory replacement. */
+    /** Renames one exact-revision node without changing its enabled state and releases its lease after the committed directory replacement. */
     public NetworkNodeRecord rename(
             ServerPlayer actor, UUID networkId, long revision, ManagedName name, EditLockTable.Token token) {
         Objects.requireNonNull(name, "name");
         LinkedTarget target = requireLinkedSave(actor, networkId, revision, token);
-        if (!target.entry().record().enabled()) {
-            throw rejected(Reason.NODE_DISABLED);
-        }
         Optional<NetworkNodeRecord> updated;
         try {
             updated = target.network().renameNode(token.objectId(), revision, name);

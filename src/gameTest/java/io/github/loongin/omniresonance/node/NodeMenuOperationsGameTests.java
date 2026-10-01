@@ -247,7 +247,7 @@ public final class NodeMenuOperationsGameTests {
                     "Disabling discarded request or mode");
             failure(
                     helper,
-                    first.handle(owner, new NodeMenuRequest.BeginRename(41, SESSION_A, 5)),
+                    first.handle(owner, new NodeMenuRequest.BeginMode(41, SESSION_A, 5)),
                     NodeMenuResponse.Reason.NODE_DISABLED);
             state(
                     helper,

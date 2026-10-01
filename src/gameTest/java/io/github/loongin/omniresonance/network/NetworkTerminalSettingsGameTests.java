@@ -319,6 +319,9 @@ public final class NetworkTerminalSettingsGameTests {
                                             .nodeId()
                                             .equals(target),
                             "Search did not resume across ticks");
+                    var disableEdit = f.nodeManagement.acquireLinked(owner, NETWORK, target);
+                    var disabledNode = f.nodeManagement.setEnabled(
+                            owner, NETWORK, disableEdit.node().revision(), false, disableEdit.token());
                     browser.handle(
                             owner,
                             NETWORK,
@@ -367,7 +370,7 @@ public final class NetworkTerminalSettingsGameTests {
                                     false,
                                     target,
                                     0,
-                                    0,
+                                    disabledNode.revision(),
                                     "Renamed",
                                     false,
                                     null));
@@ -380,7 +383,9 @@ public final class NetworkTerminalSettingsGameTests {
                     browser.tick();
                     helper.assertTrue(
                             data.findNode(target).orElseThrow().name().value().equals("Renamed")
-                                    && !pages.getLast().editing(),
+                                    && !pages.getLast().editing()
+                                    && !data.findNode(target).orElseThrow().enabled()
+                                    && pages.getLast().cards().isEmpty(),
                             "Explicit rename did not commit/release");
                     helper.assertTrue(
                             pages.getLast().chunkLoading() != null

@@ -400,12 +400,8 @@ public final class NodeManagementGameTests {
             rejected(
                     helper,
                     NodeManagementService.Reason.NODE_DISABLED,
-                    () -> fixture.management.rename(
-                            administrator,
-                            NETWORK,
-                            disabled.revision(),
-                            new ManagedName("Hidden rename"),
-                            disabledEdit.token()));
+                    () -> fixture.management.setMode(
+                            administrator, NETWORK, disabled.revision(), NodeMode.DIRECT, true, disabledEdit.token()));
             NetworkNodeRecord enabled = fixture.management.setEnabled(
                     administrator, NETWORK, disabled.revision(), true, disabledEdit.token());
 

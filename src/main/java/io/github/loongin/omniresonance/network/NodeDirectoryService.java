@@ -122,10 +122,6 @@ public final class NodeDirectoryService implements AutoCloseable {
             if (request.action() == NodeDirectoryRequest.Action.BEGIN_RENAME) {
                 if (b.rename != null) throw new IllegalStateException("Node edit already active");
                 var edit = management.acquireLinked(player, network, request.node());
-                if (!edit.node().enabled()) {
-                    management.cancel(player, edit.token());
-                    throw new IllegalStateException("Node disabled");
-                }
                 b.rename = edit.token();
             } else if (request.action() == NodeDirectoryRequest.Action.CANCEL_EDIT) {
                 cancelRename(b);
