@@ -10,6 +10,7 @@ import org.jetbrains.annotations.Nullable;
 /** Left-aligned management row with a quiet surface and a scoped focus/selection marker. */
 final class TerminalRowButton extends TerminalClickButton {
     private boolean selected;
+    private boolean retainedSelection;
     private boolean readOnly;
     private boolean navigationIndicator;
     private int textInset = 7;
@@ -38,6 +39,14 @@ final class TerminalRowButton extends TerminalClickButton {
         return !readOnly && active && (selected || isHoveredOrFocused());
     }
 
+    boolean selectionMarked() {
+        return !readOnly && selected && (active || retainedSelection) && getWidth() >= 26;
+    }
+
+    void setRetainedSelection(boolean retainedSelection) {
+        this.retainedSelection = retainedSelection;
+    }
+
     void setSelected(boolean selected) {
         this.selected = selected;
     }
@@ -64,7 +73,7 @@ final class TerminalRowButton extends TerminalClickButton {
                 active && !readOnly && selected,
                 false,
                 false);
-        boolean mark = active && !readOnly && selected && getWidth() >= 26;
+        boolean mark = selectionMarked();
         boolean arrow = !mark && navigationIndicator && getWidth() >= 26;
         TerminalTheme.renderControl(graphics, new TerminalLayout.Rect(getX(), getY(), getWidth(), getHeight()), style);
         if (mark)

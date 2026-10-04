@@ -87,6 +87,14 @@ final class DomainInventorySearch implements AutoCloseable {
         return job != null;
     }
 
+    boolean settled() {
+        return !invalid
+                && job == null
+                && pending == null
+                && completedVersion == source.version()
+                && matcherRevision == ClientTextSearch.matcherRevision();
+    }
+
     List<Long> ids() {
         return visible;
     }

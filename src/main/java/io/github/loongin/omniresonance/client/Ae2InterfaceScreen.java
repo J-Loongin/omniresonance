@@ -194,6 +194,7 @@ final class Ae2InterfaceScreen extends Screen {
                     });
             row.active = canInteract();
             row.setSelected(feedback == Feedback.ACTIVE && choice.id().equals(selected));
+            row.setRetainedSelection(writing && feedback == Feedback.ACTIVE);
             row.setTooltip(Tooltip.create(TerminalText.body(label)));
             widgets.add(row);
         }

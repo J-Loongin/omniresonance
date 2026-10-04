@@ -70,6 +70,10 @@ final class ModalBackdrop {
         renderables.clear();
     }
 
+    void addForeground(Renderable widget) {
+        foreground.add(widget);
+    }
+
     void renderForeground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick, Runnable panel) {
         TerminalForegroundLayer.render(graphics, () -> {
             panel.run();

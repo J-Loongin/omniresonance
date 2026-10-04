@@ -126,6 +126,70 @@ class TerminalNodesViewTest {
     }
 
     @Test
+    void localDisableRetainsRealParentControlsWithoutLeavingThemInTheInputTree() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var requests = new ArrayList<NodeDirectoryRequest>();
+        var view = new TerminalNodesView(new UUID(1, 1), SESSION, 1, requests::add, (node, teleport) -> {}, () -> {});
+        view.open();
+        view.build(font(), new TerminalLayout.Rect(0, 0, 364, 186), widgets::add, widgets::remove, ignored -> {});
+        view.accept(page(1, false, true, false));
+        node(widgets).onPress();
+        view.accept(page(2, true, true, false));
+        key(widgets, "disable").onPress();
+        var retained = new ArrayList<net.minecraft.client.gui.components.Renderable>();
+        view.renderRetainedWidgets(retained::add);
+        assertTrue(retained.stream()
+                .filter(AbstractWidget.class::isInstance)
+                .map(AbstractWidget.class::cast)
+                .anyMatch(widget -> widget.getMessage().getString().equals("Node A")));
+        assertTrue(retained.size() >= 6);
+        for (var renderable : retained) {
+            var widget = (AbstractWidget) renderable;
+            assertFalse(widget.active);
+            assertFalse(widgets.contains(widget));
+        }
+        assertEquals(
+                TerminalTheme.DANGER, key(widgets, "confirm").controlStyle().surface());
+        key(widgets, "cancel").onPress();
+        retained.clear();
+        view.renderRetainedWidgets(retained::add);
+        assertTrue(retained.isEmpty());
+        assertTrue(key(widgets, "highlight").active);
+        assertEquals(2, requests.size(), "Cancel must not write or reload the current selection");
+    }
+
+    @Test
+    void renamePrimaryActionAndDiscardCancellationPreserveTheActualDraft() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var requests = new ArrayList<NodeDirectoryRequest>();
+        var view = new TerminalNodesView(new UUID(1, 1), SESSION, 1, requests::add, (node, teleport) -> {}, () -> {});
+        view.open();
+        view.build(font(), new TerminalLayout.Rect(0, 0, 364, 186), widgets::add, widgets::remove, ignored -> {});
+        view.accept(page(1, false, true, false));
+        node(widgets).onPress();
+        view.accept(page(2, true, true, false));
+        key(widgets, "rename").onPress();
+        view.accept(page(3, true, true, true));
+        assertEquals(
+                TerminalTheme.ACCENT_SOFT, key(widgets, "save").controlStyle().surface());
+        var input = widgets.stream()
+                .filter(TerminalEditBox.class::isInstance)
+                .map(TerminalEditBox.class::cast)
+                .findFirst()
+                .orElseThrow();
+        input.setValue("Changed draft");
+        assertTrue(view.requestClose());
+        key(widgets, "continue_editing").onPress();
+        var restored = widgets.stream()
+                .filter(TerminalEditBox.class::isInstance)
+                .map(TerminalEditBox.class::cast)
+                .findFirst()
+                .orElseThrow();
+        assertEquals("Changed draft", restored.getValue());
+        assertEquals(3, requests.size());
+    }
+
+    @Test
     void confirmedRenameImmediatelyReindexesExistingSearchResults() {
         var catalog = new NodeSearchCatalog();
         var old = row(true);

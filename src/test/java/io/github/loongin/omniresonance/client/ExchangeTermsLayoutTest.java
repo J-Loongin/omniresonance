@@ -23,13 +23,4 @@ final class ExchangeTermsLayoutTest {
             }
         }
     }
-
-    @Test
-    void addActionIsRightAnchoredAndDoesNotTurnIntoAFullWidthToolbar() {
-        var body = TerminalLayout.terminal(640, 360).content();
-        var add = TerminalFormGrid.trailingAction(body, body.y(), 100);
-        assertEquals(100, add.width());
-        assertEquals(body.right() - 8, add.right());
-        assertEquals(20, add.height());
-    }
 }

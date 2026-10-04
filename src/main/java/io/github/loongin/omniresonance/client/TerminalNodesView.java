@@ -12,6 +12,7 @@ import java.util.function.Consumer;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.Renderable;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.network.chat.Component;
@@ -34,6 +35,8 @@ final class TerminalNodesView {
     private final BiConsumer<UUID, Boolean> navigation;
     private final Runnable closeRoot;
     private final List<AbstractWidget> widgets = new ArrayList<>();
+    private final ModalBackdrop modalBackdrop = new ModalBackdrop();
+    private boolean buildingModal;
     private final ClientSearchState search = new ClientSearchState();
     private Font font;
     private Consumer<AbstractWidget> add;
@@ -140,10 +143,16 @@ final class TerminalNodesView {
     private void add(AbstractWidget widget) {
         widgets.add(widget);
         add.accept(widget);
+        if (buildingModal) modalBackdrop.addForeground(widget);
     }
 
     private TerminalButton button(TerminalLayout.Rect r, Component label, boolean active, Runnable click) {
-        var b = new TerminalButton(r.x(), r.y(), r.width(), r.height(), label, ignored -> click.run(), false);
+        return button(r, label, active, click, false);
+    }
+
+    private TerminalButton button(
+            TerminalLayout.Rect r, Component label, boolean active, Runnable click, boolean primary) {
+        var b = new TerminalButton(r.x(), r.y(), r.width(), r.height(), label, ignored -> click.run(), primary);
         b.active = active;
         b.setTooltip(Tooltip.create(TerminalText.body(label)));
         add(b);
@@ -290,16 +299,25 @@ final class TerminalNodesView {
     private void rebuild() {
         teleportButton = null;
         if (add == null) return;
+        modalBackdrop.clear();
         chunkStatusBounds = new TerminalLayout.Rect(0, 0, 0, 0);
         boolean focus = searchField != null && searchField.isFocused();
         TerminalResultRows.clearWidgets(widgets, remove, this.focus, searchField);
         nameField = null;
         if (!search.expanded() || modal != Modal.NONE) searchField = null;
         layout = TerminalNodeLayout.calculate(body, search.expanded());
-        if (modal != Modal.NONE) {
+        buildPage(focus && modal == Modal.NONE);
+        if (modal == Modal.NONE) return;
+        modalBackdrop.retain(widgets, remove);
+        buildingModal = true;
+        try {
             buildModal();
-            return;
+        } finally {
+            buildingModal = false;
         }
+    }
+
+    private void buildPage(boolean focus) {
         var bar = layout.toolbar();
         var searchToggle = new TerminalSearchButton(
                 headerSearchBounds, search.expanded(), text("search"), ignored -> toggleSearch());
@@ -672,7 +690,7 @@ final class TerminalNodesView {
                         rebuild();
                     }
                 });
-        button(
+        var commit = button(
                 TerminalActionLayout.of(r).primary(),
                 text(modal == Modal.RENAME ? "save" : modal == Modal.DISCARD ? "discard" : "confirm"),
                 !pending,
@@ -688,7 +706,9 @@ final class TerminalNodesView {
                         else request(NodeDirectoryRequest.Action.CANCEL_EDIT, null);
                         rebuild();
                     }
-                });
+                },
+                true);
+        if (modal == Modal.DISABLE) commit.setDanger(true);
     }
 
     private boolean searchEligible() {
@@ -775,7 +795,7 @@ final class TerminalNodesView {
     private void updateTeleportButton() {
         if (teleportButton == null) return;
         boolean allowed = canTeleport();
-        teleportButton.active = !pending && allowed;
+        teleportButton.active = modal == Modal.NONE && !pending && allowed;
         teleportButton.setTooltip(Tooltip.create(TerminalText.body(text(allowed ? "teleport" : "teleport_operator"))));
     }
 
@@ -786,7 +806,8 @@ final class TerminalNodesView {
 
     void tick() {
         ticks++;
-        if (teleportButton != null && teleportButton.active != (!pending && canTeleport())) updateTeleportButton();
+        if (teleportButton != null && teleportButton.active != (modal == Modal.NONE && !pending && canTeleport()))
+            updateTeleportButton();
         if (modal == Modal.NONE && search.due(ticks)) {
             query = search.draft();
             search.handled();
@@ -943,6 +964,23 @@ final class TerminalNodesView {
                     layout.list().y() + 10,
                     body.width() - 20);
         if (modal != Modal.NONE) {
+            renderRetainedWidgets(widget -> widget.render(g, -1, -1, 0));
+        }
+    }
+
+    /** Widgets are registered for input only; the host invokes this after its background rendering. */
+    void renderWidgets(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        if (modal != Modal.NONE) return;
+        for (var widget : widgets) widget.render(graphics, mouseX, mouseY, partialTick);
+    }
+
+    void renderModal(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        if (modal == Modal.NONE) return;
+        modalBackdrop.renderForeground(graphics, mouseX, mouseY, partialTick, () -> renderModalPanel(graphics));
+    }
+
+    private void renderModalPanel(GuiGraphics g) {
+        if (modal != Modal.NONE) {
             var r = dialog();
             TerminalDialogLayout.render(g, body, r);
             Component heading = text(modal.name().toLowerCase(Locale.ROOT));
@@ -960,5 +998,9 @@ final class TerminalNodesView {
                         text("rejected"),
                         TerminalActionLayout.of(r).primary().y());
         }
+    }
+
+    void renderRetainedWidgets(Consumer<Renderable> render) {
+        modalBackdrop.render(render);
     }
 }

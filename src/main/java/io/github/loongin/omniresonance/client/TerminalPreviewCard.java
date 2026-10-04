@@ -65,7 +65,7 @@ final class TerminalPreviewCard extends TerminalClickButton {
     @Override
     protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         var bounds = new TerminalLayout.Rect(getX(), getY(), getWidth(), getHeight());
-        var style = TerminalTheme.previewStyle(active, isHovered, isFocused(), selected, fixed);
+        var style = controlStyle();
         TerminalTheme.renderControl(graphics, bounds, style);
         var font = TerminalText.font(Minecraft.getInstance());
         var content = content(bounds, font.width(getMessage()), selected, fixed);
@@ -99,5 +99,9 @@ final class TerminalPreviewCard extends TerminalClickButton {
                 Component.literal(TerminalText.ellipsize(font, getMessage().getString(), label.width())));
         if (fixed) graphics.drawString(font, shown, label.x(), label.y(), style.text(), false);
         else TerminalText.drawCentered(graphics, font, shown, label.x() + label.width() / 2, label.y(), style.text());
+    }
+
+    TerminalTheme.ControlStyle controlStyle() {
+        return TerminalTheme.previewStyle(active, isHovered, isFocused(), selected, fixed);
     }
 }

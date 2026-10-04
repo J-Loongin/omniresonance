@@ -159,13 +159,19 @@ final class ExchangeScreen extends Screen {
 
     @Override
     protected void init() {
-        font = TerminalText.font(minecraft);
-        layout = TerminalLayout.terminal(width, height);
-        rebuild();
+        build(TerminalText.font(minecraft), width, height);
         if (!opened) {
             opened = true;
             send(ExchangeRequest.OPEN, 0, new byte[0]);
         }
+    }
+
+    void build(net.minecraft.client.gui.Font font, int width, int height) {
+        this.font = font;
+        this.width = width;
+        this.height = height;
+        layout = TerminalLayout.terminal(width, height);
+        rebuild();
     }
 
     private void send(int kind, int offset, byte[] body) {
@@ -1291,7 +1297,7 @@ final class ExchangeScreen extends Screen {
         return text("confirm");
     }
 
-    private void confirm(Component prompt, Runnable action) {
+    void confirm(Component prompt, Runnable action) {
         suspendedInput = dialogSubmit == null
                 ? null
                 : new InputDialog(
@@ -1347,13 +1353,13 @@ final class ExchangeScreen extends Screen {
         rebuild();
     }
 
-    private TerminalLayout.Rect dialogBounds() {
+    TerminalLayout.Rect dialogBounds() {
         return dialogSubmit == null
-                ? TerminalDialogLayout.confirmation(layout.window(), font, dialogText)
+                ? TerminalDialogLayout.confirmation(layout.content(), font, dialogText)
                 : parameterInput != null
                         ? TerminalResourceParameterLayout.of(layout.content(), parameterEditor != null, false)
                                 .dialog()
-                        : TerminalDialogLayout.editor(layout.window());
+                        : TerminalDialogLayout.editor(layout.content());
     }
 
     private void buildDialog() {

@@ -1135,7 +1135,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                     content,
                     TerminalHeaderLayout.atRightEdge(TerminalHeaderLayout.topBarContent(layout.window()), true)
                             .action(),
-                    this::addRenderableWidget,
+                    this::addWidget,
                     this::removeWidget,
                     this::setFocused);
             return;
@@ -2500,7 +2500,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         if (inventoryView == null) TerminalTheme.renderWindow(graphics, layout);
         else DomainInventoryLayout.renderWindow(graphics, layout);
         renderTopBar(graphics);
-        renderBody(graphics);
+        renderBody(graphics, mouseX, mouseY);
         if (createOverlay) {
             renderCreateOverlay(graphics, createBounds);
         }
@@ -2530,11 +2530,14 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         boolean inspecting = inventoryView != null && inventoryView.popupOpen();
         boolean dropdown = networkContext.intercepts();
         TerminalForegroundLayer.ordered(
-                () -> super.render(
-                        graphics,
-                        inspecting || dropdown ? -1 : mouseX,
-                        inspecting || dropdown ? -1 : mouseY,
-                        partialTick),
+                () -> {
+                    super.render(
+                            graphics,
+                            inspecting || dropdown ? -1 : mouseX,
+                            inspecting || dropdown ? -1 : mouseY,
+                            partialTick);
+                    if (nodesView != null) nodesView.renderWidgets(graphics, mouseX, mouseY, partialTick);
+                },
                 () -> renderDropdownForeground(graphics, mouseX, mouseY, partialTick));
         if (nodesView != null) nodesView.renderTooltip(graphics, mouseX, mouseY);
         if (statusView != null) statusView.renderTooltip(graphics, mouseX, mouseY);
@@ -2557,6 +2560,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                 if (confirmation) renderConfirmation(graphics);
                 else renderTopologyDiscardConfirmation(graphics);
             });
+        if (nodesView != null) nodesView.renderModal(graphics, mouseX, mouseY, partialTick);
     }
 
     private void renderDropdownForeground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
@@ -2648,7 +2652,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         return getTitle().getString() + (crumb.isEmpty() ? "" : " / " + crumb);
     }
 
-    private void renderBody(GuiGraphics graphics) {
+    private void renderBody(GuiGraphics graphics, int mouseX, int mouseY) {
         if (statusView != null) {
             statusView.render(graphics);
             return;
@@ -2663,7 +2667,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         }
         TerminalLayout.Rect content = layout.content();
         if (topologyState != null) {
-            renderTopologyBody(graphics, topologyState);
+            renderTopologyBody(graphics, topologyState, mouseX, mouseY);
             return;
         }
         if (page == null) {
@@ -2724,9 +2728,9 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                                 .y());
     }
 
-    private void renderTopologyBody(GuiGraphics graphics, NetworkTerminalState state) {
+    private void renderTopologyBody(GuiGraphics graphics, NetworkTerminalState state, int mouseX, int mouseY) {
         if (inventoryView != null) {
-            inventoryView.renderBody(graphics, font);
+            inventoryView.renderBody(graphics, font, mouseX, mouseY);
             return;
         }
         if (TerminalFilterView.supports(state)) {

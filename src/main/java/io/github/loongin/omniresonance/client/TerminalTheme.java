@@ -2,10 +2,13 @@
 package io.github.loongin.omniresonance.client;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.Util;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
+import org.joml.Matrix4f;
 
 /** Fixed code-rendered colors and geometry shared by terminal screens and controls. */
 final class TerminalTheme {
@@ -44,6 +47,12 @@ final class TerminalTheme {
 
     record ControlStyle(int surface, int border, int text) {}
 
+    interface RoundedBatch extends TerminalIconButton.PixelFill {
+        void begin();
+
+        void end();
+    }
+
     private static final ControlStyle NORMAL_STYLE = new ControlStyle(RAISED, LINE, TEXT);
     private static final ControlStyle HOVER_STYLE = new ControlStyle(RAISED_HOVERED, HOVER_LINE, TEXT);
     private static final ControlStyle FOCUS_STYLE = new ControlStyle(RAISED, ACCENT, TEXT);
@@ -51,14 +60,17 @@ final class TerminalTheme {
     private static final ControlStyle PRIMARY_STYLE = new ControlStyle(ACCENT_SOFT, HOVER_LINE, TEXT);
     private static final ControlStyle DISABLED_STYLE = new ControlStyle(RAISED_DISABLED, LINE, DISABLED_TEXT);
     private static final ControlStyle DANGER_STYLE = new ControlStyle(DANGER, DANGER_LINE, TEXT);
+    private static final ControlStyle DANGER_FOCUS_STYLE = new ControlStyle(DANGER, ACCENT, TEXT);
     private static final ControlStyle PREVIEW_STYLE = new ControlStyle(INPUT, LINE, TEXT);
-    private static final ControlStyle SELECTED_PREVIEW_STYLE = new ControlStyle(INPUT, ACCENT, TEXT);
+    private static final ControlStyle FOCUS_PREVIEW_STYLE = new ControlStyle(INPUT, ACCENT, TEXT);
+    private static final ControlStyle SELECTED_PREVIEW_STYLE = new ControlStyle(ACCENT_SOFT, ACCENT, TEXT);
 
     static ControlStyle previewStyle(
             boolean active, boolean hovered, boolean focused, boolean selected, boolean fixed) {
-        if (fixed) return SELECTED_PREVIEW_STYLE;
+        if (fixed) return FOCUS_PREVIEW_STYLE;
         if (!active) return DISABLED_STYLE;
-        if (selected || focused) return SELECTED_PREVIEW_STYLE;
+        if (selected) return SELECTED_PREVIEW_STYLE;
+        if (focused) return FOCUS_PREVIEW_STYLE;
         return hovered ? HOVER_STYLE : PREVIEW_STYLE;
     }
 
@@ -81,7 +93,7 @@ final class TerminalTheme {
     static ControlStyle controlStyle(
             boolean active, boolean hovered, boolean focused, boolean selected, boolean primary, boolean danger) {
         if (!active) return DISABLED_STYLE;
-        if (danger) return DANGER_STYLE;
+        if (danger) return focused ? DANGER_FOCUS_STYLE : DANGER_STYLE;
         if (selected) return SELECTED_STYLE;
         if (primary) return focused ? SELECTED_STYLE : PRIMARY_STYLE;
         if (focused) return FOCUS_STYLE;
@@ -223,12 +235,50 @@ final class TerminalTheme {
     }
 
     static void fillRounded(GuiGraphics graphics, int x, int y, int width, int height, int radius, int color) {
-        graphics.pose().pushPose();
-        try {
-            graphics.pose().scale(0.25f, 0.25f, 1);
-            fillRounded(x * 4, y * 4, width * 4, height * 4, radius * 4, color, graphics::fill);
-        } finally {
-            graphics.pose().popPose();
+        fillRounded(x * 4, y * 4, width * 4, height * 4, radius * 4, color, new GuiRoundedBatch(graphics));
+    }
+
+    /** One short-lived batch per filled layer; no graphics/world references survive the call. */
+    private static final class GuiRoundedBatch implements RoundedBatch {
+        private final GuiGraphics graphics;
+        private VertexConsumer vertices;
+        private Matrix4f pose;
+
+        private GuiRoundedBatch(GuiGraphics graphics) {
+            this.graphics = graphics;
+        }
+
+        @Override
+        public void begin() {
+            // Preserve ordering with earlier text, items, clipping and foreground layers.
+            graphics.flush();
+            graphics.pose().pushPose();
+            try {
+                graphics.pose().scale(0.25f, 0.25f, 1);
+                pose = graphics.pose().last().pose();
+                vertices = graphics.bufferSource().getBuffer(RenderType.gui());
+            } catch (RuntimeException | Error failure) {
+                graphics.pose().popPose();
+                throw failure;
+            }
+        }
+
+        @Override
+        public void draw(int left, int top, int right, int bottom, int color) {
+            // Match GuiGraphics.fill winding; append all spans without its per-span flush.
+            vertices.addVertex(pose, right, bottom, 0).setColor(color);
+            vertices.addVertex(pose, right, top, 0).setColor(color);
+            vertices.addVertex(pose, left, top, 0).setColor(color);
+            vertices.addVertex(pose, left, bottom, 0).setColor(color);
+        }
+
+        @Override
+        public void end() {
+            try {
+                graphics.flush();
+            } finally {
+                graphics.pose().popPose();
+            }
         }
     }
 
@@ -237,18 +287,24 @@ final class TerminalTheme {
         if (width <= 0 || height <= 0) {
             return;
         }
-        int corner = Math.max(0, Math.min(radius, Math.min(width, height) / 2));
-        if (corner == 0) {
-            fill.draw(x, y, x + width, y + height, color);
-            return;
-        }
-        fill.draw(x, y + corner, x + width, y + height - corner, color);
-        int square = corner * corner;
-        for (int row = 0; row < corner; row++) {
-            int dy = corner - row - 1;
-            int inset = corner - (int) Math.floor(Math.sqrt(Math.max(0, square - dy * dy)));
-            fill.draw(x + inset, y + row, x + width - inset, y + row + 1, color);
-            fill.draw(x + inset, y + height - row - 1, x + width - inset, y + height - row, color);
+        RoundedBatch batch = fill instanceof RoundedBatch value ? value : null;
+        if (batch != null) batch.begin();
+        try {
+            int corner = Math.max(0, Math.min(radius, Math.min(width, height) / 2));
+            if (corner == 0) {
+                fill.draw(x, y, x + width, y + height, color);
+                return;
+            }
+            fill.draw(x, y + corner, x + width, y + height - corner, color);
+            int square = corner * corner;
+            for (int row = 0; row < corner; row++) {
+                int dy = corner - row - 1;
+                int inset = corner - (int) Math.floor(Math.sqrt(Math.max(0, square - dy * dy)));
+                fill.draw(x + inset, y + row, x + width - inset, y + row + 1, color);
+                fill.draw(x + inset, y + height - row - 1, x + width - inset, y + height - row, color);
+            }
+        } finally {
+            if (batch != null) batch.end();
         }
     }
 }

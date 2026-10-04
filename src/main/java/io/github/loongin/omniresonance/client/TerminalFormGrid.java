@@ -13,12 +13,6 @@ final class TerminalFormGrid {
         return button;
     }
 
-    static TerminalLayout.Rect trailingAction(TerminalLayout.Rect body, int y, int width) {
-        int available = Math.max(0, body.width() - 16);
-        return new TerminalLayout.Rect(
-                body.right() - 8 - Math.min(width, available), y, Math.min(width, available), 20);
-    }
-
     static TerminalLayout.Rect control(TerminalLayout.Rect row, int columns, int column, int span) {
         if (columns < 1 || column < 0 || span < 1 || column + span > columns)
             throw new IllegalArgumentException("Invalid form cell");

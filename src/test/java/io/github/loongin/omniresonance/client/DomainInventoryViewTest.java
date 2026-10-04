@@ -14,6 +14,69 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import org.junit.jupiter.api.Test;
 
 class DomainInventoryViewTest {
+    @Test
+    void noMatchExplanationWaitsForACompletedValidResultAndKeepsStatusSeparate() {
+        UUID session = new UUID(19, 1);
+        try (var view = new DomainInventoryView(() -> {})) {
+            view.request(session, 1);
+            var widgets = new ArrayList<AbstractWidget>();
+            var field = view.build(
+                    font(),
+                    DomainInventoryLayout.window(427, 240).content(),
+                    widgets::add,
+                    widget -> widgets.remove(widget));
+            field.setValue("missing-resource");
+            assertTrue(view.emptyMessage().getString().isEmpty());
+            view.accept(new DomainInventoryFrame.Begin(session, 1, 0, 0, 0));
+            assertTrue(view.emptyMessage().getString().isEmpty());
+            view.accept(new DomainInventoryFrame.End(session, 1, 1, 0, 0));
+            assertTrue(view.emptyMessage().getString().isEmpty(), "Do not reuse unprocessed query results");
+            view.tick(false, () -> 0);
+            assertEquals(DomainInventoryView.text("empty"), view.emptyMessage());
+            assertEquals(
+                    "omniresonance.inventory.read_only",
+                    ((net.minecraft.network.chat.contents.TranslatableContents)
+                                    view.statusMessage().getContents())
+                            .getKey());
+            field.setValue("next-query");
+            assertTrue(view.emptyMessage().getString().isEmpty());
+            field.setValue("iron |");
+            view.tick(false, () -> 0);
+            assertTrue(view.emptyMessage().getString().isEmpty());
+            view.accept(new DomainInventoryFrame.Failed(session, 1, 2, DomainInventoryFrame.Reason.UNAVAILABLE));
+            assertTrue(view.emptyMessage().getString().isEmpty());
+        }
+    }
+
+    @Test
+    void actualSlotPaintingReceivesMouseHoverForEmptyResourcesAndEveryPlayerSlot() {
+        UUID session = new UUID(19, 2);
+        try (var view = new DomainInventoryView(() -> {})) {
+            view.request(session, 1);
+            var widgets = new ArrayList<AbstractWidget>();
+            var body = DomainInventoryLayout.window(427, 240).content();
+            var geometry = new DomainInventoryLayout(body, true);
+            view.build(font(), body, widgets::add, widget -> widgets.remove(widget));
+            var hits = new ArrayList<Integer>();
+            view.paintSlots(geometry.gridX() + 1, geometry.gridY() + 1, true, (x, y, slot, hovered) -> {
+                if (hovered) hits.add(slot);
+            });
+            assertEquals(java.util.List.of(-1), hits);
+            for (int slot = 0; slot < 36; slot++) {
+                hits.clear();
+                view.paintSlots(geometry.slotX(slot) + 1, geometry.slotY(slot) + 1, true, (x, y, index, hovered) -> {
+                    if (hovered) hits.add(index);
+                });
+                assertEquals(java.util.List.of(slot), hits);
+            }
+            hits.clear();
+            view.paintSlots(-1, -1, true, (x, y, slot, hovered) -> {
+                if (hovered) hits.add(slot);
+            });
+            assertTrue(hits.isEmpty());
+        }
+    }
+
     private static Font font() {
         return new Font(
                 id -> {

@@ -215,13 +215,18 @@ final class TerminalSamplePicker {
         return Component.translatable("omniresonance.terminal.filters." + key);
     }
 
-    private static final class FluidButton extends TerminalClickButton {
+    static final class FluidButton extends TerminalClickButton {
         private final FluidStack fluid;
 
         FluidButton(TerminalLayout.Rect bounds, FluidStack fluid, Runnable click) {
             super(bounds.x(), bounds.y(), bounds.width(), 20, fluid.getHoverName(), ignored -> click.run());
             this.fluid = fluid;
             setTooltip(Tooltip.create(fluid.getHoverName()));
+        }
+
+        int textColor() {
+            return TerminalTheme.controlStyle(active, isHovered, isFocused(), false, false, false)
+                    .text();
         }
 
         @Override
@@ -239,7 +244,7 @@ final class TerminalSamplePicker {
                             Component.literal(TerminalText.ellipsize(font, text, Math.max(0, getWidth() - 26)))),
                     getX() + 24,
                     getY() + 5,
-                    TerminalTheme.TEXT,
+                    textColor(),
                     false);
         }
     }

@@ -37,9 +37,13 @@ final class TerminalButton extends TerminalClickButton {
         this.danger = danger;
     }
 
+    TerminalTheme.ControlStyle controlStyle() {
+        return TerminalTheme.controlStyle(active, isHovered, isFocused(), selected, primary, danger);
+    }
+
     @Override
     protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        var style = TerminalTheme.controlStyle(active, isHovered, isFocused(), selected, primary, danger);
+        var style = controlStyle();
         TerminalTheme.renderControl(graphics, new TerminalLayout.Rect(getX(), getY(), getWidth(), getHeight()), style);
         int color = style.text();
         Font font = TerminalText.font(Minecraft.getInstance());

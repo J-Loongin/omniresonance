@@ -484,21 +484,37 @@ final class DomainInventoryView implements AutoCloseable {
         }
     }
 
-    void renderBody(GuiGraphics graphics, Font font) {
+    interface SlotFill {
+        void draw(int x, int y, int inventorySlot, boolean hovered);
+    }
+
+    void paintSlots(int mouseX, int mouseY, boolean inventoryVisible, SlotFill fill) {
         var geometry = geometry();
         for (int row = 0; row < geometry.rows(); row++)
-            for (int col = 0; col < geometry.columns(); col++)
-                renderSlot(graphics, geometry.gridX() + col * CELL, geometry.gridY() + row * CELL, false);
-        if (showInventory && Minecraft.getInstance().player != null) {
-            var inventory = Minecraft.getInstance().player.getInventory();
+            for (int col = 0; col < geometry.columns(); col++) {
+                int x = geometry.gridX() + col * CELL, y = geometry.gridY() + row * CELL;
+                fill.draw(x, y, -1, mouseX >= x && mouseX < x + CELL && mouseY >= y && mouseY < y + CELL);
+            }
+        if (inventoryVisible) {
             for (int i = 0; i < 36; i++) {
                 int x = geometry.slotX(i), y = geometry.slotY(i);
-                renderSlot(graphics, x, y, false);
-                var stack = inventory.getItem(i);
+                fill.draw(x, y, i, mouseX >= x && mouseX < x + CELL && mouseY >= y && mouseY < y + CELL);
+            }
+        }
+    }
+
+    void renderBody(GuiGraphics graphics, Font font, int mouseX, int mouseY) {
+        var geometry = geometry();
+        var player = Minecraft.getInstance().player;
+        var inventory = showInventory && player != null ? player.getInventory() : null;
+        paintSlots(mouseX, mouseY, inventory != null, (x, y, slot, hover) -> {
+            renderSlot(graphics, x, y, hover);
+            if (slot >= 0) {
+                var stack = inventory.getItem(slot);
                 graphics.renderItem(stack, x + 1, y + 1);
                 graphics.renderItemDecorations(font, stack, x + 1, y + 1);
             }
-        }
+        });
         if (receiver.mirror().failed()) {
             String reason = receiver.failureReason() == DomainInventoryFrame.Reason.CHANGING_TOO_FAST
                     ? "changing_fast"
@@ -523,21 +539,17 @@ final class DomainInventoryView implements AutoCloseable {
                     body.width() - 16,
                     TerminalTheme.MUTED);
         } else {
-            Component status = localNotice != null
-                    ? localNotice
-                    : search.invalid()
-                            ? text("invalid_query")
-                            : search.working()
-                                    ? text("searching")
-                                    : operationStatus != null
-                                                    && operationStatus
-                                                            != io.github.loongin.omniresonance.networking
-                                                                    .TerminalStorageResponse.Status.COMPLETE
-                                            ? text("access_"
-                                                    + operationStatus.name().toLowerCase(Locale.ROOT))
-                                            : pendingOperation != 0 && pendingTicks >= 6
-                                                    ? text("access_pending")
-                                                    : writable ? Component.empty() : text("read_only");
+            Component empty = emptyMessage();
+            if (!empty.getString().isEmpty()) {
+                TerminalText.drawCentered(
+                        graphics,
+                        font,
+                        TerminalText.body(empty),
+                        geometry.gridX() + geometry.columns() * CELL / 2,
+                        geometry.gridY() + (geometry.rows() * CELL - font.lineHeight) / 2,
+                        TerminalTheme.MUTED);
+            }
+            Component status = statusMessage();
             graphics.drawString(
                     font,
                     TerminalText.body(Component.literal(
@@ -555,6 +567,30 @@ final class DomainInventoryView implements AutoCloseable {
                     visibleRows(),
                     scroll);
         }
+    }
+
+    Component emptyMessage() {
+        return receiver.mirror().ready() && search.settled() && search.ids().isEmpty()
+                ? text("empty")
+                : Component.empty();
+    }
+
+    Component statusMessage() {
+        return localNotice != null
+                ? localNotice
+                : search.invalid()
+                        ? text("invalid_query")
+                        : search.working()
+                                ? text("searching")
+                                : operationStatus != null
+                                                && operationStatus
+                                                        != io.github.loongin.omniresonance.networking
+                                                                .TerminalStorageResponse.Status.COMPLETE
+                                        ? text("access_"
+                                                + operationStatus.name().toLowerCase(Locale.ROOT))
+                                        : pendingOperation != 0 && pendingTicks >= 6
+                                                ? text("access_pending")
+                                                : writable ? Component.empty() : text("read_only");
     }
 
     void renderTooltip(GuiGraphics graphics, Font font, TerminalLayout.Rect window, int mouseX, int mouseY) {
