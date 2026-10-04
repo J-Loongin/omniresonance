@@ -25,7 +25,137 @@ import net.minecraft.util.FormattedCharSequence;
 import org.junit.jupiter.api.Test;
 
 class TerminalNodesViewTest {
+    private static TerminalNodesView recheckEditedView(
+            ArrayList<AbstractWidget> widgets, ArrayList<NodeDirectoryRequest> requests, int[] closed) {
+        var view = new TerminalNodesView(
+                new UUID(1, 1), SESSION, 1, requests::add, (node, teleport) -> {}, () -> closed[0]++);
+        view.open();
+        view.build(font(), new TerminalLayout.Rect(0, 0, 364, 186), widgets::add, widgets::remove, ignored -> {});
+        view.accept(page(1, false, true, false));
+        node(widgets).onPress();
+        view.accept(page(2, true, true, false));
+        key(widgets, "rename").onPress();
+        view.accept(page(3, true, true, true));
+        widgets.stream()
+                .filter(TerminalEditBox.class::isInstance)
+                .map(TerminalEditBox.class::cast)
+                .findFirst()
+                .orElseThrow()
+                .setValue("Changed draft");
+        return view;
+    }
+
+    @Test
+    void recheckSecondEscReturnsToRenameWithoutCancellingTheEdit() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var requests = new ArrayList<NodeDirectoryRequest>();
+        int[] closed = {0};
+        var view = recheckEditedView(widgets, requests, closed);
+        int before = requests.size();
+        assertTrue(view.back());
+        key(widgets, "continue_editing");
+        assertTrue(view.back());
+        assertEquals(before, requests.size(), "ESC in the discard confirmation must not send CANCEL_EDIT");
+        assertEquals(
+                "Changed draft",
+                widgets.stream()
+                        .filter(TerminalEditBox.class::isInstance)
+                        .map(TerminalEditBox.class::cast)
+                        .findFirst()
+                        .orElseThrow()
+                        .getValue());
+        assertEquals(0, closed[0]);
+    }
+
+    @Test
+    void recheckRootDiscardEscCancelsTheClosingIntentAndKeepsTheDraft() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var requests = new ArrayList<NodeDirectoryRequest>();
+        int[] closed = {0};
+        var view = recheckEditedView(widgets, requests, closed);
+        int before = requests.size();
+        assertTrue(view.requestClose());
+        assertTrue(view.back());
+        assertEquals(before, requests.size(), "Cancelling root discard must not end the edit");
+        assertEquals(
+                "Changed draft",
+                widgets.stream()
+                        .filter(TerminalEditBox.class::isInstance)
+                        .map(TerminalEditBox.class::cast)
+                        .findFirst()
+                        .orElseThrow()
+                        .getValue());
+        assertEquals(0, closed[0]);
+        assertTrue(view.back());
+        key(widgets, "discard").onPress();
+        assertEquals(0, closed[0], "A later ordinary discard must not retain the old root-close intent");
+        assertEquals(NodeDirectoryRequest.Action.CANCEL_EDIT, requests.getLast().action());
+    }
+
     private static final UUID SESSION = new UUID(2, 2), NODE = new UUID(3, 3), CHANNEL = new UUID(4, 4);
+
+    @Test
+    void explicitRootDiscardStillClosesWithoutSavingOrSubmittingAnotherEdit() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var requests = new ArrayList<NodeDirectoryRequest>();
+        int[] closed = {0};
+        var view = recheckEditedView(widgets, requests, closed);
+        int before = requests.size();
+        assertTrue(view.requestClose());
+        key(widgets, "discard").onPress();
+        assertEquals(1, closed[0]);
+        assertEquals(before, requests.size());
+    }
+
+    @Test
+    void unchangedRenameReturnsThroughTheExistingCancelProtocol() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var requests = new ArrayList<NodeDirectoryRequest>();
+        int[] closed = {0};
+        var view = recheckEditedView(widgets, requests, closed);
+        widgets.stream()
+                .filter(TerminalEditBox.class::isInstance)
+                .map(TerminalEditBox.class::cast)
+                .findFirst()
+                .orElseThrow()
+                .setValue("Node A");
+        assertTrue(view.back());
+        assertEquals(4, requests.size());
+        assertEquals(NodeDirectoryRequest.Action.CANCEL_EDIT, requests.getLast().action());
+        assertEquals(0, closed[0]);
+    }
+
+    @Test
+    void submittedRenameStillBlocksBackUntilTheReply() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var requests = new ArrayList<NodeDirectoryRequest>();
+        int[] closed = {0};
+        var view = recheckEditedView(widgets, requests, closed);
+        key(widgets, "save").onPress();
+        assertEquals(NodeDirectoryRequest.Action.RENAME, requests.getLast().action());
+        assertTrue(view.back());
+        assertEquals(4, requests.size());
+        assertEquals(0, closed[0]);
+        assertTrue(widgets.stream()
+                .noneMatch(widget -> widget.getMessage().getContents() instanceof TranslatableContents text
+                        && text.getKey().equals("omniresonance.nodes.continue_editing")));
+    }
+
+    @Test
+    void unavailableServerPageDoesNotRestoreAnExpiredRenameForm() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var requests = new ArrayList<NodeDirectoryRequest>();
+        int[] closed = {0};
+        var view = recheckEditedView(widgets, requests, closed);
+        assertTrue(view.back());
+        view.accept(new NodeDirectoryPage(
+                SESSION, 1, 3, false, false, false, List.of(), false, false, null, List.of(), 0, 0, List.of(),
+                List.of()));
+        assertFalse(view.back());
+        assertEquals(3, requests.size());
+        assertTrue(widgets.stream().noneMatch(TerminalEditBox.class::isInstance));
+        assertEquals(0, closed[0]);
+    }
 
     private static Font font() {
         return new Font(

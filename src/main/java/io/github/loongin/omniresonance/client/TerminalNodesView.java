@@ -681,9 +681,7 @@ final class TerminalNodesView {
                 !pending,
                 () -> {
                     if (modal == Modal.DISCARD) {
-                        modal = Modal.RENAME;
-                        closeAfterDiscard = false;
-                        rebuild();
+                        continueRenaming();
                     } else if (modal == Modal.RENAME) back();
                     else {
                         modal = Modal.NONE;
@@ -709,6 +707,12 @@ final class TerminalNodesView {
                 },
                 true);
         if (modal == Modal.DISABLE) commit.setDanger(true);
+    }
+
+    private void continueRenaming() {
+        modal = Modal.RENAME;
+        closeAfterDiscard = false;
+        rebuild();
     }
 
     private boolean searchEligible() {
@@ -744,6 +748,10 @@ final class TerminalNodesView {
                 && lastAction != NodeDirectoryRequest.Action.QUERY
                 && lastAction != NodeDirectoryRequest.Action.CATALOG) return true;
         if (pending) pending = false;
+        if (modal == Modal.DISCARD) {
+            continueRenaming();
+            return true;
+        }
         if (modal == Modal.RENAME && dirty()) {
             modal = Modal.DISCARD;
             closeAfterDiscard = false;
@@ -751,7 +759,7 @@ final class TerminalNodesView {
             return true;
         }
         if (modal != Modal.NONE) {
-            boolean rename = modal == Modal.RENAME || modal == Modal.DISCARD;
+            boolean rename = modal == Modal.RENAME;
             modal = Modal.NONE;
             if (rename) request(NodeDirectoryRequest.Action.CANCEL_EDIT, null);
             rebuild();
