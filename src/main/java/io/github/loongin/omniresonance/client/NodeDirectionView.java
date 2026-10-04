@@ -3,9 +3,8 @@ package io.github.loongin.omniresonance.client;
 
 import io.github.loongin.omniresonance.network.TransferDirection;
 import java.util.Objects;
-import org.jetbrains.annotations.Nullable;
 
-/** Pure client draft for one server-owned direct binding or domain direction. */
+/** Pure direction cycle shared by the current resource forms; never submits or mutates a server policy. */
 final class NodeDirectionView {
     private NodeDirectionView() {}
 
@@ -14,32 +13,5 @@ final class NodeDirectionView {
             case INPUT -> TransferDirection.OUTPUT;
             case OUTPUT -> TransferDirection.INPUT;
         };
-    }
-
-    static boolean commitsImmediately(@Nullable TransferDirection original) {
-        return original != null;
-    }
-
-    record Draft(@Nullable TransferDirection original, TransferDirection selected) {
-        Draft {
-            Objects.requireNonNull(selected, "selected");
-        }
-
-        static Draft start(@Nullable TransferDirection original) {
-            return new Draft(original, original == null ? TransferDirection.INPUT : original);
-        }
-
-        Draft select(TransferDirection direction) {
-            Objects.requireNonNull(direction, "direction");
-            return direction == selected ? this : new Draft(original, direction);
-        }
-
-        boolean dirty() {
-            return selected != original;
-        }
-
-        boolean canRemove() {
-            return original != null;
-        }
     }
 }

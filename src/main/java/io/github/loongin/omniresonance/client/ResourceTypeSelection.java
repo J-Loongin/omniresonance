@@ -4,14 +4,19 @@ package io.github.loongin.omniresonance.client;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 import net.minecraft.resources.ResourceLocation;
 import org.jetbrains.annotations.Nullable;
 
 /** Local scope/type picker with shared collapsed search, coalesced filtering and O(visible rows) scrolling. */
-final class NodeResourceTypeSelection {
-    private final NodeResourcePolicyDraft draft;
-    private final @Nullable NodeResourceScopeDraft scope;
+final class ResourceTypeSelection {
+    private final Supplier<List<ResourceLocation>> choices;
+    private final Predicate<ResourceLocation> unavailable;
+    private final @Nullable Consumer<ResourceLocation> picked;
+    private final @Nullable ResourceScopeSelectionDraft scope;
     private final Function<ResourceLocation, String> displayName;
     private final ClientSearchState search = new ClientSearchState();
     private List<ResourceLocation> results = List.of();
@@ -24,27 +29,57 @@ final class NodeResourceTypeSelection {
         return chosen;
     }
 
-    private NodeResourceTypeSelection(
-            NodeResourcePolicyDraft draft,
-            @Nullable NodeResourceScopeDraft scope,
+    private ResourceTypeSelection(
+            Supplier<List<ResourceLocation>> choices,
+            Predicate<ResourceLocation> unavailable,
+            @Nullable ResourceScopeSelectionDraft scope,
+            @Nullable Consumer<ResourceLocation> picked,
             Function<ResourceLocation, String> displayName) {
-        this.draft = Objects.requireNonNull(draft, "draft");
+        this.choices = Objects.requireNonNull(choices, "choices");
+        this.unavailable = Objects.requireNonNull(unavailable, "unavailable");
         this.scope = scope;
+        this.picked = picked;
         this.displayName = Objects.requireNonNull(displayName, "displayName");
         refresh();
     }
 
-    static NodeResourceTypeSelection scope(
+    static ResourceTypeSelection scope(
             NodeResourcePolicyDraft draft,
-            NodeResourceScopeDraft scope,
+            ResourceScopeSelectionDraft scope,
             Function<ResourceLocation, String> displayName) {
-        Objects.requireNonNull(scope, "scope").requireOwner(draft);
-        return new NodeResourceTypeSelection(draft, scope, displayName);
+        scope.requireOwner(draft);
+        return scope(scope, id -> draft.catalog.find(id) == null, displayName);
     }
 
-    static NodeResourceTypeSelection overrides(
+    static ResourceTypeSelection scope(
+            ResourceScopeSelectionDraft scope,
+            Predicate<ResourceLocation> unavailable,
+            Function<ResourceLocation, String> displayName) {
+        return new ResourceTypeSelection(scope::choices, unavailable, scope, null, displayName);
+    }
+
+    static ResourceTypeSelection overrides(
             NodeResourcePolicyDraft draft, Function<ResourceLocation, String> displayName) {
-        return new NodeResourceTypeSelection(draft, null, displayName);
+        return overrides(
+                () -> {
+                    var ids = new ArrayList<ResourceLocation>();
+                    for (var descriptor : draft.catalog.entries()) {
+                        var id = descriptor.typeId();
+                        if (draft.includes(id) && !draft.hasSetting(id)) ids.add(id);
+                    }
+                    return List.copyOf(ids);
+                },
+                id -> draft.catalog.find(id) == null,
+                draft::addType,
+                displayName);
+    }
+
+    static ResourceTypeSelection overrides(
+            Supplier<List<ResourceLocation>> choices,
+            Predicate<ResourceLocation> unavailable,
+            @Nullable Consumer<ResourceLocation> picked,
+            Function<ResourceLocation, String> displayName) {
+        return new ResourceTypeSelection(choices, unavailable, null, picked, displayName);
     }
 
     ClientSearchState search() {
@@ -52,7 +87,7 @@ final class NodeResourceTypeSelection {
     }
 
     @Nullable
-    NodeResourceScopeDraft scope() {
+    ResourceScopeSelectionDraft scope() {
         return scope;
     }
 
@@ -65,7 +100,7 @@ final class NodeResourceTypeSelection {
     }
 
     boolean unavailable(ResourceLocation id) {
-        return draft.catalog.find(id) == null;
+        return unavailable.test(id);
     }
 
     void editSearch(String value, long nowTick) {
@@ -87,10 +122,11 @@ final class NodeResourceTypeSelection {
     }
 
     void choose(ResourceLocation id) {
+        if (!choices.get().contains(id)) throw new IllegalArgumentException("Type is not a current candidate");
         chosen = id;
         if (scope != null) scope.toggle(id);
         else {
-            draft.addType(id);
+            if (picked != null) picked.accept(id);
             refresh();
         }
     }
@@ -110,15 +146,7 @@ final class NodeResourceTypeSelection {
         results = ClientTextSearch.filter(
                 (text, matcher, revision) -> {
                     var matches = new ArrayList<ResourceLocation>();
-                    if (scope != null) {
-                        for (ResourceLocation id : scope.choices()) if (matches(id, text, matcher)) matches.add(id);
-                    } else {
-                        for (var descriptor : draft.catalog.entries()) {
-                            ResourceLocation id = descriptor.typeId();
-                            if (draft.includes(id) && !draft.hasSetting(id) && matches(id, text, matcher))
-                                matches.add(id);
-                        }
-                    }
+                    for (ResourceLocation id : choices.get()) if (matches(id, text, matcher)) matches.add(id);
                     return List.copyOf(matches);
                 },
                 query);

@@ -413,8 +413,8 @@ final class TerminalMemberView {
     void render(GuiGraphics graphics, Font font, TerminalLayout layout) {
         if (state instanceof NetworkTerminalState.Members members) {
             TerminalMemberLayout panes = TerminalMemberLayout.calculate(layout);
+            if (!panes.compact()) TerminalTheme.renderPaneDivider(graphics, panes.list(), panes.detail());
             if (!panes.compact() || !compactDetails) {
-                TerminalTheme.renderPanel(graphics, panes.list());
                 header(graphics, font, panes.list(), text("title"));
                 scrollbar(
                         graphics,
@@ -425,7 +425,6 @@ final class TerminalMemberView {
             if (!panes.compact() || compactDetails)
                 renderMember(graphics, font, panes.detail(), selectedMember(members));
         } else if (state instanceof NetworkTerminalState.AdministratorCandidates) {
-            TerminalTheme.renderPanel(graphics, layout.content());
             header(graphics, font, layout.content(), text("candidates"));
             if (!candidates.ready()) {
                 Component message = candidates.failed()
@@ -463,8 +462,12 @@ final class TerminalMemberView {
                         false);
         } else if (state instanceof NetworkTerminalState.RemoveAdministrator remove) {
             TerminalLayout.Rect modal = removalBounds();
-            TerminalTheme.renderPanel(graphics, modal);
-            header(graphics, font, modal, text("remove"));
+            TerminalTheme.renderDialogPanel(graphics, modal);
+            TerminalText.drawDialogTitle(
+                    graphics,
+                    font,
+                    text("remove").copy().append(" · ").append(remove.target().name()),
+                    modal);
             int y = modal.y() + 32;
             for (FormattedCharSequence line : font.split(
                     Component.translatable(
@@ -479,7 +482,6 @@ final class TerminalMemberView {
 
     private void renderMember(
             GuiGraphics graphics, Font font, TerminalLayout.Rect detail, NetworkMemberSummary member) {
-        TerminalTheme.renderPanel(graphics, detail);
         header(graphics, font, detail, Component.literal(member.name()));
         int top = detail.y() + 28;
         int bottom = detail.bottom() - 34;

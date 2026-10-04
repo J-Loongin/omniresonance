@@ -110,21 +110,26 @@ final class TerminalTagPopup {
         graphics.pose().translate(0, 0, 600);
         try {
             graphics.fill(bounds.x() + 2, bounds.y() + 2, bounds.right() + 2, bounds.bottom() + 2, 0x50000000);
-            graphics.fill(bounds.x(), bounds.y(), bounds.right(), bounds.bottom(), 0xFF34454D);
-            graphics.fill(bounds.x() + 1, bounds.y() + 1, bounds.right() - 1, bounds.bottom() - 1, 0xFF1B252C);
+            TerminalTheme.renderSurface(
+                    graphics, bounds, TerminalTheme.BUTTON_RADIUS, TerminalTheme.PANEL, TerminalTheme.LINE);
             String hovered = tagAt(mouseX, mouseY);
             for (int row = 0; row < rows; row++) {
                 String tag = tags.get(offset + row);
                 int y = bounds.y() + PAD + row * ROW;
                 if (tag.equals(hovered))
-                    graphics.fill(bounds.x() + 2, y, bounds.right() - 2 - scrollbarWidth(), y + ROW, 0xFF2B454F);
+                    graphics.fill(
+                            bounds.x() + 2,
+                            y,
+                            bounds.right() - 2 - scrollbarWidth(),
+                            y + ROW,
+                            TerminalTheme.RAISED_HOVERED);
                 String label = TerminalText.ellipsize(
                         font, display(tag), (int) ((bounds.width() - TEXT_PAD * 2 - scrollbarWidth()) / TEXT_SCALE));
                 int separator = label.lastIndexOf(':') + 1;
                 Component styled = Component.literal(label.substring(0, separator))
-                        .withStyle(style -> style.withColor(0x899BA3))
+                        .withStyle(style -> style.withColor(TerminalTheme.MUTED & 0xFFFFFF))
                         .append(Component.literal(label.substring(separator))
-                                .withStyle(style -> style.withColor(0xDCE6E9)));
+                                .withStyle(style -> style.withColor(TerminalTheme.TEXT & 0xFFFFFF)));
                 graphics.pose().pushPose();
                 graphics.pose()
                         .translate(

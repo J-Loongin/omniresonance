@@ -80,6 +80,40 @@ class TerminalSamplePickerTest {
         assertEquals(40, TerminalSamplePicker.inventorySlot(40));
     }
 
+    @Test
+    void equipmentPresentationRunsFromHelmetToBootsWithoutChangingInventoryIdentity() {
+        assertEquals(39, TerminalSamplePicker.inventorySlot(36));
+        assertEquals(38, TerminalSamplePicker.inventorySlot(37));
+        assertEquals(37, TerminalSamplePicker.inventorySlot(38));
+        assertEquals(36, TerminalSamplePicker.inventorySlot(39));
+        assertEquals(40, TerminalSamplePicker.inventorySlot(40));
+    }
+
+    @Test
+    void sampleGeometryAlignsEquipmentAndOffhandWithoutOverlappingAnySlot() {
+        var body = new TerminalLayout.Rect(100, 50, 350, 120);
+        var helmet = TerminalSampleLayout.slot(body, 36);
+        for (int index = 37; index < 40; index++) {
+            var equipment = TerminalSampleLayout.slot(body, index);
+            assertEquals(helmet.x(), equipment.x());
+            assertEquals(helmet.y() + (index - 36) * 22, equipment.y());
+        }
+        var hotbar = TerminalSampleLayout.slot(body, 27);
+        var offhand = TerminalSampleLayout.slot(body, 40);
+        assertEquals(hotbar.y(), offhand.y());
+        assertEquals(hotbar.y(), TerminalSampleLayout.slot(body, 39).y());
+        assertEquals(22, hotbar.x() - offhand.x());
+        for (int i = 0; i < 41; i++) {
+            var a = TerminalSampleLayout.slot(body, i);
+            assertEquals(20, a.width());
+            assertEquals(20, a.height());
+            for (int j = i + 1; j < 41; j++) {
+                var b = TerminalSampleLayout.slot(body, j);
+                assertTrue(a.right() <= b.x() || b.right() <= a.x() || a.bottom() <= b.y() || b.bottom() <= a.y());
+            }
+        }
+    }
+
     private static IFluidHandler handler(int count, FluidStack fluid) {
         return new IFluidHandler() {
             public int getTanks() {

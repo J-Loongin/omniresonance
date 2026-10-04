@@ -18,6 +18,28 @@ import net.minecraft.nbt.ListTag;
 import org.junit.jupiter.api.Test;
 
 class ExchangeStateNbtTest {
+    @Test
+    void nativeAgreementEncodingRetainsTheCompleteNodeBatchParameters() {
+        var type = io.github.loongin.omniresonance.transfer.ResourceTypes.FLUID;
+        var parameters = Map.of(
+                type,
+                new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.InputOverride(
+                        1001, io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.BatchMode.EXACT, 500));
+        var terms = new io.github.loongin.omniresonance.exchange.ExchangeTerms(
+                io.github.loongin.omniresonance.transfer.ResourceScope.all(),
+                io.github.loongin.omniresonance.filter.FilterMode.WHITELIST,
+                null,
+                io.github.loongin.omniresonance.exchange.ExchangeTerms.DEFAULT_RATE,
+                Map.of(),
+                1,
+                parameters);
+        var agreement = new io.github.loongin.omniresonance.exchange.ExchangeAgreement(id(91), consent(), terms);
+        assertEquals(agreement, ExchangeStateNbt.decodeAgreement(ExchangeStateNbt.encodeAgreement(agreement)));
+        var invalid = ExchangeStateNbt.encodeAgreement(agreement);
+        ((CompoundTag) ((ListTag) invalid.getCompound("terms").get("rates")).get(0)).putLong("batch_size", 0);
+        assertThrows(IllegalArgumentException.class, () -> ExchangeStateNbt.decodeAgreement(invalid));
+    }
+
     private static UUID id(int n) {
         return new UUID(0, n);
     }

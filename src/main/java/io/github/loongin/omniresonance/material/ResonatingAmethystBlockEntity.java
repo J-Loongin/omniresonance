@@ -9,7 +9,10 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.network.Connection;
+import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
@@ -29,10 +32,14 @@ public final class ResonatingAmethystBlockEntity extends BlockEntity {
     private static final String SCHEMA_VERSION_KEY = "schema_version";
     private static final String PENDING_COUNT_KEY = "pending_count";
     private static final String SETTLE_AT_KEY = "settle_at_game_tick";
+    private static final String VISUAL_KEY = "visual_resonating";
     private @Nullable ResonanceProgress progress;
     private CompoundTag invalidOwnedFields = new CompoundTag();
     private boolean decodedUnavailable;
     private boolean unavailableLogged;
+    private boolean clientVisualActive;
+    private long clientInjectionUntilTick;
+    private long clientMoteTick = Long.MIN_VALUE;
 
     public ResonatingAmethystBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.RESONATING_AMETHYST.get(), pos, state);
@@ -45,6 +52,7 @@ public final class ResonatingAmethystBlockEntity extends BlockEntity {
         }
         this.progress = Objects.requireNonNull(progress, "progress");
         setChanged();
+        notifyVisualChange();
     }
 
     /** Replaces usable progress on the server thread; unavailable or uninitialized state rejects before mutation. */
@@ -54,6 +62,57 @@ public final class ResonatingAmethystBlockEntity extends BlockEntity {
         }
         this.progress = Objects.requireNonNull(progress, "progress");
         setChanged();
+        notifyVisualChange();
+    }
+
+    /** Client-render-thread visual snapshot; never a source of server progress or item authority. */
+    public boolean clientVisualActive() {
+        return clientVisualActive;
+    }
+
+    /** Client renderer deduplication for one particle-bearing tick; never persisted or server-authoritative. */
+    public boolean claimClientMoteTick(long tick) {
+        if (clientMoteTick == tick) return false;
+        clientMoteTick = tick;
+        return true;
+    }
+
+    /** Client-only transient injection strength; not saved and not used for settlement. */
+    public float clientInjectionStrength(float partialTick) {
+        if (level == null || !clientVisualActive) return 0;
+        return (float) Math.clamp((clientInjectionUntilTick - level.getGameTime() - partialTick) / 8.0, 0, 1);
+    }
+
+    private void notifyVisualChange() {
+        if (level instanceof ServerLevel serverLevel && serverLevel.getBlockEntity(worldPosition) == this) {
+            BlockState state = getBlockState();
+            serverLevel.sendBlockUpdated(worldPosition, state, state, Block.UPDATE_CLIENTS);
+        }
+    }
+
+    @Override
+    public CompoundTag getUpdateTag(HolderLookup.Provider registries) {
+        CompoundTag tag = new CompoundTag();
+        tag.putBoolean(VISUAL_KEY, isUsable());
+        return tag;
+    }
+
+    @Override
+    public ClientboundBlockEntityDataPacket getUpdatePacket() {
+        return ClientboundBlockEntityDataPacket.create(this);
+    }
+
+    @Override
+    public void handleUpdateTag(CompoundTag tag, HolderLookup.Provider registries) {
+        clientVisualActive = tag.contains(VISUAL_KEY, Tag.TAG_BYTE) && tag.getBoolean(VISUAL_KEY);
+        clientInjectionUntilTick = 0;
+    }
+
+    @Override
+    public void onDataPacket(
+            Connection connection, ClientboundBlockEntityDataPacket packet, HolderLookup.Provider registries) {
+        handleUpdateTag(packet.getTag(), registries);
+        if (clientVisualActive && level != null) clientInjectionUntilTick = level.getGameTime() + 8;
     }
 
     /** Returns the immutable validated value without mutating or scheduling world state. */

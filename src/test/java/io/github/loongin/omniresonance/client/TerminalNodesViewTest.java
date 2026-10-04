@@ -159,6 +159,23 @@ class TerminalNodesViewTest {
     }
 
     @Test
+    void collapsedConfigurationUsesTheSharedTwentyPixelHeaderHeight() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var view = new TerminalNodesView(new UUID(1, 1), SESSION, 1, ignored -> {}, (node, teleport) -> {}, () -> {});
+        view.open();
+        view.build(
+                font(),
+                NetworkSetupScreen.managementLayout(640, 360).content(),
+                widgets::add,
+                widgets::remove,
+                ignored -> {});
+        view.accept(page(1, false, true, false));
+        node(widgets).onPress();
+        view.accept(page(2, true, true, false));
+        assertEquals(20, card(widgets).getHeight());
+    }
+
+    @Test
     void compactTerminalKeepsNodeControlsInsideTheSharedFrame() {
         for (int width : new int[] {320, 427, 640}) {
             var body = NetworkSetupScreen.managementLayout(width, 240).content();
@@ -476,7 +493,11 @@ class TerminalNodesViewTest {
         card(widgets).onPress();
         assertTrue(key(widgets, "edit_configuration").active);
         view.accept(page(2, true, true, false));
-        assertEquals(key(widgets, "rename").getY(), key(widgets, "teleport").getY());
+        assertEquals(key(widgets, "disable").getY(), key(widgets, "rename").getY());
+        assertEquals(key(widgets, "highlight").getY(), key(widgets, "teleport").getY());
+        assertEquals(
+                key(widgets, "rename").getY() + 26, key(widgets, "teleport").getY());
+        assertEquals(key(widgets, "rename").getX(), key(widgets, "teleport").getX());
         var expandedTitle = widgets.stream()
                 .filter(w -> w.getMessage().getString().startsWith("Channel"))
                 .findFirst()

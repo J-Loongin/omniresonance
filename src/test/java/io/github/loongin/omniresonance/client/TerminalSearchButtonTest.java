@@ -4,52 +4,31 @@ package io.github.loongin.omniresonance.client;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
 
 final class TerminalSearchButtonTest {
     @Test
-    void magnifierHasAnEmptyLensAndADiagonalHandleInsideTheSharedActionSlot() {
-        int[][] pixels = render(20, 20, true, false);
-        assertEquals(TerminalTheme.MUTED, pixels[4][6]);
-        assertEquals(0, pixels[7][7]);
-        assertEquals(TerminalTheme.MUTED, pixels[14][14]);
-        for (int index = 0; index < 20; index++) {
-            assertEquals(0, pixels[0][index]);
-            assertEquals(0, pixels[19][index]);
-            assertEquals(0, pixels[index][0]);
-            assertEquals(0, pixels[index][19]);
+    void installedMagnifierHasAnEmptyLensAndDiagonalHandleAtItsTrueFourTimesResolution() throws Exception {
+        try (var stream =
+                getClass().getResourceAsStream("/assets/omniresonance/textures/gui/star_fissure/symbols.png")) {
+            var image = ImageIO.read(stream);
+            var source =
+                    TerminalActionIcon.glyph(TerminalActionIcon.Symbol.SEARCH).source();
+            assertEquals(48, source.width());
+            assertEquals(0, image.getRGB(source.x() + 18, source.y() + 18) >>> 24);
+            assertTrue((image.getRGB(source.x() + 18, source.y() + 2) >>> 24) > 0);
+            assertTrue((image.getRGB(source.x() + 40, source.y() + 40) >>> 24) > 0);
         }
     }
 
     @Test
-    void highlightedSearchUsesTheSharedAccentAndDisabledSearchNeverHighlights() {
-        int[][] highlighted = render(20, 20, true, true);
-        int[][] disabled = render(20, 20, false, true);
-        assertEquals(TerminalTheme.ACCENT, highlighted[4][6]);
-        assertEquals(TerminalTheme.LINE, disabled[4][6]);
-    }
-
-    @Test
-    void undersizedTargetsDoNotDrawClippedSymbols() {
-        int[][] pixels = render(10, 10, true, false);
-        for (int[] row : pixels) {
-            for (int pixel : row) {
-                assertEquals(0, pixel);
-            }
-        }
-    }
-
-    private static int[][] render(int width, int height, boolean active, boolean highlighted) {
-        int[][] pixels = new int[height][width];
-        TerminalSearchButton.drawIcon(7, 11, width, height, active, highlighted, (left, top, right, bottom, color) -> {
-            assertTrue(left >= 7 && right <= 7 + width);
-            assertTrue(top >= 11 && bottom <= 11 + height);
-            for (int y = top - 11; y < bottom - 11; y++) {
-                for (int x = left - 7; x < right - 7; x++) {
-                    pixels[y][x] = color;
-                }
-            }
-        });
-        return pixels;
+    void expandedSearchStaysSelectedAndDisabledSearchNeverHighlights() {
+        assertEquals(
+                TerminalTheme.ACCENT,
+                TerminalActionIcon.style(true, false, false, true).border());
+        assertEquals(
+                TerminalTheme.DISABLED_TEXT,
+                TerminalActionIcon.style(false, true, false, true).text());
     }
 }

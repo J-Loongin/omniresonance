@@ -16,6 +16,7 @@ import io.netty.buffer.Unpooled;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
 import net.minecraft.network.FriendlyByteBuf;
@@ -356,8 +357,9 @@ public final class ExchangeTerminalWire {
                     terms.filterMode(),
                     new ExchangeTermsDraft.KeepApproved(),
                     terms.defaultRate(),
-                    terms.rates(),
-                    terms.intervalTicks());
+                    Map.of(),
+                    terms.intervalTicks(),
+                    terms.resourceParameters());
             return send(
                     player,
                     state,

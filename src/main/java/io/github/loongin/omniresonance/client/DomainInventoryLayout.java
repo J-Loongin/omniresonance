@@ -16,21 +16,11 @@ record DomainInventoryLayout(TerminalLayout.Rect body, boolean inventory) {
     }
 
     static void renderWindow(net.minecraft.client.gui.GuiGraphics graphics, TerminalLayout layout) {
-        var w = layout.window();
-        TerminalTheme.fillRounded(graphics, w.x() - 1, w.y() - 1, w.width() + 2, w.height() + 2, 3, 0xFF35616A);
-        TerminalTheme.fillRounded(graphics, w.x(), w.y(), w.width(), w.height(), 3, 0xFF242D32);
-        graphics.fill(w.x() + 2, w.y() + 2, w.right() - 2, layout.titleBar().bottom(), 0xFF303D44);
-        graphics.fill(
-                w.x() + 3,
-                layout.titleBar().bottom(),
-                w.right() - 3,
-                layout.titleBar().bottom() + 1,
-                0xFF142126);
-        graphics.fill(w.x() + 3, w.y() + 2, w.right() - 3, w.y() + 3, 0xFF4C8590);
+        TerminalTheme.renderWindow(graphics, layout);
     }
 
     int gridX() {
-        return body.x() + 26;
+        return body.x() + (body.width() - columns() * CELL) / 2;
     }
 
     int gridY() {

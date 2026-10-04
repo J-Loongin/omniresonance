@@ -17,6 +17,66 @@ import org.junit.jupiter.api.Test;
 
 final class ModalBackdropTest {
     @Test
+    void clearingAModalRestoresCachedControlActivityWithoutChangingItsData() {
+        Host host = new Host();
+        var enabled = host.add(new Widget());
+        var disabled = host.add(new Widget());
+        disabled.active = false;
+        enabled.setMessage(Component.literal("draft remains"));
+        ModalBackdrop backdrop = new ModalBackdrop();
+        backdrop.retain(host.children(), host::remove);
+        assertFalse(enabled.active);
+        assertFalse(disabled.active);
+        backdrop.clear();
+        assertTrue(enabled.active);
+        assertFalse(disabled.active);
+        assertEquals("draft remains", enabled.getMessage().getString());
+    }
+
+    @Test
+    void exchangeBuildsAndRetainsItsRealParentBeforeRegisteringOnlyDialogInput() {
+        Host host = new Host();
+        ModalBackdrop backdrop = new ModalBackdrop();
+        var stages = new ArrayList<String>();
+        Widget[] controls = new Widget[2];
+        ExchangeScreen.buildPageLayers(
+                () -> {
+                    stages.add("page");
+                    controls[0] = host.add(new Widget());
+                    controls[0].setMessage(Component.literal("actual parent draft"));
+                    host.setFocused(controls[0]);
+                },
+                () -> backdrop.open(host.children(), host::remove, host.renderableList(), () -> {
+                    stages.add("dialog");
+                    host.setFocused(null);
+                    controls[1] = host.add(new Widget());
+                }));
+        assertEquals(List.of("page", "dialog"), stages);
+        assertEquals(List.of(controls[1]), host.children());
+        assertFalse(controls[0].isFocused());
+        assertFalse(controls[0].active);
+        assertTrue(host.renderableList().isEmpty());
+        var rendered = new ArrayList<Renderable>();
+        backdrop.render(rendered::add);
+        assertEquals(List.of(controls[0]), rendered);
+        assertEquals("actual parent draft", controls[0].getMessage().getString());
+        assertTrue(host.mouseClicked(2, 2, 0));
+        assertEquals(0, controls[0].clicks);
+        assertEquals(1, controls[1].clicks);
+    }
+
+    @Test
+    void sharedShadeStartsBelowTheTitleAndRetainsTheWholePageWidth() {
+        for (var layout : List.of(TerminalLayout.terminal(640, 360), TerminalLayout.calculate(320, 240))) {
+            var shade = ModalBackdrop.shadeBounds(layout);
+            assertEquals(layout.window().x(), shade.x());
+            assertEquals(layout.titleBar().bottom(), shade.y());
+            assertEquals(layout.window().right(), shade.right());
+            assertEquals(layout.window().bottom(), shade.bottom());
+        }
+    }
+
+    @Test
     void detachesFocusedDraftAndRetainsItForRenderingWhileFirstModalClickIsDelivered() {
         Host host = new Host();
         Widget draft = host.add(new Widget());

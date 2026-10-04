@@ -3,6 +3,7 @@ package io.github.loongin.omniresonance.exchange;
 
 import io.github.loongin.omniresonance.filter.FilterMode;
 import io.github.loongin.omniresonance.transfer.ResourceScope;
+import io.github.loongin.omniresonance.transfer.ResourceTransferPolicy;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -19,7 +20,19 @@ public record ExchangeTermsDraft(
         FilterChoice filter,
         long defaultRate,
         Map<ResourceLocation, Long> rates,
-        int intervalTicks) {
+        int intervalTicks,
+        Map<ResourceLocation, ResourceTransferPolicy.InputOverride> resourceParameters) {
+    /** Pure legacy edit constructor; keeps explicit quantities and adds greedy node batch metadata. */
+    public ExchangeTermsDraft(
+            ResourceScope scope,
+            FilterMode filterMode,
+            FilterChoice filter,
+            long defaultRate,
+            Map<ResourceLocation, Long> rates,
+            int intervalTicks) {
+        this(scope, filterMode, filter, defaultRate, rates, intervalTicks, Map.of());
+    }
+
     public sealed interface FilterChoice permits None, KeepApproved, OwnerPreset {}
 
     public record None() implements FilterChoice {}
@@ -35,7 +48,9 @@ public record ExchangeTermsDraft(
 
     public ExchangeTermsDraft {
         Objects.requireNonNull(filter);
-        ExchangeTerms validated = new ExchangeTerms(scope, filterMode, null, defaultRate, rates, intervalTicks);
+        ExchangeTerms validated =
+                new ExchangeTerms(scope, filterMode, null, defaultRate, rates, intervalTicks, resourceParameters);
         rates = validated.rates();
+        resourceParameters = validated.resourceParameters();
     }
 }

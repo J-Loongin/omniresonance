@@ -4,6 +4,7 @@ package io.github.loongin.omniresonance.exchange;
 import io.github.loongin.omniresonance.filter.ResourceFilterCompiler;
 import io.github.loongin.omniresonance.storage.DomainLedger;
 import io.github.loongin.omniresonance.transfer.DomainTransferWindow;
+import io.github.loongin.omniresonance.transfer.ResourceTransferPolicy;
 import io.github.loongin.omniresonance.transfer.ResourceVariant;
 import io.github.loongin.omniresonance.transfer.ResourceVariantKey;
 import io.github.loongin.omniresonance.transfer.TransferWorkBudget;
@@ -54,6 +55,7 @@ public final class ExchangeTypeWork implements AutoCloseable {
 
     private final Thread owner = Thread.currentThread();
     private final ExchangeAgreement agreement;
+    private final long rate, batchSize;
     private final ResourceLocation type;
     private final DomainTransferWindow window;
     private final Environment environment;
@@ -99,6 +101,9 @@ public final class ExchangeTypeWork implements AutoCloseable {
             boolean ownsFilter) {
         this.agreement = Objects.requireNonNull(agreement);
         this.type = Objects.requireNonNull(type);
+        var parameter = agreement.terms().parameter(type);
+        rate = parameter.rate();
+        batchSize = parameter.batchMode() == ResourceTransferPolicy.BatchMode.EXACT ? parameter.batchSize() : 1;
         this.window = Objects.requireNonNull(window);
         this.environment = Objects.requireNonNull(environment);
         this.filter = Objects.requireNonNull(filter);
@@ -171,7 +176,6 @@ public final class ExchangeTypeWork implements AutoCloseable {
                     target = currentTarget;
                     resetScan();
                 }
-                long rate = agreement.terms().rate(type);
                 if (window.available(tick, rate) == 0) return finish(tick, used, moved);
                 if (!round) {
                     ceiling = source.sequenceCeiling();
@@ -226,8 +230,8 @@ public final class ExchangeTypeWork implements AutoCloseable {
                     stage = ExchangeTelemetry.Stage.VALIDATION;
                     if (!environment.active(agreement)) return new Progress(used, moved, Status.BLOCKED);
                     stage = ExchangeTelemetry.Stage.TRANSFER;
-                    long transferred =
-                            source.transferTo(target, candidate.key(), window.available(tick, rate), variantLimit);
+                    long transferred = source.transferTo(
+                            target, candidate.key(), window.available(tick, rate), variantLimit, batchSize);
                     if (transferred > 0) {
                         window.moved(tick, transferred, rate);
                         moved = Math.addExact(moved, transferred);

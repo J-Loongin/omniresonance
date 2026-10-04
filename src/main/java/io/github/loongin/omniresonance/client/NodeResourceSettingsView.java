@@ -8,7 +8,6 @@ import java.util.function.Consumer;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
-import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 
@@ -17,7 +16,8 @@ final class NodeResourceSettingsView {
     private NodeResourceSettingsView() {}
 
     static RoutingListLayout list(TerminalLayout.Rect body, NodeResourcePolicyDraft draft, int scroll) {
-        return RoutingListLayout.calculate(body, draft.settingIds().size(), scroll);
+        return TerminalResourceSettingsList.page(body, draft.settingIds().size(), scroll)
+                .list();
     }
 
     static void buildList(
@@ -27,19 +27,28 @@ final class NodeResourceSettingsView {
             boolean active,
             Consumer<AbstractWidget> add,
             Consumer<ResourceLocation> edit) {
-        var layout = list(body, draft, scroll);
-        for (int row = 0;
-                row < layout.visibleRows()
-                        && row + layout.scroll() < draft.settingIds().size();
-                row++) {
-            var id = draft.settingIds().get(row + layout.scroll());
-            Component summary = summary(draft, id);
-            var button = new TerminalRowButton(layout.row(row), summary, ignored -> edit.accept(id));
-            button.active = active;
-            button.setTooltip(
-                    Tooltip.create(TerminalText.body(summary.copy().append("\n").append(id.toString()))));
-            add.accept(button);
-        }
+        TerminalResourceSettingsList.buildRows(
+                body,
+                new TerminalResourceSettingsList.Entries() {
+                    @Override
+                    public int size() {
+                        return draft.settingIds().size();
+                    }
+
+                    @Override
+                    public TerminalResourceSettingsList.Row row(int index) {
+                        var id = draft.settingIds().get(index);
+                        var label = summary(draft, id);
+                        return new TerminalResourceSettingsList.Row(
+                                label,
+                                label.copy().append("\n").append(id.toString()),
+                                draft.unavailable(id) ? Component.literal(id.toString()) : null,
+                                () -> edit.accept(id));
+                    }
+                },
+                scroll,
+                active,
+                row -> add.accept(row));
     }
 
     static Component unit(NodeResourcePolicyDraft draft, ResourceLocation id) {
@@ -51,22 +60,20 @@ final class NodeResourceSettingsView {
     static Component summary(NodeResourcePolicyDraft draft, ResourceLocation id) {
         if (draft.unavailable(id)) return NodeResourcePolicyView.text("unavailable_type", id.toString());
         var value = draft.type(id);
-        var result = NodeResourcePolicyView.typeName(id)
-                .copy()
-                .append(" · ")
-                .append(NodeResourcePolicyView.text("rate_summary", value.rate, unit(draft, id)));
-        if (draft.direction == TransferDirection.INPUT)
-            result.append(" · ")
-                    .append(
-                            value.batchMode == ResourceTransferPolicy.BatchMode.GREEDY
-                                    ? NodeResourcePolicyView.text("greedy")
-                                    : NodeResourcePolicyView.text("batch_summary", value.batch));
-        return result;
+        return TerminalResourceSettingsList.summary(
+                NodeResourcePolicyView.typeName(id),
+                Component.literal(value.rate),
+                unit(draft, id),
+                draft.direction == TransferDirection.INPUT
+                        ? value.batchMode == ResourceTransferPolicy.BatchMode.GREEDY
+                                ? NodeResourcePolicyView.text("greedy")
+                                : NodeResourcePolicyView.text("batch_summary", value.batch)
+                        : null);
     }
 
     static TerminalLayout.Rect dialog(TerminalLayout.Rect body, NodeResourceSettingEditor edit) {
-        return TerminalDialogLayout.centered(
-                body, 300, edit.unavailable ? 110 : edit.direction == TransferDirection.INPUT ? 156 : 124);
+        return TerminalResourceParameterLayout.of(body, edit.direction == TransferDirection.INPUT, edit.unavailable)
+                .dialog();
     }
 
     static void buildEditor(
@@ -80,59 +87,25 @@ final class NodeResourceSettingsView {
             Runnable cancel,
             Runnable apply,
             Runnable restore) {
-        var dialog = dialog(body, edit);
-        if (!edit.unavailable) {
-            NodeResourcePolicyView.field(
-                    font,
-                    add,
-                    new TerminalLayout.Rect(dialog.x() + 12, dialog.y() + 42, dialog.width() - 24, 20),
-                    NodeResourcePolicyView.text("rate"),
-                    edit.rate,
-                    active,
-                    NodeResourcePolicyView.text("rate.help", unit(edit.owner, edit.id)),
-                    value -> {
-                        edit.rate = value;
-                        edit.invalid = false;
-                        changed.run();
-                    });
-            if (edit.direction == TransferDirection.INPUT) {
-                int half = (dialog.width() - 30) / 2;
-                NodeResourcePolicyView.button(
-                        add,
-                        new TerminalLayout.Rect(dialog.x() + 12, dialog.y() + 80, half, 20),
-                        NodeResourcePolicyView.text(
-                                edit.mode == ResourceTransferPolicy.BatchMode.GREEDY ? "greedy" : "exact"),
-                        active,
-                        () -> {
-                            edit.mode = edit.mode == ResourceTransferPolicy.BatchMode.GREEDY
-                                    ? ResourceTransferPolicy.BatchMode.EXACT
-                                    : ResourceTransferPolicy.BatchMode.GREEDY;
-                            changed.run();
-                            rebuild.run();
-                        });
-                NodeResourcePolicyView.field(
-                        font,
-                        add,
-                        new TerminalLayout.Rect(dialog.x() + 18 + half, dialog.y() + 80, half, 20),
-                        NodeResourcePolicyView.text("batch"),
-                        edit.batch,
-                        active && edit.mode == ResourceTransferPolicy.BatchMode.EXACT,
-                        NodeResourcePolicyView.text("batch.help"),
-                        value -> {
-                            edit.batch = value;
-                            edit.invalid = false;
-                            changed.run();
-                        });
-            }
-        }
+        var geometry =
+                TerminalResourceParameterLayout.of(body, edit.direction == TransferDirection.INPUT, edit.unavailable);
+        var dialog = geometry.dialog();
         if (edit.unavailable) {
             action(add, TerminalActionLayout.of(dialog).secondary(), "cancel", active, false, cancel);
             action(add, TerminalActionLayout.of(dialog).primary(), "delete", active, true, restore);
         } else {
-            action(add, TerminalActionLayout.button(dialog, 3, 0), "restore_default", active, false, restore);
-            action(add, TerminalActionLayout.button(dialog, 3, 1), "cancel", active, false, cancel);
-            action(add, TerminalActionLayout.button(dialog, 3, 2), "apply", active, true, apply);
+            TerminalResourceParameterView.build(
+                    font,
+                    geometry,
+                    form(edit, active),
+                    edit.bindings(changed, rebuild),
+                    new TerminalResourceParameterView.Actions(restore, cancel, apply),
+                    add);
         }
+    }
+
+    static TerminalResourceParameterView.Form form(NodeResourceSettingEditor edit, boolean active) {
+        return edit.form(unit(edit.owner, edit.id), edit.direction == TransferDirection.INPUT, active);
     }
 
     private static void action(
@@ -156,16 +129,12 @@ final class NodeResourceSettingsView {
 
     static void renderEditor(
             GuiGraphics graphics, Font font, TerminalLayout.Rect body, NodeResourceSettingEditor edit) {
-        var dialog = dialog(body, edit);
-        TerminalTheme.renderPanel(graphics, dialog);
-        NodeResourcePolicyView.label(
-                graphics,
-                font,
-                dialog.x() + 12,
-                dialog.y() + 12,
-                dialog.width() - 24,
-                NodeResourcePolicyView.typeName(edit.id));
+        var geometry =
+                TerminalResourceParameterLayout.of(body, edit.direction == TransferDirection.INPUT, edit.unavailable);
+        var dialog = geometry.dialog();
         if (edit.unavailable) {
+            TerminalTheme.renderDialogPanel(graphics, dialog);
+            TerminalText.drawDialogTitle(graphics, font, NodeResourcePolicyView.typeName(edit.id), dialog);
             graphics.drawWordWrap(
                     font,
                     TerminalText.body(NodeResourcePolicyView.text(
@@ -176,32 +145,11 @@ final class NodeResourceSettingsView {
                     TerminalTheme.MUTED);
             return;
         }
-        NodeResourcePolicyView.label(
+        TerminalResourceParameterView.render(
                 graphics,
                 font,
-                dialog.x() + 12,
-                dialog.y() + 30,
-                dialog.width() - 24,
-                NodeResourcePolicyView.text("rate_unit", unit(edit.owner, edit.id)));
-        if (edit.direction == TransferDirection.INPUT) {
-            int half = (dialog.width() - 30) / 2;
-            NodeResourcePolicyView.label(
-                    graphics, font, dialog.x() + 12, dialog.y() + 68, half, NodeResourcePolicyView.text("batch_mode"));
-            NodeResourcePolicyView.label(
-                    graphics,
-                    font,
-                    dialog.x() + 18 + half,
-                    dialog.y() + 68,
-                    half,
-                    NodeResourcePolicyView.text("batch"));
-        }
-        if (edit.invalid)
-            NodeResourcePolicyView.label(
-                    graphics,
-                    font,
-                    dialog.x() + 12,
-                    dialog.bottom() - 42,
-                    dialog.width() - 24,
-                    NodeResourcePolicyView.text("invalid"));
+                geometry,
+                form(edit, true),
+                edit.invalid ? NodeResourcePolicyView.text("invalid") : null);
     }
 }

@@ -13,8 +13,14 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 final class UiFontScaleTest {
+    @Test
+    void commonScreensMeetTheApprovedFourTimesRasterBaseline() {
+        for (double scale : new double[] {1, 2, 3, 4})
+            assertEquals(4, UiFontScale.forGuiScale(scale).sampling());
+    }
+
     @ParameterizedTest
-    @CsvSource({"1,2", "2,2", "3,3", "4,4", "5,8", "8,8", "9,16", "16,16", "32,16"})
+    @CsvSource({"1,4", "2,4", "3,4", "4,4", "5,8", "8,8", "9,16", "16,16", "32,16"})
     void choosesMatchingOrHigherPrecisionFromABoundedSet(double guiScale, int sampling) {
         UiFontScale scale = UiFontScale.forGuiScale(guiScale);
         assertEquals(sampling, scale.sampling());

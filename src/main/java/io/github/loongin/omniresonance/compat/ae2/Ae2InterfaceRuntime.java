@@ -237,9 +237,13 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
     public void request(ServerPlayer player, Ae2InterfacePayloads.Request request) {
         check();
         var session = sessions.get(player.getUUID());
-        if (session == null || session.player != player || !session.id.equals(request.session())) return;
+        if (session == null || session.player != player || !session.id.equals(request.session())) {
+            Ae2InterfacePayloads.reject(player, request);
+            return;
+        }
         if (request.sequence() != session.sequence + 1) {
             sessions.remove(player.getUUID());
+            Ae2InterfacePayloads.reject(player, request);
             return;
         }
         session.sequence = request.sequence();
@@ -272,18 +276,7 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
             else send(session, request.action() == 0 ? request.network() : null, false, "");
         } catch (RuntimeException denied) {
             sessions.remove(player.getUUID());
-            net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(
-                    player,
-                    new Ae2InterfacePayloads.Frame(
-                            session.id,
-                            session.sequence,
-                            false,
-                            null,
-                            "unavailable",
-                            "unavailable",
-                            java.util.List.of(),
-                            -1,
-                            false));
+            Ae2InterfacePayloads.reject(player, request);
         }
     }
 

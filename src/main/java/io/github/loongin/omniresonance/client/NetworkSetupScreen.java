@@ -138,11 +138,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
 
     TerminalLayout configurationLayout(int width, int height) {
         if (this.width != width || this.height != height) resize(minecraft, width, height);
-        return new TerminalLayout(
-                layout.window(),
-                layout.titleBar(),
-                nodesView == null ? layout.content() : nodesView.editorBounds(),
-                layout.compact());
+        return layout.fullWindowContent();
     }
 
     io.github.loongin.omniresonance.networking.ExchangeRequest sendExchange(
@@ -339,6 +335,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     private boolean settingNameField;
     private boolean topologyDraftDirty;
     private boolean topologyDiscardConfirmation;
+    private @Nullable TunnelSummary tunnelDisableTarget;
     private boolean closeAfterDiscard;
     private String draft = "";
     private String topologyDraft = "";
@@ -697,6 +694,10 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     protected void init() {
         font = TerminalText.font(Objects.requireNonNull(minecraft, "minecraft"));
         layout = inventoryView == null ? managementLayout(width, height) : DomainInventoryLayout.window(width, height);
+        if (tunnelDisableTarget != null && (!topologyDiscardConfirmation || !canConfirmTunnelDisable())) {
+            tunnelDisableTarget = null;
+            topologyDiscardConfirmation = false;
+        }
         networkContext.apply(topologyState);
         networkContext.buttons.clear();
         modalBackdrop.clear();
@@ -980,7 +981,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                     false);
             entry.setSelected(selected != null && selected.id().equals(summary.id()));
             entry.setTooltip(Tooltip.create(TerminalText.body(Component.literal(summary.name()))));
-            addRenderableWidget(entry);
+            addWidget(entry);
             networkContext.buttons.add(entry);
         }
     }
@@ -1040,7 +1041,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                 secondaryWidth,
                 CONTROL_HEIGHT,
                 Component.translatable(
-                        firstPrompt ? "omniresonance.terminal.first_open.skip" : "omniresonance.terminal.back"),
+                        firstPrompt ? "omniresonance.terminal.first_open.skip" : "omniresonance.node_menu.cancel"),
                 button -> {
                     if (firstPrompt) {
                         client.dismissFirstPrompt();
@@ -1228,6 +1229,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                                                             viewId, requireSessionId(), sequence));
                         }
                     });
+            card.module(module);
             card.active = implemented && pendingOperation == PendingOperation.NONE;
             if (!implemented || domainUnavailable) {
                 card.setTooltip(Tooltip.create(TerminalText.body(Component.translatable(
@@ -1579,15 +1581,20 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                         viewId, requireSessionId(), sequence, tunnel.tunnelId())),
                 false,
                 true);
-        addTopologyButton(
-                left + third + TerminalLayout.GAP,
-                y,
-                third,
-                tunnel.enabled() ? "omniresonance.terminal.disable" : "omniresonance.terminal.enable",
+        addRenderableWidget(buildTunnelToggleButton(
+                new TerminalLayout.Rect(left + third + TerminalLayout.GAP, y, third, CONTROL_HEIGHT),
+                tunnel,
+                () -> {
+                    if (pendingOperation != PendingOperation.NONE) return;
+                    tunnelDisableTarget = tunnel;
+                    topologyDiscardConfirmation = true;
+                    closeAfterDiscard = false;
+                    networkContext.open = false;
+                    rebuildIfActive();
+                },
                 () -> sendTopology(sequence -> new NetworkTerminalRequest.SetTunnelEnabled(
-                        viewId, requireSessionId(), sequence, tunnel.tunnelId(), !tunnel.enabled())),
-                false,
-                true);
+                        viewId, requireSessionId(), sequence, tunnel.tunnelId(), true)),
+                pendingOperation == PendingOperation.NONE));
         addTopologyButton(
                 left + (third + TerminalLayout.GAP) * 2,
                 y,
@@ -1597,6 +1604,55 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                         viewId, requireSessionId(), sequence, tunnel.tunnelId())),
                 false,
                 true);
+    }
+
+    static TerminalButton buildTunnelToggleButton(
+            TerminalLayout.Rect bounds,
+            TunnelSummary tunnel,
+            Runnable confirmDisable,
+            Runnable enable,
+            boolean active) {
+        var button = new TerminalButton(
+                bounds.x(),
+                bounds.y(),
+                bounds.width(),
+                bounds.height(),
+                Component.translatable(
+                        tunnel.enabled() ? "omniresonance.terminal.disable" : "omniresonance.terminal.enable"),
+                pressed -> {
+                    if (!pressed.active) return;
+                    if (tunnel.enabled()) confirmDisable.run();
+                    else enable.run();
+                },
+                false);
+        button.active = active;
+        return button;
+    }
+
+    private boolean canConfirmTunnelDisable() {
+        return tunnelDisableTarget != null
+                && pendingOperation == PendingOperation.NONE
+                && topologyState instanceof NetworkTerminalState.TunnelSettings state
+                && state.tunnel().equals(tunnelDisableTarget)
+                && state.tunnel().enabled();
+    }
+
+    private Component tunnelDisableMessage() {
+        return Component.translatable("omniresonance.terminal.tunnel.disable.message");
+    }
+
+    private void confirmTunnelDisable() {
+        if (!canConfirmTunnelDisable()) {
+            tunnelDisableTarget = null;
+            topologyDiscardConfirmation = false;
+            rebuildIfActive();
+            return;
+        }
+        UUID tunnelId = tunnelDisableTarget.tunnelId();
+        tunnelDisableTarget = null;
+        topologyDiscardConfirmation = false;
+        sendTopology(sequence ->
+                new NetworkTerminalRequest.SetTunnelEnabled(viewId, requireSessionId(), sequence, tunnelId, false));
     }
 
     private void buildTopologyNameEdit(boolean creating, String initial) {
@@ -1666,6 +1722,28 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     }
 
     private void buildTopologyDiscardConfirmation() {
+        if (tunnelDisableTarget != null) {
+            modalBounds = TerminalDialogLayout.confirmation(layout.content(), font, tunnelDisableMessage());
+            var footer = TerminalActionLayout.of(modalBounds);
+            addTopologyButton(
+                    footer.secondary().x(),
+                    footer.secondary().y(),
+                    footer.secondary().width(),
+                    "omniresonance.terminal.cancel",
+                    this::navigateTopologyBack,
+                    false,
+                    true);
+            addTopologyButton(
+                            footer.primary().x(),
+                            footer.primary().y(),
+                            footer.primary().width(),
+                            "omniresonance.terminal.disable",
+                            this::confirmTunnelDisable,
+                            true,
+                            true)
+                    .setDanger(true);
+            return;
+        }
         if (pendingFilterSave != null) {
             var edit = (NetworkTerminalState.PresetEdit) topologyState;
             modalBounds = TerminalDialogLayout.confirmation(
@@ -2105,6 +2183,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
             return;
         }
         if (topologyDiscardConfirmation) {
+            tunnelDisableTarget = null;
             pendingFilterSave = null;
             topologyDiscardConfirmation = false;
             closeAfterDiscard = false;
@@ -2422,21 +2501,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         else DomainInventoryLayout.renderWindow(graphics, layout);
         renderTopBar(graphics);
         renderBody(graphics);
-        if (networkContext.intercepts()
-                && page != null
-                && !createOverlay
-                && !confirmation
-                && !topologyDiscardConfirmation) {
-            TerminalTheme.renderPanel(graphics, networkContext.bounds);
-            TerminalTheme.renderScrollbar(
-                    graphics,
-                    networkContext.bounds.right() - TerminalLayout.SCROLLBAR_WIDTH,
-                    networkContext.bounds.y() + 2,
-                    Math.max(0, networkContext.bounds.height() - 4),
-                    page.entries().size(),
-                    Math.min(MAX_VISIBLE_DROPDOWN_ROWS, page.entries().size()),
-                    dropdownScroll);
-        }
         if (createOverlay) {
             renderCreateOverlay(graphics, createBounds);
         }
@@ -2464,7 +2528,14 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
 
     private void renderDesign(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         boolean inspecting = inventoryView != null && inventoryView.popupOpen();
-        super.render(graphics, inspecting ? -1 : mouseX, inspecting ? -1 : mouseY, partialTick);
+        boolean dropdown = networkContext.intercepts();
+        TerminalForegroundLayer.ordered(
+                () -> super.render(
+                        graphics,
+                        inspecting || dropdown ? -1 : mouseX,
+                        inspecting || dropdown ? -1 : mouseY,
+                        partialTick),
+                () -> renderDropdownForeground(graphics, mouseX, mouseY, partialTick));
         if (nodesView != null) nodesView.renderTooltip(graphics, mouseX, mouseY);
         if (statusView != null) statusView.renderTooltip(graphics, mouseX, mouseY);
         if (inventoryView != null) {
@@ -2486,6 +2557,26 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                 if (confirmation) renderConfirmation(graphics);
                 else renderTopologyDiscardConfirmation(graphics);
             });
+    }
+
+    private void renderDropdownForeground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        if (!networkContext.intercepts()
+                || page == null
+                || createOverlay
+                || confirmation
+                || topologyDiscardConfirmation) return;
+        TerminalForegroundLayer.render(graphics, () -> {
+            TerminalTheme.renderPanel(graphics, networkContext.bounds);
+            for (var row : networkContext.buttons) row.render(graphics, mouseX, mouseY, partialTick);
+            TerminalTheme.renderScrollbar(
+                    graphics,
+                    networkContext.bounds.right() - TerminalLayout.SCROLLBAR_WIDTH,
+                    networkContext.bounds.y() + 2,
+                    Math.max(0, networkContext.bounds.height() - 4),
+                    page.entries().size(),
+                    Math.min(MAX_VISIBLE_DROPDOWN_ROWS, page.entries().size()),
+                    dropdownScroll);
+        });
     }
 
     @Override
@@ -2529,6 +2620,9 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     }
 
     private String topBarTitle() {
+        if (filterView.sampleOpen())
+            return Component.translatable("omniresonance.terminal.filters.sample_title")
+                    .getString();
         if (statusView != null)
             return Component.translatable("omniresonance.terminal.home.status").getString();
         if (nodesView != null)
@@ -2573,14 +2667,12 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
             return;
         }
         if (page == null) {
-            TerminalTheme.renderPanel(graphics, content);
             Component message = error == null ? Component.translatable("omniresonance.terminal.loading") : error;
             int color = error == null ? TerminalTheme.MUTED : TerminalTheme.ERROR;
             drawCenteredWrapped(graphics, message, content, color, -10);
             return;
         }
         if (page.entries().isEmpty()) {
-            TerminalTheme.renderPanel(graphics, content);
             if (TerminalInteractionPolicy.renderEmptyDirectory(createOverlay)) {
                 Component title = TerminalText.title(Component.translatable("omniresonance.terminal.empty.title"));
                 Component message = Component.translatable("omniresonance.terminal.empty.message");
@@ -2590,6 +2682,8 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                 drawCenteredWrapped(graphics, message, content, TerminalTheme.MUTED, 0);
             }
         } else {
+            if (listBounds.width() > 0 && detailBounds.width() > 0)
+                TerminalTheme.renderPaneDivider(graphics, listBounds, detailBounds);
             if (listBounds.width() > 0) {
                 renderNetworkList(graphics);
             }
@@ -2659,8 +2753,8 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                         false);
             return;
         }
+        if (state instanceof NetworkTerminalState.NetworkRoot) return;
         TerminalLayout.Rect content = layout.content();
-        TerminalTheme.renderPanel(graphics, content);
         if (TerminalNetworkSettingsView.supports(state)) {
             TerminalNetworkSettingsView.render(graphics, font, layout, state);
         } else if (state instanceof NetworkTerminalState.NetworkRoot root) {
@@ -2702,16 +2796,14 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         } else if (state instanceof NetworkTerminalState.TunnelEdit edit) {
             var dialog = TerminalDialogLayout.editor(content);
             TerminalDialogLayout.render(graphics, content, dialog);
-            graphics.drawString(
+            TerminalText.drawDialogTitle(
+                    graphics,
                     font,
                     Component.translatable(
                             edit.existing() == null
                                     ? "omniresonance.terminal.tunnel.create"
                                     : "omniresonance.terminal.tunnel.rename"),
-                    dialog.x() + 12,
-                    dialog.y() + 18,
-                    TerminalTheme.TEXT,
-                    false);
+                    dialog);
             graphics.drawString(
                     font,
                     Component.translatable("omniresonance.terminal.object_name"),
@@ -2720,16 +2812,14 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                     TerminalTheme.MUTED,
                     false);
         } else if (state instanceof NetworkTerminalState.DeleteConfirmation confirmationState) {
-            graphics.fill(content.x(), content.y(), content.right(), content.bottom(), 0xA000070C);
-            TerminalTheme.renderPanel(graphics, modalBounds);
+            graphics.fill(content.x(), content.y(), content.right(), content.bottom(), TerminalTheme.MODAL_DIM);
+            TerminalTheme.renderDialogPanel(graphics, modalBounds);
             TopologyDeletionSummary summary = confirmationState.summary();
-            TerminalText.drawCentered(
+            TerminalText.drawDialogTitle(
                     graphics,
                     font,
                     Component.translatable("omniresonance.terminal.delete.title", summary.name()),
-                    modalBounds.x() + modalBounds.width() / 2,
-                    modalBounds.y() + 12,
-                    TerminalTheme.TEXT);
+                    modalBounds);
             Component impact = Component.translatable(
                     "omniresonance.terminal.delete.impact", summary.channelCount(), summary.bindingCount());
             drawWrapped(
@@ -2789,7 +2879,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     }
 
     private void renderNetworkList(GuiGraphics graphics) {
-        TerminalTheme.renderPanel(graphics, listBounds);
         graphics.drawString(
                 font,
                 Component.translatable("omniresonance.terminal.networks"),
@@ -2809,7 +2898,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     }
 
     private void renderDetails(GuiGraphics graphics) {
-        TerminalTheme.renderPanel(graphics, detailBounds);
         graphics.drawString(
                 font,
                 Component.translatable("omniresonance.terminal.details"),
@@ -2857,18 +2945,18 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
 
     private void renderCreateOverlay(GuiGraphics graphics, TerminalLayout.Rect modalBounds) {
         TerminalLayout.Rect content = layout.content();
-        graphics.fill(content.x(), content.y(), content.right(), content.bottom(), 0xB000070C);
-        TerminalTheme.renderPanel(graphics, modalBounds);
+        graphics.fill(content.x(), content.y(), content.right(), content.bottom(), TerminalTheme.MODAL_DIM);
+        TerminalTheme.renderDialogPanel(graphics, modalBounds);
         Component title = Component.translatable(
                 firstPrompt ? "omniresonance.terminal.first_open.title" : "omniresonance.terminal.create");
         Component message = Component.translatable(
                 firstPrompt ? "omniresonance.terminal.first_open.message" : "omniresonance.terminal.name");
-        graphics.drawString(font, title, modalBounds.x() + 8, modalBounds.y() + 8, TerminalTheme.TEXT, false);
+        TerminalText.drawDialogTitle(graphics, font, title, modalBounds);
         graphics.drawString(
                 font,
                 ellipsize(message.getString(), Math.max(0, modalBounds.width() - 16)),
                 modalBounds.x() + 8,
-                modalBounds.y() + 24,
+                modalBounds.y() + 34,
                 TerminalTheme.MUTED,
                 false);
         if (error != null)
@@ -2882,18 +2970,31 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
 
     private void renderTopologyDiscardConfirmation(GuiGraphics graphics) {
         TerminalLayout.Rect content = layout.content();
-        graphics.fill(content.x(), content.y(), content.right(), content.bottom(), 0xB000070C);
-        TerminalTheme.renderPanel(graphics, modalBounds);
-        TerminalText.drawCentered(
+        graphics.fill(content.x(), content.y(), content.right(), content.bottom(), TerminalTheme.MODAL_DIM);
+        TerminalTheme.renderDialogPanel(graphics, modalBounds);
+        if (tunnelDisableTarget != null) {
+            TerminalText.drawDialogTitle(
+                    graphics,
+                    font,
+                    Component.translatable("omniresonance.terminal.tunnel.disable.title", tunnelDisableTarget.name()),
+                    modalBounds);
+            graphics.drawWordWrap(
+                    font,
+                    TerminalText.body(tunnelDisableMessage()),
+                    modalBounds.x() + 10,
+                    modalBounds.y() + 32,
+                    modalBounds.width() - 20,
+                    TerminalTheme.MUTED);
+            return;
+        }
+        TerminalText.drawDialogTitle(
                 graphics,
                 font,
                 Component.translatable(
                         pendingFilterSave == null
                                 ? "omniresonance.terminal.topology.discard.title"
                                 : "omniresonance.terminal.filters.save"),
-                modalBounds.x() + modalBounds.width() / 2,
-                modalBounds.y() + 12,
-                TerminalTheme.TEXT);
+                modalBounds);
         drawWrapped(
                 graphics,
                 pendingFilterSave != null && topologyState instanceof NetworkTerminalState.PresetEdit edit
@@ -2912,21 +3013,16 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
 
     private void renderConfirmation(GuiGraphics graphics) {
         TerminalLayout.Rect content = layout.content();
-        graphics.fill(content.x(), content.y(), content.right(), content.bottom(), 0xC000070C);
-        TerminalTheme.renderPanel(graphics, modalBounds);
-        graphics.drawString(
-                font,
-                Component.translatable("omniresonance.terminal.confirm.title"),
-                modalBounds.x() + 8,
-                modalBounds.y() + 8,
-                TerminalTheme.TEXT,
-                false);
+        graphics.fill(content.x(), content.y(), content.right(), content.bottom(), TerminalTheme.MODAL_DIM);
+        TerminalTheme.renderDialogPanel(graphics, modalBounds);
+        TerminalText.drawDialogTitle(
+                graphics, font, Component.translatable("omniresonance.terminal.confirm.title"), modalBounds);
         Component message = Component.translatable("omniresonance.terminal.confirm.message");
         drawWrapped(
                 graphics,
                 message,
                 modalBounds.x() + 8,
-                modalBounds.y() + 24,
+                modalBounds.y() + 34,
                 modalBounds.width() - 16,
                 TerminalTheme.MUTED,
                 2);
@@ -3042,14 +3138,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         if (minecraft != null && minecraft.screen == this) {
             rebuildWidgets();
         }
-    }
-
-    private static TerminalLayout.Rect centered(TerminalLayout.Rect parent, int width, int height) {
-        return new TerminalLayout.Rect(
-                parent.x() + Math.floorDiv(parent.width() - width, 2),
-                parent.y() + Math.floorDiv(parent.height() - height, 2),
-                width,
-                height);
     }
 
     private static int clampScroll(int value, int total, int visible) {

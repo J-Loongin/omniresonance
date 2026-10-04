@@ -31,6 +31,18 @@ final class Ae2InterfaceScreen extends Screen {
     private long next = 1, lastWrite = -1, ticks;
     private boolean ready, writing, closed;
     private List<Ae2InterfacePayloads.Choice> filtered = List.of();
+    private static final long RESPONSE_WAIT_TICKS = 400;
+    private @Nullable Awaiting awaiting;
+    private Feedback feedback = Feedback.ACTIVE;
+
+    private record Awaiting(long sequence, int action, long startedTick) {}
+
+    private enum Feedback {
+        ACTIVE,
+        UNAVAILABLE,
+        READ_TIMEOUT,
+        WRITE_TIMEOUT
+    }
 
     Ae2InterfaceScreen(Ae2InterfacePayloads.Frame first, BiPredicate<Integer, Integer> terminalKey) {
         this(first, terminalKey, request -> PacketDistributor.sendToServer(request));
@@ -52,25 +64,35 @@ final class Ae2InterfaceScreen extends Screen {
     }
 
     private void request(int action, @Nullable UUID network) {
-        if (closed) return;
+        if (closed || action != 3 && feedback != Feedback.ACTIVE) return;
+        if (action == 4 && awaiting != null) return;
         long seq = next++;
         if (action == 1 || action == 2) {
             lastWrite = seq;
             writing = true;
         }
+        if (action != 3) awaiting = new Awaiting(seq, action, ticks);
         sender.accept(new Ae2InterfacePayloads.Request(
                 session, seq, action, network, text("default_name").getString()));
         if (action == 1 || action == 2) rebuild();
     }
 
     void accept(Ae2InterfacePayloads.Frame frame) {
-        if (closed || !session.equals(frame.session()) || frame.sequence() < lastWrite) return;
+        if (closed || feedback != Feedback.ACTIVE || !session.equals(frame.session()) || frame.sequence() < lastWrite)
+            return;
+        if (awaiting != null && frame.sequence() == awaiting.sequence()) awaiting = null;
         boolean changed = !java.util.Objects.equals(selected, frame.selected())
                 || !status.equals(frame.status())
                 || !error.equals(frame.error());
         selected = frame.selected();
         status = frame.status();
         error = frame.error();
+        if (!error.isEmpty()) {
+            feedback = Feedback.UNAVAILABLE;
+            awaiting = null;
+            rebuild();
+            return;
+        }
         if (frame.sequence() == lastWrite) {
             writing = false;
             changed = true;
@@ -79,17 +101,20 @@ final class Ae2InterfaceScreen extends Screen {
             if (total < 0) total = frame.total();
             if (total != frame.total() || frame.entries().isEmpty() && frame.more()) {
                 error = "unavailable";
+                feedback = Feedback.UNAVAILABLE;
                 rebuild();
                 return;
             }
             for (var choice : frame.entries())
                 if (catalog.putIfAbsent(choice.id(), choice) != null) {
                     error = "unavailable";
+                    feedback = Feedback.UNAVAILABLE;
                     rebuild();
                     return;
                 }
             if (catalog.size() > total) {
                 error = "unavailable";
+                feedback = Feedback.UNAVAILABLE;
                 rebuild();
                 return;
             }
@@ -119,7 +144,7 @@ final class Ae2InterfaceScreen extends Screen {
     }
 
     private void toggleSearch() {
-        if (!ready || writing || !error.isEmpty()) return;
+        if (!canInteract()) return;
         search.toggle(ticks);
         scroll = 0;
         rebuild();
@@ -136,13 +161,15 @@ final class Ae2InterfaceScreen extends Screen {
         var header = TerminalHeaderLayout.atRightEdge(TerminalHeaderLayout.topBarContent(layout.window()), true);
         var button = addRenderableWidget(new TerminalSearchButton(
                 header.action(), search.expanded(), text("search"), ignored -> toggleSearch()));
-        button.active = ready && !writing && error.isEmpty();
+        button.active = canInteract();
         var c = layout.content();
         int top = c.y() + 34;
         if (search.expanded()) {
             var field = search.field(font, searchBounds(), text("search"), 256, v -> search.edit(v, ticks));
+            field.active = canInteract();
+            field.setEditable(canInteract());
             addRenderableWidget(field);
-            if (focused) setFocused(field);
+            if (focused && canInteract()) setFocused(field);
             top += 26;
         }
         listBounds = new TerminalLayout.Rect(c.x() + 4, top, c.width() - 8, Math.max(0, c.bottom() - top));
@@ -159,15 +186,14 @@ final class Ae2InterfaceScreen extends Screen {
             var choice = filtered.get(i);
             var label = Component.literal(choice.name());
             var row = new TerminalRowButton(
-                    listBounds.x(),
-                    top + (i - scroll) * 26,
-                    listBounds.width() - 8,
-                    20,
-                    label,
-                    ignored -> request(
-                            choice.id().equals(selected) ? 2 : 1, choice.id().equals(selected) ? null : choice.id()));
-            row.active = !writing && error.isEmpty();
-            row.setSelected(choice.id().equals(selected));
+                    listBounds.x(), top + (i - scroll) * 26, listBounds.width() - 8, 20, label, ignored -> {
+                        if (canInteract())
+                            request(
+                                    choice.id().equals(selected) ? 2 : 1,
+                                    choice.id().equals(selected) ? null : choice.id());
+                    });
+            row.active = canInteract();
+            row.setSelected(feedback == Feedback.ACTIVE && choice.id().equals(selected));
             row.setTooltip(Tooltip.create(TerminalText.body(label)));
             widgets.add(row);
         }
@@ -177,14 +203,12 @@ final class Ae2InterfaceScreen extends Screen {
     public void renderBackground(GuiGraphics g, int mx, int my, float partial) {
         g.fill(0, 0, width, height, TerminalTheme.WORLD_DIM);
         TerminalTheme.renderWindow(g, layout);
-        TerminalTheme.renderPanel(g, layout.content());
         var top = TerminalHeaderLayout.topBarContent(layout.window());
         var h = TerminalHeaderLayout.atRightEdge(top, true);
         var name = TerminalNetworkContext.layout(h.remaining(), false, false);
         TerminalText.drawHeaderTitle(
                 g, font, title.getString(), new TerminalLayout.Rect(top.x(), top.y(), name.x() - top.x() - 6, 20));
-        var current = selected == null ? null : catalog.get(selected);
-        String nameText = current == null ? text("unbound").getString() : current.name();
+        String nameText = bindingTitle().getString();
         TerminalText.drawNetworkLabel(
                 nameText,
                 name,
@@ -199,15 +223,15 @@ final class Ae2InterfaceScreen extends Screen {
                 c.y() + 4,
                 TerminalTheme.MUTED,
                 false);
-        String state = !error.isEmpty() ? "unavailable" : !ready ? "loading" : status;
+        String state = statusKey();
         g.drawString(
                 font,
                 TerminalText.ellipsize(font, text(state).getString(), c.width() - 12),
                 c.x() + 6,
                 c.y() + 19,
-                state.equals("conflict") || state.equals("unavailable") ? TerminalTheme.ERROR : TerminalTheme.MUTED,
+                feedback != Feedback.ACTIVE || state.equals("conflict") ? TerminalTheme.ERROR : TerminalTheme.MUTED,
                 false);
-        if (listBounds != null)
+        if (listBounds != null && ready)
             TerminalTheme.renderScrollbar(
                     g, listBounds.right() - 6, listBounds.y(), listBounds.height(), filtered.size(), visible, scroll);
     }
@@ -215,12 +239,39 @@ final class Ae2InterfaceScreen extends Screen {
     @Override
     public void tick() {
         ticks++;
+        if (feedback == Feedback.ACTIVE && awaiting != null && ticks - awaiting.startedTick() >= RESPONSE_WAIT_TICKS) {
+            feedback =
+                    awaiting.action() == 1 || awaiting.action() == 2 ? Feedback.WRITE_TIMEOUT : Feedback.READ_TIMEOUT;
+            awaiting = null;
+            rebuild();
+        }
         if (search.due(ticks)) {
             search.handled();
             scroll = 0;
             rebuild();
         }
-        if (ready && !writing && error.isEmpty() && ticks % 20 == 0) request(4, null);
+        if (canInteract() && ticks % 20 == 0) request(4, null);
+    }
+
+    private boolean canInteract() {
+        return ready && !writing && feedback == Feedback.ACTIVE && error.isEmpty();
+    }
+
+    String statusKey() {
+        return switch (feedback) {
+            case UNAVAILABLE -> "information_unavailable";
+            case READ_TIMEOUT -> "read_unconfirmed";
+            case WRITE_TIMEOUT -> "write_unconfirmed";
+            case ACTIVE -> writing ? "waiting_confirmation" : !ready ? "loading" : status;
+        };
+    }
+
+    Component bindingTitle() {
+        if (feedback == Feedback.WRITE_TIMEOUT) return text("binding_unconfirmed");
+        if (feedback != Feedback.ACTIVE) return text("binding_unavailable");
+        if (selected == null) return text("unbound");
+        var current = catalog.get(selected);
+        return current == null ? text("binding_loading") : Component.literal(current.name());
     }
 
     @Override
@@ -234,8 +285,7 @@ final class Ae2InterfaceScreen extends Screen {
                                 minecraft.options.keyInventory, getFocused(), key, scan)
                         || terminalKey.test(key, scan),
                 this::onClose,
-                () -> ClientSearchState.handleToggleKey(
-                        key, mods, ready && !writing && error.isEmpty(), this::toggleSearch))) return true;
+                () -> ClientSearchState.handleToggleKey(key, mods, canInteract(), this::toggleSearch))) return true;
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (search.close(ticks)) rebuild();
             else onClose();

@@ -5,7 +5,7 @@ package io.github.loongin.omniresonance.networking;
  * thread independent; initialization performs no registration, world access or mutation. SavedData and
  * individual object codec versions remain separate contracts. */
 public final class NetworkProtocol {
-    public static final String VERSION = "29";
+    public static final String VERSION = "30";
 
     private NetworkProtocol() {}
 }

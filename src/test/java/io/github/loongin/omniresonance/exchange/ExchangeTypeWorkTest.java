@@ -21,6 +21,110 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class ExchangeTypeWorkTest {
+    private static ExchangeAgreement exactAgreement(
+            long rate, long batch, net.minecraft.resources.ResourceLocation type) {
+        var original =
+                agreement(rate, io.github.loongin.omniresonance.exchange.fixtures.ExchangeFilters.allResources());
+        return new ExchangeAgreement(
+                original.id(),
+                original.consent(),
+                new ExchangeTerms(
+                        ResourceScope.all(),
+                        FilterMode.WHITELIST,
+                        original.terms().filter(),
+                        ExchangeTerms.DEFAULT_RATE,
+                        Map.of(),
+                        5,
+                        Map.of(
+                                type,
+                                new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.InputOverride(
+                                        rate,
+                                        io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.BatchMode.EXACT,
+                                        batch))));
+    }
+
+    @Test
+    void exactBatchRoundsTheWindowAndTargetCapacityBeforeMoving() {
+        var env = new Environment(1000);
+        try (var work = new ExchangeTypeWork(
+                exactAgreement(130, 64, ResourceTypes.ENERGY),
+                ResourceTypes.ENERGY,
+                new DomainTransferWindow(),
+                env,
+                TAGS)) {
+            assertEquals(128, work.step(0, 100, budget(), -1).moved());
+            assertEquals(872, env.source.amount(KEY));
+            assertEquals(128, env.target.amount(KEY));
+        }
+        var full = new Environment(1000);
+        try (var deposit =
+                full.target.reserveDeposit(KEY, Long.MAX_VALUE - 31, -1).orElseThrow()) {
+            deposit.commit(Long.MAX_VALUE - 31);
+        }
+        try (var work = new ExchangeTypeWork(
+                exactAgreement(130, 64, ResourceTypes.ENERGY),
+                ResourceTypes.ENERGY,
+                new DomainTransferWindow(),
+                full,
+                TAGS)) {
+            assertEquals(0, work.step(0, 100, budget(), -1).moved());
+            assertEquals(1000, full.source.amount(KEY));
+            assertEquals(Long.MAX_VALUE - 31, full.target.amount(KEY));
+        }
+    }
+
+    @Test
+    void exactBatchCannotCombineDifferentVariantsOrAccumulatePartialWindows() {
+        var env = new Environment(1);
+        var first = item(env, "minecraft:stone");
+        var second = item(env, "minecraft:dirt");
+        try (var work = new ExchangeTypeWork(
+                exactAgreement(64, 16, ResourceTypes.ITEM),
+                ResourceTypes.ITEM,
+                new DomainTransferWindow(),
+                env,
+                TAGS)) {
+            assertEquals(0, work.step(0, 100, budget(), -1).moved());
+            assertEquals(0, work.step(5, 100, budget(), -1).moved());
+            assertEquals(10, env.source.amount(first));
+            assertEquals(10, env.source.amount(second));
+            assertEquals(0, env.target.amount(first));
+            assertEquals(0, env.target.amount(second));
+        }
+    }
+
+    @Test
+    void subBatchRateNeverAccumulatesAcrossWindowsAndSmallBudgetsResumeWholeBatches() {
+        var tooSmall = new Environment(1000);
+        try (var work = new ExchangeTypeWork(
+                exactAgreement(3, 4, ResourceTypes.ENERGY),
+                ResourceTypes.ENERGY,
+                new DomainTransferWindow(),
+                tooSmall,
+                TAGS)) {
+            for (int tick = 0; tick < 30; tick += 5)
+                assertEquals(0, work.step(tick, 100, budget(), -1).moved());
+            assertEquals(1000, tooSmall.source.amount(KEY));
+            assertEquals(0, tooSmall.target.amount(KEY));
+        }
+        var resumed = new Environment(1000);
+        try (var work = new ExchangeTypeWork(
+                exactAgreement(130, 64, ResourceTypes.ENERGY),
+                ResourceTypes.ENERGY,
+                new DomainTransferWindow(),
+                resumed,
+                TAGS)) {
+            for (int step = 0; step < 100; step++) {
+                var progress = work.step(0, 1, budget(), -1);
+                assertTrue(progress.used() <= 1);
+                assertEquals(0, progress.moved() % 64);
+            }
+            assertEquals(128, resumed.target.amount(KEY));
+            assertEquals(0, work.step(4, 100, budget(), -1).moved());
+            assertEquals(128, work.step(5, 100, budget(), -1).moved());
+        }
+    }
+
     private static final ResourceVariantKey KEY = EnergyVariant.INSTANCE.key();
     private static final ResourceFilterCompiler.Tags TAGS =
             (type, tag) -> ResourceFilterCompiler.TagSnapshot.missing(0);

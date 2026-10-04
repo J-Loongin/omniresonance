@@ -6,41 +6,31 @@ import io.github.loongin.omniresonance.transfer.ResourceTransferPolicy;
 import net.minecraft.resources.ResourceLocation;
 
 /** Detached local dialog; validates all values before applying to its owning unsaved configuration. */
-final class NodeResourceSettingEditor {
+final class NodeResourceSettingEditor extends ResourceParameterDraft {
     final NodeResourcePolicyDraft owner;
-    final ResourceLocation id;
     final TransferDirection direction;
     final boolean unavailable;
-    private final String originalRate;
-    private final String originalBatch;
-    private final ResourceTransferPolicy.BatchMode originalMode;
-    String rate;
-    String batch;
-    ResourceTransferPolicy.BatchMode mode;
-    boolean invalid;
 
     NodeResourceSettingEditor(NodeResourcePolicyDraft owner, ResourceLocation id) {
-        if (!owner.hasSetting(id)) throw new IllegalArgumentException("No resource setting");
+        super(
+                id,
+                initialRate(owner, id),
+                owner.unavailable(id) ? "" : owner.type(id).batch,
+                owner.unavailable(id) ? ResourceTransferPolicy.BatchMode.GREEDY : owner.type(id).batchMode);
         this.owner = owner;
-        this.id = id;
         direction = owner.direction;
         unavailable = owner.unavailable(id);
-        rate = unavailable ? "" : owner.type(id).rate;
-        batch = unavailable ? "" : owner.type(id).batch;
-        mode = unavailable ? ResourceTransferPolicy.BatchMode.GREEDY : owner.type(id).batchMode;
-        originalRate = rate;
-        originalBatch = batch;
-        originalMode = mode;
     }
 
-    boolean dirty() {
-        return !rate.equals(originalRate) || !batch.equals(originalBatch) || mode != originalMode;
+    private static String initialRate(NodeResourcePolicyDraft owner, ResourceLocation id) {
+        if (!owner.hasSetting(id)) throw new IllegalArgumentException("No resource setting");
+        return owner.unavailable(id) ? "" : owner.type(id).rate;
     }
 
     void apply() {
         if (unavailable || owner.direction != direction || !owner.hasSetting(id))
             throw new IllegalStateException("Resource setting is unavailable or changed");
-        long parsedRate = Long.parseLong(rate.trim());
+        long parsedRate = parsedRate();
         ResourceTransferPolicy.TypeOverride value = direction == TransferDirection.INPUT
                 ? new ResourceTransferPolicy.InputOverride(parsedRate, mode, Long.parseLong(batch.trim()))
                 : new ResourceTransferPolicy.OutputOverride(parsedRate);

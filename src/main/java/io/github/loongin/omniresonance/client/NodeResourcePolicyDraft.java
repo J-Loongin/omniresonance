@@ -142,7 +142,7 @@ final class NodeResourcePolicyDraft {
         }
     }
 
-    boolean dirtyIncluding(@Nullable NodeResourceScopeDraft overlay) {
+    boolean dirtyIncluding(@Nullable ResourceScopeSelectionDraft overlay) {
         return dirty() || overlay != null && overlay.dirty();
     }
 
@@ -218,11 +218,13 @@ final class NodeResourcePolicyDraft {
         if (changed) rebuildOrder();
     }
 
-    NodeResourceScopeDraft openScope() {
-        return new NodeResourceScopeDraft(this, scope, catalog, retainedMissing);
+    ResourceScopeSelectionDraft openScope() {
+        var supported = new ArrayList<ResourceLocation>();
+        for (var descriptor : catalog.entries()) supported.add(descriptor.typeId());
+        return new ResourceScopeSelectionDraft(this, scope, supported, retainedMissing);
     }
 
-    int removedOverrideCount(NodeResourceScopeDraft selection) {
+    int removedOverrideCount(ResourceScopeSelectionDraft selection) {
         selection.requireOwner(this);
         selection.selection();
         int count = 0;
@@ -230,7 +232,7 @@ final class NodeResourcePolicyDraft {
         return count;
     }
 
-    void applyScope(NodeResourceScopeDraft selection, boolean confirmedRemoval) {
+    void applyScope(ResourceScopeSelectionDraft selection, boolean confirmedRemoval) {
         selection.requireOwner(this);
         ResourcePolicyEdit.Scope next = selection.selection();
         if (removedOverrideCount(selection) > 0 && !confirmedRemoval)

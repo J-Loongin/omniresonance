@@ -5,13 +5,8 @@ import io.github.loongin.omniresonance.networking.NetworkPayloads;
 import io.github.loongin.omniresonance.networking.NodeHighlightFrame;
 import io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.LevelRenderer;
-import net.minecraft.client.renderer.RenderType;
-import net.minecraft.client.renderer.blockentity.BeaconRenderer;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
-import net.minecraft.world.phys.AABB;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
@@ -23,9 +18,19 @@ import org.jetbrains.annotations.Nullable;
 final class NodeHighlightClient {
     private @Nullable NodeHighlightFrame current;
     private int remainingTicks;
+    private final HighlightColourCycle colours = new HighlightColourCycle();
+    private final NodeHighlightRenderer renderer = new NodeHighlightRenderer();
+    private int beamColour = 0xE8A1AF;
 
     NodeHighlightClient() {
         NetworkPayloads.installHighlightReceiver(frame -> {
+            if (frame.durationTicks() > 0) {
+                boolean continuation = current != null
+                        && remainingTicks > 0
+                        && current.node().equals(frame.node())
+                        && current.position().equals(frame.position());
+                beamColour = colours.begin(continuation);
+            }
             current = frame.durationTicks() == 0 ? null : frame;
             remainingTicks = frame.durationTicks();
         });
@@ -42,6 +47,7 @@ final class NodeHighlightClient {
     private void logout(ClientPlayerNetworkEvent.LoggingOut event) {
         current = null;
         remainingTicks = 0;
+        colours.reset();
     }
 
     private boolean loaded(Minecraft mc) {
@@ -71,22 +77,23 @@ final class NodeHighlightClient {
         pose.pushPose();
         try {
             pose.translate(p.getX() - camera.x, p.getY() - camera.y, p.getZ() - camera.z);
-            var shape = mc.level.getBlockState(p).getShape(mc.level, p);
-            var lines = buffers.getBuffer(RenderType.lines());
-            shape.forAllBoxes((x0, y0, z0, x1, y1, z1) -> LevelRenderer.renderLineBox(
-                    pose, lines, new AABB(x0, y0, z0, x1, y1, z1).inflate(0.003), 0.3f, 0.9f, 0.9f, 1f));
-            BeaconRenderer.renderBeaconBeam(
+            var state = mc.level.getBlockState(p);
+            var shape = state.getShape(mc.level, p);
+            if (shape.isEmpty()) return;
+            var bounds = shape.bounds().inflate(0.002);
+            var exposed = state.getBlock() instanceof io.github.loongin.omniresonance.node.ResonanceTransferPanelBlock
+                    ? state.getValue(io.github.loongin.omniresonance.node.AbstractResonanceNodeBlock.FACING)
+                            .getOpposite()
+                    : null;
+            renderer.render(
                     pose,
                     buffers,
-                    ResourceLocation.withDefaultNamespace("textures/entity/beacon_beam.png"),
-                    event.getPartialTick().getGameTimeDeltaPartialTick(false),
-                    1f,
-                    mc.level.getGameTime(),
-                    0,
-                    Math.max(1, mc.level.getMaxBuildHeight() - p.getY()),
-                    0xFF4CE5E5,
-                    0.08f,
-                    0.12f);
+                    bounds,
+                    exposed,
+                    mc.level.getGameTime() + event.getPartialTick().getGameTimeDeltaPartialTick(false),
+                    beamColour,
+                    Math.max(1, mc.level.getMaxBuildHeight() - p.getY() - bounds.maxY),
+                    event.getCamera().getYRot());
         } finally {
             pose.popPose();
         }
@@ -118,7 +125,6 @@ final class NodeHighlightClient {
                 graphics.guiWidth() / 2,
                 12,
                 TerminalTheme.TEXT);
-        graphics.drawCenteredString(
-                font, TerminalText.body(location), graphics.guiWidth() / 2, 24, TerminalTheme.ACCENT);
+        graphics.drawCenteredString(font, TerminalText.body(location), graphics.guiWidth() / 2, 24, 0xFF66E5F1);
     }
 }

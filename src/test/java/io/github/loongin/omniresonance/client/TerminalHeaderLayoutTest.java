@@ -10,9 +10,22 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 final class TerminalHeaderLayoutTest {
     @Test
-    void topBarStartsAtTheWindowInsetWithoutReservingABackButton() {
+    void remoteNodeNamesUseTheRightNetworkAnchorWithoutPhysicalSwitchReservations() {
+        var header = TerminalHeaderLayout.atRightEdge(
+                TerminalHeaderLayout.topBarContent(
+                        TerminalLayout.terminal(640, 360).window()),
+                true);
+        var names = TerminalHeaderLayout.remoteNodeNames(header.remaining());
+        assertEquals(header.remaining().right(), names.network().right());
+        assertEquals(110, names.network().width());
+        assertEquals(6, names.network().x() - names.node().right());
+        assertTrue(names.node().width() > 180);
+    }
+
+    @Test
+    void topBarReservesOnlyTheStaticTitleMarkAtTheLeft() {
         TerminalLayout.Rect window = new TerminalLayout.Rect(8, 12, 304, 216);
-        assertEquals(new TerminalLayout.Rect(12, 16, 296, 20), TerminalHeaderLayout.topBarContent(window));
+        assertEquals(new TerminalLayout.Rect(28, 16, 280, 20), TerminalHeaderLayout.topBarContent(window));
     }
 
     @Test

@@ -3,7 +3,6 @@ package io.github.loongin.omniresonance.material;
 
 import io.github.loongin.omniresonance.registry.ModBlocks;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
@@ -70,15 +69,5 @@ public final class DragonBreathPlayerInteraction {
 
     static void feedback(ServerLevel level, BlockPos pos) {
         level.playSound(null, pos, SoundEvents.AMETHYST_BLOCK_CHIME, SoundSource.BLOCKS, 1.0F, 1.0F);
-        level.sendParticles(
-                ParticleTypes.DRAGON_BREATH,
-                pos.getX() + 0.5,
-                pos.getY() + 0.7,
-                pos.getZ() + 0.5,
-                6,
-                0.25,
-                0.25,
-                0.25,
-                0.01);
     }
 }

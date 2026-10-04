@@ -10,42 +10,49 @@ import net.minecraft.network.chat.Component;
 final class TerminalButton extends TerminalClickButton {
     private final boolean primary;
     private boolean selected;
+    private boolean danger;
 
     TerminalButton(int x, int y, int width, int height, Component message, OnPress onPress, boolean primary) {
         super(x, y, width, height, TerminalText.body(message), onPress);
         this.primary = primary;
+        if (message.getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents text) {
+            String key = text.getKey();
+            danger = key.contains(".delete")
+                    || key.contains(".discard")
+                    || key.contains(".terminate")
+                    || key.contains(".unpair")
+                    || key.contains(".pair_close")
+                    || key.contains(".revoke")
+                    || key.contains(".remove")
+                    || key.endsWith(".binding.exit")
+                    || key.endsWith(".disable");
+        }
     }
 
     void setSelected(boolean selected) {
         this.selected = selected;
     }
 
+    void setDanger(boolean danger) {
+        this.danger = danger;
+    }
+
     @Override
     protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        int border = active && (selected || isHoveredOrFocused()) ? TerminalTheme.FRAME_LINE : TerminalTheme.LINE;
-        int background;
-        if (!active) {
-            background = TerminalTheme.RAISED_DISABLED;
-        } else if (selected || isHoveredOrFocused()) {
-            background = primary ? TerminalTheme.ACCENT_SOFT : TerminalTheme.RAISED_HOVERED;
-        } else {
-            background = TerminalTheme.RAISED;
-        }
-        TerminalTheme.fillRounded(
-                graphics, getX(), getY(), getWidth(), getHeight(), TerminalTheme.BUTTON_RADIUS, border);
-        TerminalTheme.fillRounded(
-                graphics,
-                getX() + 1,
-                getY() + 1,
-                Math.max(0, getWidth() - 2),
-                Math.max(0, getHeight() - 2),
-                Math.max(0, TerminalTheme.BUTTON_RADIUS - 1),
-                background);
-        int color = active ? TerminalTheme.TEXT : TerminalTheme.MUTED;
+        var style = TerminalTheme.controlStyle(active, isHovered, isFocused(), selected, primary, danger);
+        TerminalTheme.renderControl(graphics, new TerminalLayout.Rect(getX(), getY(), getWidth(), getHeight()), style);
+        int color = style.text();
         Font font = TerminalText.font(Minecraft.getInstance());
+        Component shown = getMessage();
+        int shownWidth = font.width(shown);
+        int available = Math.max(0, getWidth() - 8);
+        if (shownWidth > available) {
+            shown = TerminalText.body(Component.literal(TerminalText.ellipsize(font, shown.getString(), available)));
+            shownWidth = font.width(shown);
+        }
         TerminalText.drawControlText(
-                getMessage(),
-                font.width(getMessage()),
+                shown,
+                shownWidth,
                 new TerminalLayout.Rect(getX(), getY(), getWidth(), getHeight()),
                 color,
                 (text, x, y, tint, shadow) -> graphics.drawString(font, text, x, y, tint, shadow));

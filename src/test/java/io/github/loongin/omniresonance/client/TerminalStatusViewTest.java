@@ -19,6 +19,41 @@ import org.junit.jupiter.api.Test;
 
 class TerminalStatusViewTest {
     @Test
+    void everyDiagnosticParameterHasASeparateDividerAndRevocationRemovesThem() {
+        UUID session = new UUID(1, 1), network = new UUID(2, 2), owner = new UUID(3, 3);
+        var view = new TerminalStatusView(session, network, 2, ignored -> {});
+        var widgets = new ArrayList<AbstractWidget>();
+        var font =
+                new Font(
+                        id -> {
+                            throw new AssertionError("No rendering");
+                        },
+                        false) {
+                    @Override
+                    public List<FormattedCharSequence> split(FormattedText text, int width) {
+                        return List.of(Component.literal(text.getString()).getVisualOrderText());
+                    }
+                };
+        view.build(font, new TerminalLayout.Rect(20, 40, 364, 186), widgets::add);
+        var snapshot = new NetworkDiagnosticsSnapshot(
+                network, owner, 20, 1, 2, 3, 1, "not_loaded", -1, 0, 0, 0, 0, 0, 25, 500);
+        view.accept(new NetworkStatusFrame(session, 2, 1, snapshot, "test"));
+        ((TerminalButton) widgets.get(1)).onPress();
+        long parameters = TerminalStatusPresentation.details(snapshot).stream()
+                .filter(row -> !row.section())
+                .count();
+        assertEquals(parameters, view.parameterDividers().size());
+        int last = -1;
+        for (var line : view.parameterDividers()) {
+            assertEquals(1, line.height());
+            assertTrue(line.y() > last);
+            last = line.y();
+        }
+        view.accept(new NetworkStatusFrame(session, 2, 2, null, "test"));
+        assertTrue(view.parameterDividers().isEmpty());
+    }
+
+    @Test
     void copyUsesOnlyTheCurrentAuthorizedFrameAndRevocationDropsItsData() {
         UUID session = new UUID(1, 1), network = new UUID(2, 2), owner = new UUID(3, 3);
         var copied = new ArrayList<String>();

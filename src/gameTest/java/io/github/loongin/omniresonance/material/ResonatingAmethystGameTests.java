@@ -30,6 +30,29 @@ public final class ResonatingAmethystGameTests {
 
     private ResonatingAmethystGameTests() {}
 
+    /** Sends only validated visual activity while leaving the authoritative saved progress unchanged. */
+    @GameTest(template = "bootstrap")
+    public static void visualUpdateContainsOnlyValidatedActivity(GameTestHelper helper) {
+        ResonatingAmethystBlockEntity entity = placeEntity(helper);
+        entity.initialize(new ResonanceProgress(17, helper.getLevel().getGameTime() + 100));
+        var registries = helper.getLevel().registryAccess();
+        CompoundTag before = entity.saveCustomOnly(registries);
+        CompoundTag visual = entity.getUpdateTag(registries);
+        helper.assertTrue(visual.getBoolean("visual_resonating"), "Valid process has no active visual flag");
+        helper.assertTrue(
+                visual.getAllKeys().equals(java.util.Set.of("visual_resonating")),
+                "Visual update leaked quantity, deadline or persistence fields");
+        helper.assertTrue(entity.getUpdatePacket() != null, "Visual state has no vanilla update packet");
+        helper.assertTrue(before.equals(entity.saveCustomOnly(registries)), "Visual reading changed saved progress");
+        CompoundTag malformed = new CompoundTag();
+        malformed.putInt("schema_version", 2);
+        entity.loadCustomOnly(malformed, registries);
+        helper.assertTrue(
+                !entity.getUpdateTag(registries).getBoolean("visual_resonating"),
+                "Unavailable state advertises a running process");
+        helper.succeed();
+    }
+
     /** Verifies the internal world state cannot leak as an item or active ticker. */
     @GameTest(template = "bootstrap")
     public static void internalBlockHasStableIdentityAndNoObtainableForm(GameTestHelper helper) {

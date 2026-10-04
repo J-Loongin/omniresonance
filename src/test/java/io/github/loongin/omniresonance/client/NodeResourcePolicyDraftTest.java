@@ -38,6 +38,42 @@ class NodeResourcePolicyDraftTest {
     }
 
     @Test
+    void choosingAllRestoresEverySupportedChoiceAndKeepsTheAllMode() {
+        var draft = new NodeResourcePolicyDraft(input(), null, catalog());
+        var scope = draft.openScope();
+        scope.toggle(ResourceTypes.FLUID);
+        scope.toggle(ResourceTypes.ENERGY);
+        assertEquals(1, scope.selectedCount());
+        scope.all();
+        assertEquals(ResourceScope.Kind.ALL, scope.kind());
+        assertEquals(3, scope.selectedCount());
+        for (var descriptor : catalog().entries()) assertTrue(scope.selected(descriptor.typeId()));
+        assertTrue(scope.selection().ids().isEmpty());
+        assertFalse(draft.dirtyIncluding(scope));
+        scope.toggle(ResourceTypes.FLUID);
+        assertEquals(ResourceScope.Kind.CUSTOM_SET, scope.kind());
+        assertEquals(2, scope.selectedCount());
+        assertFalse(scope.selected(ResourceTypes.FLUID));
+    }
+
+    @Test
+    void choosingAllKeepsRetainedMissingOverridesWithoutSelectingAnUnavailableType() {
+        var missing = ResourceLocation.parse("missing:steam");
+        var stored = new StoredResourcePolicy(
+                ResourceTransferPolicy.defaults(TransferDirection.INPUT),
+                Map.of(missing, new StoredResourcePolicy.RawOverride(12, ResourceTransferPolicy.BatchMode.EXACT, 4L)));
+        var draft = new NodeResourcePolicyDraft(ResourcePolicyEdit.fromStored(stored), null, catalog());
+        var scope = draft.openScope();
+        scope.toggle(ResourceTypes.ITEM);
+        scope.all();
+        assertFalse(scope.selected(missing));
+        draft.applyScope(scope, true);
+        assertTrue(draft.settingIds().contains(missing));
+        assertEquals(ResourceScope.Kind.ALL, draft.edit().scope().kind());
+        assertTrue(draft.edit().retainedMissingIds().contains(missing));
+    }
+
+    @Test
     void scopeCancelIsDetachedButWholeCloseSeesUnappliedChanges() {
         var draft = new NodeResourcePolicyDraft(input(), null, catalog());
         var scope = draft.openScope();

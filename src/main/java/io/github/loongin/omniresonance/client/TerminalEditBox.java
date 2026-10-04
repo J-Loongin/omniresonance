@@ -16,7 +16,7 @@ class TerminalEditBox extends EditBox {
         setBordered(false);
         setTextShadow(false);
         setTextColor(TerminalTheme.TEXT);
-        setTextColorUneditable(TerminalTheme.MUTED);
+        setTextColorUneditable(TerminalTheme.DISABLED_TEXT);
     }
 
     boolean ownsKey(int keyCode) {
@@ -53,27 +53,18 @@ class TerminalEditBox extends EditBox {
         if (!isVisible()) {
             return;
         }
-        TerminalTheme.fillRounded(
+        TerminalTheme.renderSurface(
                 graphics,
-                getX(),
-                getY(),
-                getWidth(),
-                getHeight(),
+                new TerminalLayout.Rect(getX(), getY(), getWidth(), getHeight()),
                 TerminalTheme.BUTTON_RADIUS,
-                isFocused() ? TerminalTheme.FRAME_LINE : TerminalTheme.LINE);
-        TerminalTheme.fillRounded(
-                graphics,
-                getX() + 1,
-                getY() + 1,
-                Math.max(0, getWidth() - 2),
-                Math.max(0, getHeight() - 2),
-                TerminalTheme.BUTTON_RADIUS - 1,
-                TerminalTheme.WINDOW_BOTTOM);
+                TerminalTheme.INPUT,
+                active && isFocused() ? TerminalTheme.ACCENT : TerminalTheme.LINE);
         graphics.enableScissor(
                 getX() + INSET, getY() + 1, Math.max(getX() + INSET, getRight() - INSET), getBottom() - 1);
         graphics.pose().pushPose();
         try {
             graphics.pose().translate(INSET, Math.max(0, (getHeight() - 8) / 2), 0);
+            setTextColor(active ? TerminalTheme.TEXT : TerminalTheme.DISABLED_TEXT);
             super.renderWidget(graphics, mouseX, mouseY, partialTick);
         } finally {
             graphics.pose().popPose();

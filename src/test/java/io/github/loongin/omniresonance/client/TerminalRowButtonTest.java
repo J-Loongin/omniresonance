@@ -39,7 +39,7 @@ final class TerminalRowButtonTest {
         assertEquals(1, actions[0]);
 
         row.active = false;
-        assertEquals(TerminalTheme.MUTED, row.textColor());
+        assertEquals(TerminalTheme.DISABLED_TEXT, row.textColor());
         assertFalse(row.highlighted());
         assertFalse(row.mouseClicked(30, 30, GLFW.GLFW_MOUSE_BUTTON_LEFT));
         assertEquals(1, actions[0]);

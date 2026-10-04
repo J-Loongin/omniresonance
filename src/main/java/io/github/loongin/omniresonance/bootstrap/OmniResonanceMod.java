@@ -14,6 +14,7 @@ import io.github.loongin.omniresonance.registry.ModBlocks;
 import io.github.loongin.omniresonance.registry.ModCreativeTabs;
 import io.github.loongin.omniresonance.registry.ModItems;
 import io.github.loongin.omniresonance.registry.ModMenus;
+import io.github.loongin.omniresonance.registry.ModParticles;
 import io.github.loongin.omniresonance.registry.ModSounds;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.IEventBus;
@@ -47,6 +48,7 @@ public final class OmniResonanceMod {
         ModBlockEntities.register(modBus);
         ModMenus.register(modBus);
         ModSounds.register(modBus);
+        ModParticles.register(modBus);
         if (net.neoforged.fml.ModList.get().isLoaded("ae2"))
             io.github.loongin.omniresonance.compat.ae2.Ae2Compat.register(modBus);
         if (net.neoforged.fml.ModList.get().isLoaded("industrialforegoingsouls"))

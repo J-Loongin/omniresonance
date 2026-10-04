@@ -17,6 +17,48 @@ import net.minecraft.network.FriendlyByteBuf;
 import org.junit.jupiter.api.Test;
 
 class ExchangeIntentCodecTest {
+    @Test
+    void malformedBatchModeAndNonpositiveBatchCannotProduceAuthorityDrafts() {
+        for (long size : new long[] {0, -1, 64}) {
+            var buffer = new FriendlyByteBuf(Unpooled.buffer());
+            try {
+                buffer.writeByte(4)
+                        .writeUtf(ExchangeInvitationCode.encode(ID), 22)
+                        .writeByte(2)
+                        .writeByte(0)
+                        .writeByte(0)
+                        .writeByte(0)
+                        .writeLong(64)
+                        .writeInt(1)
+                        .writeVarInt(1)
+                        .writeUtf(ResourceTypes.ITEM.toString(), 128)
+                        .writeLong(64)
+                        .writeByte(size == 64 ? 2 : 1)
+                        .writeLong(size);
+                assertThrows(IllegalArgumentException.class, () -> ExchangeIntentCodec.decode(buffer));
+            } finally {
+                buffer.release();
+            }
+        }
+    }
+
+    @Test
+    void exactBatchDraftSurvivesTheActualManagementIntentCodec() {
+        var parameters = Map.of(
+                ResourceTypes.FLUID,
+                new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.InputOverride(
+                        1001, io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.BatchMode.EXACT, 500));
+        var complete = new ExchangeTermsDraft(
+                ResourceScope.all(),
+                FilterMode.WHITELIST,
+                new ExchangeTermsDraft.None(),
+                io.github.loongin.omniresonance.exchange.ExchangeTerms.DEFAULT_RATE,
+                Map.of(),
+                1,
+                parameters);
+        roundTrip(new ExchangeIntent.Revise(ID, 7, complete));
+    }
+
     private static final UUID ID = new UUID(1, 1);
 
     private static ExchangeTermsDraft draft(ExchangeTermsDraft.FilterChoice filter) {
@@ -59,12 +101,14 @@ class ExchangeIntentCodecTest {
         try {
             buffer.writeByte(4)
                     .writeUtf(ExchangeInvitationCode.encode(ID), 22)
+                    .writeByte(2)
                     .writeByte(1)
                     .writeVarInt(262145);
             assertThrows(IllegalArgumentException.class, () -> ExchangeIntentCodec.decode(buffer));
             buffer.clear();
             buffer.writeByte(4)
                     .writeUtf(ExchangeInvitationCode.encode(ID), 22)
+                    .writeByte(2)
                     .writeByte(0)
                     .writeByte(0)
                     .writeByte(0)
@@ -72,7 +116,10 @@ class ExchangeIntentCodecTest {
                     .writeInt(1)
                     .writeVarInt(2);
             for (int i = 0; i < 2; i++)
-                buffer.writeUtf(ResourceTypes.ITEM.toString(), 128).writeLong(7);
+                buffer.writeUtf(ResourceTypes.ITEM.toString(), 128)
+                        .writeLong(7)
+                        .writeByte(0)
+                        .writeLong(64);
             assertThrows(IllegalArgumentException.class, () -> ExchangeIntentCodec.decode(buffer));
             buffer.clear();
             ExchangeIntentCodec.encode(

@@ -36,9 +36,9 @@ final class OmniAeInterfaceData implements DataProvider {
         var tasks = new ArrayList<CompletableFuture<?>>();
         String name = "ae_domain_interface";
         var model = object("parent", "minecraft:block/block");
-        var textures = object("particle", "omniresonance:block/resonance_transfer_node_top");
-        textures.addProperty("case", "omniresonance:block/resonance_transfer_node_top");
-        textures.addProperty("port", "minecraft:block/white_concrete");
+        var textures = object("particle", "omniresonance:block/ae_domain_interface_case");
+        textures.addProperty("case", "omniresonance:block/ae_domain_interface_case");
+        textures.addProperty("port", "omniresonance:block/ae_domain_interface_port");
         model.add("textures", textures);
         var elements = new JsonArray();
         var cube = new JsonObject();
@@ -60,6 +60,12 @@ final class OmniAeInterfaceData implements DataProvider {
             port.add("to", vector(to[i][0], to[i][1], to[i][2]));
             var visible = new JsonObject();
             var face = object("texture", "#port");
+            var uv = new JsonArray();
+            uv.add(0);
+            uv.add(0);
+            uv.add(16);
+            uv.add(16);
+            face.add("uv", uv);
             face.addProperty("tintindex", 0);
             visible.add(directions[i], face);
             port.add("faces", visible);

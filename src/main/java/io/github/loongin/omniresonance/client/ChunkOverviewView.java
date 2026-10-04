@@ -239,7 +239,6 @@ final class ChunkOverviewView implements AutoCloseable {
     }
 
     void render(GuiGraphics graphics, Font font) {
-        TerminalTheme.renderPanel(graphics, body);
         if (page == null || !page.available()) {
             if (page != null || TerminalInteractionPolicy.loadingVisible(loadingTicks))
                 graphics.drawString(

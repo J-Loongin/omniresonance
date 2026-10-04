@@ -9,6 +9,8 @@ import io.github.loongin.omniresonance.exchange.ExchangeTerms;
 import io.github.loongin.omniresonance.filter.FilterMode;
 import io.github.loongin.omniresonance.filter.ResourceFilterPreset;
 import io.github.loongin.omniresonance.transfer.ResourceScope;
+import io.github.loongin.omniresonance.transfer.ResourceTransferPolicy;
+import io.github.loongin.omniresonance.transfer.ResourceTypes;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -177,6 +179,11 @@ public final class ExchangeStateNbt {
             CompoundTag row = new CompoundTag();
             row.putString("type", type.toString());
             row.putLong("rate", terms.rate(type));
+            var parameter = terms.resourceParameters().get(type);
+            row.putString(
+                    "batch_mode",
+                    parameter.batchMode() == ResourceTransferPolicy.BatchMode.GREEDY ? "greedy" : "exact");
+            row.putLong("batch_size", parameter.batchSize());
             rates.add(row);
         });
         body.put("rates", rates);
@@ -187,6 +194,14 @@ public final class ExchangeStateNbt {
 
     /** Pure strict restoration of complete terms, including unknown registered-type identities without dropping them. */
     public static ExchangeAgreement decodeAgreement(CompoundTag tag) {
+        return decodeAgreement(tag, false);
+    }
+
+    static ExchangeAgreement decodeLegacyAgreement(CompoundTag tag) {
+        return decodeAgreement(tag, true);
+    }
+
+    private static ExchangeAgreement decodeAgreement(CompoundTag tag, boolean legacy) {
         fields(tag, "id", "consent", "terms");
         ManagedObjectNbtSize.validate(tag);
         CompoundTag body = compound(tag, "terms");
@@ -214,13 +229,29 @@ public final class ExchangeStateNbt {
                     case "blacklist" -> FilterMode.BLACKLIST;
                     default -> throw new IllegalArgumentException("Unknown exchange filter mode");
                 };
-        Map<ResourceLocation, Long> rates = new HashMap<>();
+        Map<ResourceLocation, ResourceTransferPolicy.InputOverride> parameters = new HashMap<>();
         for (Tag value : list(body, "rates", Tag.TAG_COMPOUND)) {
             CompoundTag row = (CompoundTag) value;
-            fields(row, "type", "rate");
             ManagedDataNbt.requireType(row, "type", Tag.TAG_STRING);
-            if (rates.putIfAbsent(typeId(row.getString("type")), number(row, "rate")) != null)
-                throw new IllegalArgumentException("Duplicate exchange rate");
+            var type = typeId(row.getString("type"));
+            ResourceTransferPolicy.BatchMode batchMode;
+            long batchSize;
+            if (legacy && row.getAllKeys().equals(Set.of("type", "rate"))) {
+                batchMode = ResourceTransferPolicy.BatchMode.GREEDY;
+                batchSize = ResourceTypes.defaultExactBatchSize(type);
+            } else {
+                fields(row, "type", "rate", "batch_mode", "batch_size");
+                ManagedDataNbt.requireType(row, "batch_mode", Tag.TAG_STRING);
+                batchMode = switch (row.getString("batch_mode")) {
+                    case "greedy" -> ResourceTransferPolicy.BatchMode.GREEDY;
+                    case "exact" -> ResourceTransferPolicy.BatchMode.EXACT;
+                    default -> throw new IllegalArgumentException("Unknown exchange batch mode");
+                };
+                batchSize = number(row, "batch_size");
+            }
+            if (parameters.putIfAbsent(
+                            type, new ResourceTransferPolicy.InputOverride(number(row, "rate"), batchMode, batchSize))
+                    != null) throw new IllegalArgumentException("Duplicate exchange rate");
         }
         ManagedDataNbt.requireType(body, "interval_ticks", Tag.TAG_INT);
         ExchangeTerms terms = new ExchangeTerms(
@@ -228,8 +259,9 @@ public final class ExchangeStateNbt {
                 mode,
                 body.contains("filter") ? decodeFilter(compound(body, "filter")) : null,
                 number(body, "default_rate"),
-                rates,
-                body.getInt("interval_ticks"));
+                Map.of(),
+                body.getInt("interval_ticks"),
+                parameters);
         return new ExchangeAgreement(uuid(tag, "id"), decodeConsent(compound(tag, "consent")), terms);
     }
 

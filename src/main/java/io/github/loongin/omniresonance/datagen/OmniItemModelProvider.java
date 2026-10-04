@@ -3,7 +3,6 @@ package io.github.loongin.omniresonance.datagen;
 
 import io.github.loongin.omniresonance.bootstrap.OmniResonanceMod;
 import net.minecraft.data.PackOutput;
-import net.minecraft.resources.ResourceLocation;
 import net.neoforged.neoforge.client.model.generators.ItemModelProvider;
 import net.neoforged.neoforge.client.model.generators.ModelFile;
 import net.neoforged.neoforge.common.data.ExistingFileHelper;
@@ -16,17 +15,17 @@ public final class OmniItemModelProvider extends ItemModelProvider {
 
     @Override
     protected void registerModels() {
-        temporaryModel("omni_dust", "sugar");
-        temporaryModel("resonance_substrate", "paper");
-        temporaryModel("resonance_core", "nether_star");
+        materialModel("omni_dust");
+        materialModel("resonance_substrate");
+        materialModel("resonance_core");
         generatedBlockModel("resonance_transfer_node", "resonance_transfer_node");
         generatedBlockModel("resonance_transfer_panel", "resonance_transfer_panel_south");
     }
 
-    private void temporaryModel(String item, String vanillaTexture) {
+    private void materialModel(String item) {
         getBuilder(item)
                 .parent(new ModelFile.UncheckedModelFile("minecraft:item/generated"))
-                .texture("layer0", ResourceLocation.withDefaultNamespace("item/" + vanillaTexture));
+                .texture("layer0", modLoc("item/" + item));
     }
 
     private void generatedBlockModel(String item, String blockModel) {

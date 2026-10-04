@@ -29,7 +29,7 @@ public final class OmniBlockStateProvider extends BlockStateProvider {
     protected void registerStatesAndModels() {
         simpleBlock(
                 ModBlocks.RESONATING_AMETHYST.get(),
-                models().cubeAll("resonating_amethyst", ResourceLocation.withDefaultNamespace("block/amethyst_block")));
+                models().cubeAll("resonating_amethyst", modLoc("block/resonating_amethyst")));
 
         ResourceLocation frontTexture = modLoc("block/resonance_transfer_node_front");
         ResourceLocation topTexture = modLoc("block/resonance_transfer_node_top");

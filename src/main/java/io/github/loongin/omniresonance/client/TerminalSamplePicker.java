@@ -102,7 +102,9 @@ final class TerminalSamplePicker {
     }
 
     static int inventorySlot(int displayIndex) {
-        return displayIndex < 27 ? displayIndex + 9 : displayIndex < 36 ? displayIndex - 27 : displayIndex;
+        return displayIndex < 27
+                ? displayIndex + 9
+                : displayIndex < 36 ? displayIndex - 27 : displayIndex < 40 ? 75 - displayIndex : displayIndex;
     }
 
     private void chooseTank(Tank tank, ResourceLocation type, Consumer<TerminalFilterView.Action> actions) {
@@ -120,24 +122,8 @@ final class TerminalSamplePicker {
             Consumer<AbstractWidget> add,
             Consumer<TerminalFilterView.Action> actions,
             Runnable rebuild) {
-        var footer = TerminalActionLayout.of(body);
         bounds = new TerminalLayout.Rect(
-                body.x() + 4,
-                body.y() + 24,
-                Math.max(0, body.width() - 8),
-                Math.max(0, footer.content().height() - 40));
-        var back = footer.primary();
-        add.accept(new TerminalButton(
-                back.x(),
-                back.y(),
-                back.width(),
-                back.height(),
-                label("sample_back"),
-                ignored -> {
-                    back();
-                    rebuild.run();
-                },
-                false));
+                body.x() + 4, body.y() + 40, Math.max(0, body.width() - 8), Math.max(0, body.height() - 56));
         if (!tanks.isEmpty()) {
             var rows = RoutingListLayout.calculateRows(bounds, tanks.size(), scroll);
             scroll = rows.scroll();
@@ -155,16 +141,12 @@ final class TerminalSamplePicker {
         }
         var player = Minecraft.getInstance().player;
         if (player == null) return;
-        int columns = Math.max(1, Math.min(9, Math.max(0, bounds.width() - TerminalLayout.SCROLLBAR_WIDTH) / 22));
-        int total = player.getInventory().getContainerSize();
-        int visible = Math.max(1, bounds.height() / 22);
-        maximumScroll = Math.max(0, (total + columns - 1) / columns - visible);
-        scroll = Math.min(scroll, maximumScroll);
-        for (int index = scroll * columns; index < total && index < (scroll + visible) * columns; index++) {
+        int total = Math.min(41, player.getInventory().getContainerSize());
+        maximumScroll = 0;
+        scroll = 0;
+        for (int index = 0; index < total; index++) {
             int slot = inventorySlot(index);
-            int local = index - scroll * columns;
-            var rect = new TerminalLayout.Rect(
-                    bounds.x() + local % columns * 22, bounds.y() + local / columns * 22, 20, 20);
+            var rect = TerminalSampleLayout.slot(bounds, index);
             ItemStack stack = player.getInventory().getItem(slot);
             var button = new TerminalSampleSlot(
                     rect,
@@ -175,6 +157,17 @@ final class TerminalSamplePicker {
                     },
                     () -> player.getInventory().getItem(slot));
             button.active = !pending && !stack.isEmpty();
+            button.equipmentSlot(slot);
+            if (stack.isEmpty() && slot >= 36) {
+                button.setTooltip(Tooltip.create(TerminalText.body(Component.translatable("omniresonance.sample_slot."
+                        + switch (slot) {
+                            case 39 -> "head";
+                            case 38 -> "chest";
+                            case 37 -> "legs";
+                            case 36 -> "feet";
+                            default -> "offhand";
+                        }))));
+            }
             add.accept(button);
         }
     }
@@ -190,8 +183,15 @@ final class TerminalSamplePicker {
                 font,
                 TerminalText.body(label(tanks.isEmpty() ? "sample_choose_item" : "sample_choose_fluid")),
                 bounds.x(),
-                bounds.y() - 20,
+                bounds.y() - 36,
                 TerminalTheme.TEXT,
+                false);
+        graphics.drawString(
+                font,
+                TerminalText.body(label("sample_non_consuming")),
+                bounds.x(),
+                bounds.y() - 22,
+                TerminalTheme.MUTED,
                 false);
         TerminalTheme.renderScrollbar(
                 graphics,
@@ -226,14 +226,10 @@ final class TerminalSamplePicker {
 
         @Override
         protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-            TerminalTheme.fillRounded(
+            TerminalTheme.renderControl(
                     graphics,
-                    getX(),
-                    getY(),
-                    getWidth(),
-                    getHeight(),
-                    3,
-                    isHoveredOrFocused() ? TerminalTheme.LINE : TerminalTheme.RAISED);
+                    new TerminalLayout.Rect(getX(), getY(), getWidth(), getHeight()),
+                    TerminalTheme.controlStyle(active, isHovered, isFocused(), false, false, false));
             DomainFluidDisplay.render(graphics, fluid, getX() + 2, getY() + 2);
             var font = TerminalText.font(Minecraft.getInstance());
             String text = fluid.getHoverName().getString() + " · " + DomainFluidDisplay.compact(fluid.getAmount());

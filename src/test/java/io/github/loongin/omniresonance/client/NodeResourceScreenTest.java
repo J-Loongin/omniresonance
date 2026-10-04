@@ -33,6 +33,50 @@ import org.junit.jupiter.api.Test;
 class NodeResourceScreenTest {
     private static final UUID SESSION = new UUID(1, 2);
 
+    @Test
+    void allScopeToolbarRestoresTheRealRowsWithoutReservingAnUnusedListHeading() {
+        var draft = draft();
+        var scope = draft.openScope();
+        scope.toggle(ResourceTypes.ITEM);
+        scope.toggle(ResourceTypes.FLUID);
+        var selection = ResourceTypeSelection.scope(draft, scope, Object::toString);
+        var layout = ResourceTypeSelectionView.layout(
+                TerminalLayout.terminal(640, 360).content(), selection);
+        var controls = new ArrayList<AbstractWidget>();
+        ResourceTypeSelectionView.buildScopeActions(
+                layout, selection, true, controls::add, () -> {}, () -> {}, () -> {});
+        ((TerminalButton) controls.getFirst()).onPress();
+        var rows = new ArrayList<TerminalRowButton>();
+        ResourceTypeSelectionView.buildRows(layout, selection, true, rows::add, () -> {});
+        assertTrue(rows.stream().allMatch(TerminalRowButton::highlighted));
+        assertTrue(layout.list().row(0).y() - layout.kind().bottom() <= TerminalLayout.GAP);
+        assertEquals(ResourceScope.Kind.ALL, scope.selection().kind());
+        assertFalse(draft.dirty());
+    }
+
+    @Test
+    void onlyAnAlreadyConfiguredDomainGetsTheLeftFooterRemovalAction() {
+        var node = state().node();
+        var body = new TerminalLayout.Rect(100, 50, 364, 186);
+        int[] opened = {0};
+        assertNull(ResonanceNodeScreen.buildDomainRemoveButton(body, state(), false, () -> opened[0]++));
+        assertNull(ResonanceNodeScreen.buildDomainRemoveButton(
+                body, new NodeMenuState.DomainEdit(node, null), false, () -> opened[0]++));
+        var button = ResonanceNodeScreen.buildDomainRemoveButton(
+                body, new NodeMenuState.DomainEdit(node, TransferDirection.INPUT), false, () -> opened[0]++);
+        assertEquals(body.x() + 8, button.getX());
+        assertEquals(TerminalActionLayout.of(body).primary().y(), button.getY());
+        assertEquals(80, button.getWidth());
+        assertEquals(20, button.getHeight());
+        button.onPress();
+        assertEquals(1, opened[0]);
+        var pending = ResonanceNodeScreen.buildDomainRemoveButton(
+                body, new NodeMenuState.DomainEdit(node, TransferDirection.INPUT), true, () -> opened[0]++);
+        assertFalse(pending.active);
+        pending.onPress();
+        assertEquals(1, opened[0]);
+    }
+
     private static NodeMenuState.DirectBindingEdit state() {
         var node = new NodeMenuNodeSummary(
                 new UUID(2, 1),
@@ -83,7 +127,7 @@ class NodeResourceScreenTest {
 
     @Test
     void resourceNamesUseTheSharedMatcherAndRecoverFromItsFailure() {
-        var selection = NodeResourceTypeSelection.overrides(draft(), id -> "物品");
+        var selection = ResourceTypeSelection.overrides(draft(), id -> "物品");
         selection.search().open();
         selection.editSearch("wp", 1);
         try {
@@ -223,7 +267,7 @@ class NodeResourceScreenTest {
                 widgets::add,
                 Component.empty(),
                 actions);
-        ((TerminalButton) widgets.get(1)).onPress();
+        ((net.minecraft.client.gui.components.Button) widgets.get(1)).onPress();
         assertEquals(1, scopeClicks[0]);
         ((TerminalEditBox) widgets.stream()
                         .filter(TerminalEditBox.class::isInstance)
@@ -272,7 +316,7 @@ class NodeResourceScreenTest {
         var state = state();
         var faces = new NodeWorkingFacesDraft(state.workingFaces(), NodeForm.BLOCK, Direction.DOWN);
         var scope = draft.openScope();
-        var selection = NodeResourceTypeSelection.scope(draft, scope, Object::toString);
+        var selection = ResourceTypeSelection.scope(draft, scope, Object::toString);
         assertFalse(ResonanceNodeScreen.resourceDirty(draft, selection, faces, state));
         selection.choose(ResourceTypes.FLUID);
         assertTrue(ResonanceNodeScreen.resourceDirty(draft, selection, faces, state));
@@ -286,7 +330,7 @@ class NodeResourceScreenTest {
 
     @Test
     void resourceSearchUsesProductionHeaderAndFocusedKeyPriority() {
-        var selection = NodeResourceTypeSelection.overrides(draft(), Object::toString);
+        var selection = ResourceTypeSelection.overrides(draft(), Object::toString);
         assertEquals(TerminalHeaderLayout.Action.SEARCH, ResonanceNodeScreen.topBarAction(state(), true));
         int[] closed = {0};
         assertTrue(TerminalInteractionPolicy.routeSearchKey(

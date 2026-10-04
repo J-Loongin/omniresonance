@@ -9,29 +9,29 @@ import java.util.Set;
 import net.minecraft.resources.ResourceLocation;
 
 /** One scope overlay's detached selection; cancel means discard this object. No parent mutation before apply. */
-final class NodeResourceScopeDraft {
-    private final NodeResourcePolicyDraft owner;
+final class ResourceScopeSelectionDraft {
+    private final Object owner;
     private final ResourcePolicyEdit.Scope original;
     private final Set<ResourceLocation> allowed;
     private final List<ResourceLocation> choices;
+    private final List<ResourceLocation> supported;
     private final Set<ResourceLocation> originalIds;
     private final LinkedHashSet<ResourceLocation> selected = new LinkedHashSet<>();
     private ResourceScope.Kind kind;
 
-    NodeResourceScopeDraft(
-            NodeResourcePolicyDraft owner,
+    ResourceScopeSelectionDraft(
+            Object owner,
             ResourcePolicyEdit.Scope original,
-            NodeResourceTypeCatalog.Snapshot catalog,
+            List<ResourceLocation> supportedTypes,
             Set<ResourceLocation> missingRows) {
         this.owner = owner;
         this.original = original;
         originalIds = Set.copyOf(original.ids());
         kind = original.kind();
         var ids = new LinkedHashSet<ResourceLocation>();
-        for (var descriptor : catalog.entries()) {
-            ids.add(descriptor.typeId());
-            if (kind == ResourceScope.Kind.ALL) selected.add(descriptor.typeId());
-        }
+        ids.addAll(supportedTypes);
+        if (kind == ResourceScope.Kind.ALL) selected.addAll(ids);
+        supported = List.copyOf(ids);
         ids.addAll(original.ids());
         ids.addAll(missingRows);
         choices = List.copyOf(ids);
@@ -39,7 +39,7 @@ final class NodeResourceScopeDraft {
         if (kind == ResourceScope.Kind.CUSTOM_SET) selected.addAll(original.ids());
     }
 
-    void requireOwner(NodeResourcePolicyDraft draft) {
+    void requireOwner(Object draft) {
         if (owner != draft) throw new IllegalArgumentException("Scope draft belongs to another editor");
     }
 
@@ -61,6 +61,8 @@ final class NodeResourceScopeDraft {
 
     void all() {
         kind = ResourceScope.Kind.ALL;
+        selected.clear();
+        selected.addAll(supported);
     }
 
     void custom() {

@@ -5,14 +5,15 @@ package io.github.loongin.omniresonance.client;
 final class TerminalHeaderLayout {
     static final int HEIGHT = 20;
     private static final int INSET = 4;
+    private static final int TITLE_MARK_SPACE = 16;
 
     private TerminalHeaderLayout() {}
 
     static TerminalLayout.Rect topBarContent(TerminalLayout.Rect window) {
         return new TerminalLayout.Rect(
-                Math.min(window.right(), window.x() + INSET),
+                Math.min(window.right(), window.x() + INSET + TITLE_MARK_SPACE),
                 Math.min(window.bottom(), window.y() + INSET),
-                Math.max(0, window.width() - INSET * 2),
+                Math.max(0, window.width() - INSET * 2 - TITLE_MARK_SPACE),
                 Math.min(HEIGHT, Math.max(0, window.height() - INSET * 2)));
     }
 
@@ -45,6 +46,17 @@ final class TerminalHeaderLayout {
     }
 
     record NodeNames(TerminalLayout.Rect node, TerminalLayout.Rect network) {}
+
+    static NodeNames remoteNodeNames(TerminalLayout.Rect remaining) {
+        var network = TerminalNetworkContext.layout(remaining, false, false);
+        return new NodeNames(
+                new TerminalLayout.Rect(
+                        remaining.x(),
+                        remaining.y(),
+                        Math.max(0, network.x() - remaining.x() - TerminalLayout.GAP),
+                        remaining.height()),
+                network);
+    }
 
     static TerminalLayout.Rect contentTitle(TerminalLayout.Rect content) {
         return new TerminalLayout.Rect(

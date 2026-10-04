@@ -11,6 +11,7 @@ import com.google.gson.JsonParser;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import net.minecraft.client.sounds.JOrbisAudioStream;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -117,8 +118,12 @@ final class UiClickSoundResourceTest {
     }
 
     private static JsonObject json(String path) throws IOException {
-        return JsonParser.parseString(new String(resource(path), StandardCharsets.UTF_8))
-                .getAsJsonObject();
+        // Trusted bundled metadata can grow with translations; the 64 KiB binary bound belongs to the click audio.
+        try (InputStream stream = UiClickSoundResourceTest.class.getResourceAsStream(path)) {
+            assertNotNull(stream, () -> "Missing metadata resource " + path);
+            return JsonParser.parseReader(new InputStreamReader(stream, StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+        }
     }
 
     private static byte[] resource(String path) throws IOException {

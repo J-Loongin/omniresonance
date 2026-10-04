@@ -5,8 +5,10 @@ import io.github.loongin.omniresonance.exchange.ExchangeTermsDraft;
 import io.github.loongin.omniresonance.filter.FilterMode;
 import io.github.loongin.omniresonance.persistence.ResourcePolicyNbt;
 import io.github.loongin.omniresonance.transfer.ResourceScope;
+import io.github.loongin.omniresonance.transfer.ResourceTransferPolicy;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.resources.ResourceLocation;
@@ -123,6 +125,7 @@ public final class ExchangeIntentCodec {
     }
 
     private static void writeDraft(FriendlyByteBuf buffer, ExchangeTermsDraft draft, int start) {
+        buffer.writeByte(2);
         if (draft.scope().kind() == ResourceScope.Kind.ALL) buffer.writeByte(0);
         else {
             buffer.writeByte(1).writeVarInt(draft.scope().resourceTypeIds().size());
@@ -143,12 +146,17 @@ public final class ExchangeIntentCodec {
                 .writeInt(draft.intervalTicks())
                 .writeVarInt(draft.rates().size());
         for (ResourceLocation type : draft.rates().keySet().stream().sorted().toList()) {
-            buffer.writeUtf(type.toString(), 128).writeLong(draft.rates().get(type));
+            var parameter = draft.resourceParameters().get(type);
+            buffer.writeUtf(type.toString(), 128)
+                    .writeLong(parameter.rate())
+                    .writeByte(parameter.batchMode() == ResourceTransferPolicy.BatchMode.GREEDY ? 0 : 1)
+                    .writeLong(parameter.batchSize());
             bound(buffer.writerIndex() - start);
         }
     }
 
     private static ExchangeTermsDraft readDraft(FriendlyByteBuf buffer) {
+        if (buffer.readUnsignedByte() != 2) throw new IllegalArgumentException("Unsupported exchange parameter format");
         ResourceScope scope;
         int kind = buffer.readUnsignedByte();
         if (kind == 0) scope = ResourceScope.all();
@@ -173,12 +181,22 @@ public final class ExchangeIntentCodec {
                     default -> throw new IllegalArgumentException("Unknown exchange filter selection");
                 };
         long rate = buffer.readLong();
-        int interval = buffer.readInt(), count = count(buffer, 10);
-        var rates = new HashMap<ResourceLocation, Long>();
-        for (int i = 0; i < count; i++)
-            if (rates.putIfAbsent(type(buffer), buffer.readLong()) != null)
+        int interval = buffer.readInt(), count = count(buffer, 19);
+        var parameters = new HashMap<ResourceLocation, ResourceTransferPolicy.InputOverride>();
+        for (int i = 0; i < count; i++) {
+            var type = type(buffer);
+            long quantity = buffer.readLong();
+            var batchMode =
+                    switch (buffer.readUnsignedByte()) {
+                        case 0 -> ResourceTransferPolicy.BatchMode.GREEDY;
+                        case 1 -> ResourceTransferPolicy.BatchMode.EXACT;
+                        default -> throw new IllegalArgumentException("Unknown exchange batch mode");
+                    };
+            var parameter = new ResourceTransferPolicy.InputOverride(quantity, batchMode, buffer.readLong());
+            if (parameters.putIfAbsent(type, parameter) != null)
                 throw new IllegalArgumentException("Duplicate exchange rate type");
-        return new ExchangeTermsDraft(scope, mode, filter, rate, rates, interval);
+        }
+        return new ExchangeTermsDraft(scope, mode, filter, rate, Map.of(), interval, parameters);
     }
 
     private static ResourceLocation type(FriendlyByteBuf buffer) {

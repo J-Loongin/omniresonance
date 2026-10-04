@@ -44,18 +44,18 @@ class NodeResourcePolicyViewTest {
         var draft = new NodeResourcePolicyDraft(
                 NodeResourcePolicyDraftTest.input(), null, NodeResourcePolicyDraftTest.catalog());
         var scope = draft.openScope();
-        var picker = NodeResourceTypeSelection.scope(draft, scope, Object::toString);
+        var picker = ResourceTypeSelection.scope(draft, scope, Object::toString);
         var body = TerminalLayout.calculate(960, 540).content();
-        var layout = NodeResourceTypeSelectionView.layout(body, picker);
+        var layout = ResourceTypeSelectionView.layout(body, picker);
         org.junit.jupiter.api.Assertions.assertNull(
-                NodeResourceTypeSelectionView.buildSearch(null, layout, picker, () -> 0, () -> {}));
+                ResourceTypeSelectionView.buildSearch(null, layout, picker, () -> 0, () -> {}));
         var rows = new ArrayList<TerminalRowButton>();
-        NodeResourceTypeSelectionView.buildRows(layout, picker, true, rows::add, () -> {});
+        ResourceTypeSelectionView.buildRows(layout, picker, true, rows::add, () -> {});
         rows.get(1).onPress();
         assertFalse(scope.selected(ResourceTypes.FLUID));
         assertFalse(draft.dirty());
         var actions = new ArrayList<net.minecraft.client.gui.components.AbstractWidget>();
-        NodeResourceTypeSelectionView.buildScopeActions(
+        ResourceTypeSelectionView.buildScopeActions(
                 layout, picker, true, actions::add, () -> {}, () -> draft.applyScope(scope, true), () -> {});
         ((TerminalButton) actions.get(3)).onPress();
         assertEquals(
@@ -88,14 +88,14 @@ class NodeResourcePolicyViewTest {
 
         assertTrue(last.visibleRows() <= 6);
         assertSame(order, draft.settingIds());
-        var picker = NodeResourceTypeSelection.scope(draft, draft.openScope(), Object::toString);
+        var picker = ResourceTypeSelection.scope(draft, draft.openScope(), Object::toString);
         picker.search().open();
         picker.editSearch("absent:", 0);
         picker.tick(1);
         picker.wheel(-10000, 2);
-        var layout = NodeResourceTypeSelectionView.layout(body, picker);
+        var layout = ResourceTypeSelectionView.layout(body, picker);
         var widgets = new ArrayList<TerminalRowButton>();
-        NodeResourceTypeSelectionView.buildRows(layout, picker, true, widgets::add, () -> {});
+        ResourceTypeSelectionView.buildRows(layout, picker, true, widgets::add, () -> {});
         assertEquals(layout.list().visibleRows(), widgets.size());
         assertTrue(widgets.size() <= 4);
         for (var widget : widgets) {
@@ -152,7 +152,7 @@ class NodeResourcePolicyViewTest {
                 NodeResourcePolicyDraftTest.input(), null, NodeResourcePolicyDraftTest.catalog());
         var scope = draft.openScope();
         var picker =
-                NodeResourceTypeSelection.scope(draft, scope, id -> id.equals(ResourceTypes.FLUID) ? "Water" : "Other");
+                ResourceTypeSelection.scope(draft, scope, id -> id.equals(ResourceTypes.FLUID) ? "Water" : "Other");
         assertFalse(picker.search().expanded());
         assertEquals(3, picker.results().size());
         picker.search().open();
@@ -183,7 +183,7 @@ class NodeResourcePolicyViewTest {
         scope.toggle(ResourceTypes.ENERGY);
         draft.applyScope(scope, true);
         draft.addType(ResourceTypes.ITEM);
-        var picker = NodeResourceTypeSelection.overrides(draft, Object::toString);
+        var picker = ResourceTypeSelection.overrides(draft, Object::toString);
         assertEquals(List.of(ResourceTypes.FLUID), picker.results());
         picker.choose(ResourceTypes.FLUID);
         assertEquals(List.of(), picker.results());

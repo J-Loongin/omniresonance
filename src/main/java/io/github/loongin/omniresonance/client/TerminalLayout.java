@@ -27,14 +27,20 @@ record TerminalLayout(Rect window, Rect titleBar, Rect content, boolean compact)
         Rect window = new Rect(left, top, panelWidth, panelHeight);
         int titleHeight = Math.min(TITLE_HEIGHT, panelHeight);
         Rect titleBar = new Rect(left, top, panelWidth, titleHeight);
-        int contentWidth = Math.max(0, panelWidth - PADDING * 2);
-        int contentHeight = Math.max(0, panelHeight - titleHeight - PADDING * 2);
-        Rect content = new Rect(
-                left + Math.min(PADDING, panelWidth),
-                top + Math.min(titleHeight + PADDING, panelHeight),
-                contentWidth,
-                contentHeight);
-        return new TerminalLayout(window, titleBar, content, panelWidth < 400);
+        return new TerminalLayout(window, titleBar, windowContent(window, titleHeight), panelWidth < 400);
+    }
+
+    private static Rect windowContent(Rect window, int titleHeight) {
+        return new Rect(
+                window.x() + Math.min(PADDING, window.width()),
+                window.y() + Math.min(titleHeight + PADDING, window.height()),
+                Math.max(0, window.width() - PADDING * 2),
+                Math.max(0, window.height() - titleHeight - PADDING * 2));
+    }
+
+    /** Restores a full page canvas; a parent's narrow detail pane must not constrain a remote editor. */
+    TerminalLayout fullWindowContent() {
+        return new TerminalLayout(window, titleBar, windowContent(window, titleBar.height()), compact);
     }
 
     static TerminalLayout terminal(int screenWidth, int screenHeight) {

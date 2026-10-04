@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 package io.github.loongin.omniresonance.client;
 
+import io.github.loongin.omniresonance.exchange.ExchangeTerms;
 import io.github.loongin.omniresonance.exchange.ExchangeTermsDraft;
 import io.github.loongin.omniresonance.filter.FilterMode;
 import io.github.loongin.omniresonance.networking.ExchangeFrame;
@@ -12,8 +13,8 @@ import io.github.loongin.omniresonance.networking.FilterPresetSummary;
 import io.github.loongin.omniresonance.networking.ManagementTransferPool;
 import io.github.loongin.omniresonance.networking.NetworkSummary;
 import io.github.loongin.omniresonance.transfer.ResourceScope;
+import io.github.loongin.omniresonance.transfer.ResourceTransferPolicy;
 import io.netty.buffer.Unpooled;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -37,6 +38,7 @@ final class ExchangeScreen extends Screen {
     private record FormLabel(Component text, TerminalLayout.Rect bounds) {}
 
     private final List<FormLabel> formLabels = new ArrayList<>();
+    private final ModalBackdrop modalBackdrop = new ModalBackdrop();
     private String intervalDraft = "1";
 
     private enum Page {
@@ -52,7 +54,11 @@ final class ExchangeScreen extends Screen {
         CODES
     }
 
-    private record Row(Component text, @Nullable Runnable action) {}
+    private record Row(Component text, @Nullable Runnable action, boolean selected) {
+        Row(Component text, @Nullable Runnable action) {
+            this(text, action, false);
+        }
+    }
 
     private record DetailCell(
             Component label,
@@ -61,6 +67,7 @@ final class ExchangeScreen extends Screen {
             @Nullable Runnable action) {}
 
     private int detailRowCount;
+    private @Nullable RoutingListLayout parameterRows;
 
     private record Type(ResourceLocation id, String unit, long batch) {}
 
@@ -75,6 +82,8 @@ final class ExchangeScreen extends Screen {
     private final NetworkSummary network;
     private final UUID generation = UUID.randomUUID();
     private final ClientSearchState search = new ClientSearchState();
+    private @Nullable ResourceTypeSelection resourceSelection;
+    private @Nullable TerminalSearchBox resourceSearchField;
     private final TerminalResultRows results =
             new TerminalResultRows(this, this::addRenderableWidget, this::removeWidget);
     private final Map<UUID, io.github.loongin.omniresonance.exchange.ExchangeFilterStatus> filterStates =
@@ -90,7 +99,7 @@ final class ExchangeScreen extends Screen {
     private final List<FilterPresetSummary> presets = new ArrayList<>();
     private final List<Code> codes = new ArrayList<>();
     private final List<Row> filterRows = new ArrayList<>();
-    private final Map<ResourceLocation, Long> rates = new LinkedHashMap<>();
+    private final Map<ResourceLocation, ResourceTransferPolicy.InputOverride> parameters = new LinkedHashMap<>();
     private final Set<ResourceLocation> selectedTypes = new LinkedHashSet<>();
     private List<Row> rows = List.of();
     private TerminalLayout layout;
@@ -102,7 +111,7 @@ final class ExchangeScreen extends Screen {
     private FilterMode mode = FilterMode.WHITELIST;
     private String filterName = "", receiverName = "", receiverOwner = "", proposalCode = "";
     private @Nullable UUID receiver;
-    private long defaultRate = Long.MAX_VALUE, libraryRevision, tick, sentTick;
+    private long defaultRate = ExchangeTerms.DEFAULT_RATE, libraryRevision, tick, sentTick;
     private int interval = 1, firstRow, visibleRows;
     private boolean allTypes = true, history, owner, opened, pending, dirty, submitted, leaving, editingExisting;
     private @Nullable ExchangeRequest outstanding;
@@ -115,8 +124,20 @@ final class ExchangeScreen extends Screen {
     private boolean uncertain;
     private @Nullable Consumer<String> dialogSubmit;
     private String inputValue = "", inputOriginal = "";
-    private boolean intervalInput;
+
+    private @Nullable TerminalResourceParameterView.Form parameterInput;
+    private @Nullable ResourceParameterDraft parameterEditor;
     private @Nullable TerminalEditBox input;
+    private @Nullable InputDialog suspendedInput;
+
+    private record InputDialog(
+            Component prompt,
+            Consumer<String> submit,
+            @Nullable TerminalResourceParameterView.Form form,
+            @Nullable ResourceParameterDraft editor,
+            String value,
+            String original,
+            @Nullable Component error) {}
 
     ExchangeScreen(NetworkSetupScreen parent, NetworkSummary network) {
         super(text("title"));
@@ -412,6 +433,15 @@ final class ExchangeScreen extends Screen {
         dialogAction = null;
         dialogSubmit = null;
         shownCode = null;
+        resourceSelection = null;
+        resourceSearchField = null;
+        if (next == Page.SCOPE || next == Page.TYPES) {
+            var available = new ArrayList<ResourceLocation>();
+            for (var type : types) available.add(type.id());
+            resourceSelection = next == Page.SCOPE
+                    ? ExchangeResourceSelection.scope(this, available, allTypes, selectedTypes, parameters.keySet())
+                    : ExchangeResourceSelection.types(available, parameters.keySet(), allTypes, selectedTypes);
+        }
     }
 
     private void go(Page next) {
@@ -456,7 +486,7 @@ final class ExchangeScreen extends Screen {
     }
 
     private void beginChannel() {
-        input(text("channel_name_prompt"), "", false, name -> {
+        input(text("channel_name_prompt"), "", name -> {
             channelName = new io.github.loongin.omniresonance.network.ManagedName(name).value();
             editingExisting = false;
             detail = null;
@@ -464,11 +494,11 @@ final class ExchangeScreen extends Screen {
             sending = true;
             allTypes = true;
             selectedTypes.clear();
-            rates.clear();
+            parameters.clear();
             filter = new ExchangeTermsDraft.None();
             filterName = "";
             mode = FilterMode.WHITELIST;
-            defaultRate = Long.MAX_VALUE;
+            defaultRate = ExchangeTerms.DEFAULT_RATE;
             interval = 1;
             intervalDraft = "1";
             dirty = true;
@@ -496,8 +526,8 @@ final class ExchangeScreen extends Screen {
         defaultRate = baseline.defaultRate();
         interval = baseline.intervalTicks();
         intervalDraft = Integer.toString(interval);
-        rates.clear();
-        rates.putAll(baseline.rates());
+        parameters.clear();
+        parameters.putAll(baseline.resourceParameters());
         dirty = false;
         submitted = false;
         go(Page.EDIT);
@@ -509,8 +539,9 @@ final class ExchangeScreen extends Screen {
                 mode,
                 filter,
                 defaultRate,
-                rates,
-                interval);
+                Map.of(),
+                interval,
+                parameters);
     }
 
     private void save() {
@@ -549,25 +580,28 @@ final class ExchangeScreen extends Screen {
                 || page == Page.RULES
                 || page == Page.PRESETS
                 || page == Page.TYPES
-                || page == Page.SCOPE
-                || page == Page.RATES;
+                || page == Page.SCOPE;
     }
 
     private boolean editing() {
-        return page == Page.EDIT
-                || page == Page.SCOPE
-                || page == Page.RATES
-                || page == Page.TYPES
-                || page == Page.PRESETS;
+        return page == Page.EDIT || page == Page.SCOPE || page == Page.TYPES || page == Page.PRESETS;
+    }
+
+    private ClientSearchState activeSearch() {
+        return resourceSelection == null ? search : resourceSelection.search();
     }
 
     private void toggleSearch() {
-        if (pending || dialogText != null) return;
-        search.toggle(tick);
+        if (pending || uncertain || dialogText != null) return;
+        var active = activeSearch();
+        active.toggle(tick);
         firstRow = 0;
         rebuild();
-        if (search.expanded())
-            setFocused(search.field(font, searchBounds(), text("search"), 256, v -> search.edit(v, tick)));
+        if (active.expanded())
+            setFocused(
+                    resourceSelection == null
+                            ? search.field(font, searchBounds(), text("search"), 256, v -> search.edit(v, tick))
+                            : resourceSearchField);
     }
 
     private TerminalLayout.Rect searchBounds() {
@@ -578,15 +612,32 @@ final class ExchangeScreen extends Screen {
     private void rebuild() {
         if (layout == null) return;
         var focused = getFocused();
-        boolean keepSearch = search.expanded() && focused instanceof TerminalSearchBox;
+        boolean keepSearch = activeSearch().expanded() && focused instanceof TerminalSearchBox;
         results.clear();
+        modalBackdrop.clear();
+        parameterRows = null;
         formLabels.clear();
         clearWidgets();
         setFocused(null);
+        buildPageLayers(
+                () -> buildPage(keepSearch),
+                dialogText == null
+                        ? null
+                        : () -> modalBackdrop.open(children(), this::removeWidget, renderables, () -> {
+                            setFocused(null);
+                            buildDialog();
+                        }));
+    }
+
+    static void buildPageLayers(Runnable page, @Nullable Runnable dialog) {
+        ModalBackdrop.buildLayers(page, dialog);
+    }
+
+    private void buildPage(boolean keepSearch) {
         var c = layout.content();
         var h = TerminalHeaderLayout.atRightEdge(TerminalHeaderLayout.topBarContent(layout.window()), searchable());
-        if (dialogText != null) {
-            buildDialog();
+        if (resourceSelection != null) {
+            buildResourceSelection(keepSearch, h.action());
             return;
         }
         if (creationPage()) {
@@ -608,6 +659,12 @@ final class ExchangeScreen extends Screen {
                     text("search"),
                     ignored -> toggleSearch()));
             searchButton.active = !pending && !uncertain;
+        } else if (page == Page.RATES) {
+            addRenderableWidget(TerminalResourceSettingsList.add(
+                    TerminalHeaderLayout.atRightEdge(TerminalHeaderLayout.topBarContent(layout.window()), true)
+                            .action(),
+                    !pending && !uncertain,
+                    () -> go(Page.TYPES)));
         } else if (searchable()) {
             var button = addRenderableWidget(
                     new TerminalSearchButton(h.action(), search.expanded(), text("search"), ignored -> toggleSearch()));
@@ -626,6 +683,10 @@ final class ExchangeScreen extends Screen {
         }
         if (page == Page.EDIT) {
             buildTermsForm();
+            return;
+        }
+        if (page == Page.RATES) {
+            buildParameterPage();
             return;
         }
         List<Row> content = new ArrayList<>();
@@ -707,48 +768,6 @@ final class ExchangeScreen extends Screen {
             toolbar(actions, y);
             buildDetailForm(y + 26);
             return;
-        } else if (page == Page.SCOPE) {
-            content.add(new Row(text(allTypes ? "all_selected" : "all"), () -> {
-                allTypes = true;
-                changed();
-            }));
-            Set<ResourceLocation> choices = new LinkedHashSet<>();
-            for (var type : types) choices.add(type.id());
-            choices.addAll(selectedTypes);
-            for (var type : choices)
-                content.add(new Row(
-                        Component.literal((!allTypes && selectedTypes.contains(type) ? "[+] " : "[ ] ")
-                                + NodeResourcePolicyView.typeName(type).getString()),
-                        () -> {
-                            if (allTypes) {
-                                allTypes = false;
-                                selectedTypes.clear();
-                            }
-                            if (!selectedTypes.remove(type)) selectedTypes.add(type);
-                            changed();
-                        }));
-        } else if (page == Page.RATES) {
-            content.add(new Row(
-                    text("default_value", rateText(null, defaultRate)),
-                    () -> input(
-                            text("default_help"),
-                            defaultRate == Long.MAX_VALUE ? "" : Long.toString(defaultRate),
-                            false,
-                            value -> {
-                                defaultRate = value.isBlank() ? Long.MAX_VALUE : positive(value);
-                                dirty = true;
-                            })));
-            toolbar(List.of(new Row(text("add_type"), () -> go(Page.TYPES))), y);
-            y += 36;
-            for (var entry : rates.entrySet())
-                content.add(new Row(
-                        Component.literal(NodeResourcePolicyView.typeName(entry.getKey())
-                                        .getString() + " · " + rateText(entry.getKey(), entry.getValue())),
-                        () -> editRate(entry.getKey())));
-        } else if (page == Page.TYPES) {
-            for (var type : types)
-                if (!rates.containsKey(type.id()))
-                    content.add(new Row(NodeResourcePolicyView.typeName(type.id()), () -> editRate(type.id())));
         } else if (page == Page.PRESETS) {
             content.add(new Row(text("none"), () -> {
                 filter = new ExchangeTermsDraft.None();
@@ -791,15 +810,11 @@ final class ExchangeScreen extends Screen {
         if (editing()) {
             var footer = TerminalActionLayout.of(c);
             bottom = footer.content().bottom();
-            button(footer.secondary(), text("cancel"), () -> back(false), false);
-            button(
-                    footer.primary(),
-                    text(page == Page.EDIT ? "save" : "back"),
-                    page == Page.EDIT ? this::save : () -> go(page == Page.TYPES ? Page.RATES : Page.EDIT),
-                    true);
+            button(page == Page.EDIT ? footer.secondary() : footer.primary(), text("cancel"), () -> back(false), false);
+            if (page == Page.EDIT) button(footer.primary(), text("save"), this::save, true);
         }
         if (message != null || pending) bottom -= 14;
-        listBounds = new TerminalLayout.Rect(c.x() + 4, y, c.width() - 8, Math.max(0, bottom - y));
+        listBounds = new TerminalLayout.Rect(c.x() + 8, y, Math.max(0, c.width() - 16), Math.max(0, bottom - y));
         final List<Row> unfiltered = content;
         rows = searchable()
                 ? ClientTextSearch.filter(
@@ -825,13 +840,140 @@ final class ExchangeScreen extends Screen {
                     });
             if (row.action() == null) button.setReadOnly();
             else button.active = !pending && !uncertain;
+            button.setSelected(row.selected());
             button.setTooltip(Tooltip.create(TerminalText.body(row.text())));
             results.add(button);
         }
     }
 
+    private void buildResourceSelection(boolean keepSearch, TerminalLayout.Rect action) {
+        var selection = resourceSelection;
+        var bounds = ResourceTypeSelectionView.layout(layout.content(), selection);
+        var button = addRenderableWidget(new TerminalSearchButton(
+                action,
+                selection.search().expanded(),
+                NodeResourcePolicyView.text("search"),
+                ignored -> toggleSearch()));
+        button.active = !pending && !uncertain;
+        resourceSearchField = ResourceTypeSelectionView.buildSearch(font, bounds, selection, () -> tick, () -> {});
+        if (resourceSearchField != null) {
+            resourceSearchField.active = !pending && !uncertain;
+            resourceSearchField.setEditable(!pending && !uncertain);
+            addRenderableWidget(resourceSearchField);
+            if (keepSearch) setFocused(resourceSearchField);
+        }
+        ResourceTypeSelectionView.buildRows(bounds, selection, !pending && !uncertain, results::add, () -> {
+            if (resourceSelection != selection || pending || uncertain) return;
+            if (selection.scope() == null) {
+                var chosen = selection.chosen();
+                if (chosen != null) {
+                    go(Page.RATES);
+                    editRate(chosen);
+                }
+            } else rebuild();
+        });
+        ResourceTypeSelectionView.buildScopeActions(
+                bounds,
+                selection,
+                !pending && !uncertain,
+                this::addRenderableWidget,
+                this::rebuild,
+                () -> {
+                    if (resourceSelection != selection || pending || uncertain) return;
+                    selection.scope().requireOwner(this);
+                    var next = selection.scope().selection();
+                    if (next.kind() == ResourceScope.Kind.CUSTOM_SET
+                            && next.ids().isEmpty()) return;
+                    allTypes = next.kind() == ResourceScope.Kind.ALL;
+                    selectedTypes.clear();
+                    selectedTypes.addAll(next.ids());
+                    dirty = true;
+                    go(Page.EDIT);
+                },
+                () -> {
+                    if (resourceSelection == selection && !pending && !uncertain) go(Page.EDIT);
+                });
+    }
+
+    boolean draftDirty() {
+        return dirty
+                || dialogSubmit != null && parameterEditor != null && parameterEditor.dirty()
+                || dialogSubmit != null && !inputValue.equals(inputOriginal)
+                || resourceSelection != null
+                        && resourceSelection.scope() != null
+                        && resourceSelection.scope().dirty();
+    }
+
+    private void buildParameterPage() {
+        var ids = List.copyOf(parameters.keySet());
+        parameterRows = parameterPageLayout(layout.content(), ids.size(), firstRow);
+        firstRow = parameterRows.scroll();
+        visibleRows = parameterRows.visibleRows();
+        listBounds = parameterRows.rows();
+        TerminalResourceSettingsList.buildRows(
+                layout.content(),
+                new TerminalResourceSettingsList.Entries() {
+                    @Override
+                    public int size() {
+                        return ids.size();
+                    }
+
+                    @Override
+                    public TerminalResourceSettingsList.Row row(int index) {
+                        var id = ids.get(index);
+                        boolean available = false;
+                        for (var type : types)
+                            if (type.id().equals(id)) {
+                                available = true;
+                                break;
+                            }
+                        var label = available
+                                ? TerminalResourceSettingsList.summary(
+                                        NodeResourcePolicyView.typeName(id),
+                                        Component.literal(rateValueText(
+                                                id, parameters.get(id).rate())),
+                                        rateUnit(id),
+                                        parameters.get(id).batchMode() == ResourceTransferPolicy.BatchMode.GREEDY
+                                                ? NodeResourcePolicyView.text("greedy")
+                                                : NodeResourcePolicyView.text(
+                                                        "batch_summary",
+                                                        parameters.get(id).batchSize()))
+                                : NodeResourcePolicyView.text("unavailable_type", id.toString());
+                        return new TerminalResourceSettingsList.Row(
+                                label,
+                                label.copy().append("\n").append(id.toString()),
+                                available ? null : Component.literal(id.toString()),
+                                () -> {
+                                    if (!pending && !uncertain) editRate(id);
+                                });
+                    }
+                },
+                firstRow,
+                !pending && !uncertain,
+                results::add);
+    }
+
+    private void editDefaultRate() {
+        String value = Long.toString(defaultRate);
+        input(
+                text("default_help"),
+                value,
+                changed -> {
+                    defaultRate = positive(changed);
+                    dirty = true;
+                },
+                TerminalResourceParameterView.rateForm(
+                        text("default_rate"), NodeResourcePolicyView.text("native_units"), value, 20, true, null));
+    }
+
+    static RoutingListLayout parameterPageLayout(TerminalLayout.Rect body, int count, int scroll) {
+        return TerminalResourceSettingsList.page(body, count, scroll).list();
+    }
+
     private int visibleRowCount() {
-        return page == Page.EDIT ? termsRows() : page == Page.DETAIL ? detailRowCount : rows.size();
+        return page == Page.EDIT
+                ? termsRows()
+                : page == Page.DETAIL ? detailRowCount : page == Page.RATES ? parameters.size() : rows.size();
     }
 
     static TerminalLayout.Rect detailContent(TerminalLayout.Rect body, int top) {
@@ -891,10 +1033,22 @@ final class ExchangeScreen extends Screen {
             if (!detail.allTypes())
                 for (var type : baseline.scope().resourceTypeIds())
                     extra.add(new DetailCell(text("scope"), NodeResourcePolicyView.typeName(type), 1, null));
-            for (var entry : baseline.rates().entrySet())
+            for (var entry : baseline.resourceParameters().entrySet())
                 extra.add(new DetailCell(
                         NodeResourcePolicyView.typeName(entry.getKey()),
-                        Component.literal(rateText(entry.getKey(), entry.getValue())),
+                        NodeResourcePolicyView.text(
+                                        "rate_summary",
+                                        Component.literal(
+                                                Long.toString(entry.getValue().rate())),
+                                        rateUnit(entry.getKey()))
+                                .copy()
+                                .append(" · ")
+                                .append(
+                                        entry.getValue().batchMode() == ResourceTransferPolicy.BatchMode.GREEDY
+                                                ? NodeResourcePolicyView.text("greedy")
+                                                : NodeResourcePolicyView.text(
+                                                        "batch_summary",
+                                                        entry.getValue().batchSize())),
                         1,
                         null));
             for (int i = 0; i < extra.size(); i += 3)
@@ -916,7 +1070,7 @@ final class ExchangeScreen extends Screen {
             for (var field : fields.get(i)) {
                 var control = formCell(row, col, field.span(), field.label());
                 col += field.span();
-                if (field.action() != null) button(control, field.value(), field.action(), false);
+                if (field.action() != null) fieldButton(control, field.value(), field.action());
                 else formLabels.add(new FormLabel(field.value(), control));
             }
         }
@@ -932,78 +1086,78 @@ final class ExchangeScreen extends Screen {
     }
 
     private int termsRows() {
-        return termsWarning() ? 4 : 3;
+        return 3;
     }
 
     private void buildTermsForm() {
-        var c = layout.content();
-        var footer = TerminalActionLayout.of(c);
-        button(
-                new TerminalLayout.Rect(c.x() + 12, c.y(), c.width() - 24, 20),
+        var geometry = ExchangeTermsLayout.of(layout.content(), termsWarning(), message != null || pending);
+        var footer = geometry.footer();
+        fieldButton(
+                geometry.name(),
                 text("channel_named", channelName),
-                () -> input(text("channel_name_prompt"), channelName, false, value -> {
+                () -> input(text("channel_name_prompt"), channelName, value -> {
                     channelName = new io.github.loongin.omniresonance.network.ManagedName(value).value();
                     dirty = true;
-                }),
-                false);
-        formLabels.add(new FormLabel(
-                text(sending ? "sending_to" : "receiving_from", peerName()),
-                new TerminalLayout.Rect(c.x() + 12, c.y() + 23, c.width() - 24, 10)));
-        int top = c.y() + 36;
-        int available = footer.content().bottom() - top - (message != null || pending ? 14 : 0);
-        visibleRows = Math.max(1, available / 32);
+                }));
+        formLabels.add(new FormLabel(text(sending ? "sending_to" : "receiving_from", peerName()), geometry.peer()));
+        int top = geometry.form().y();
+        visibleRows = Math.min(termsRows(), Math.max(1, geometry.form().height() / 32));
         firstRow = Math.clamp(firstRow, 0, Math.max(0, termsRows() - visibleRows));
-        listBounds = new TerminalLayout.Rect(c.x() + 12, top, c.width() - 24, Math.max(0, available));
+        listBounds = geometry.form();
         boolean active = !pending && !uncertain;
         for (int i = firstRow; i < Math.min(termsRows(), firstRow + visibleRows); i++) {
-            var row = new TerminalLayout.Rect(listBounds.x(), top + (i - firstRow) * 32, listBounds.width() - 6, 32);
+            var row = new TerminalLayout.Rect(listBounds.x(), top + (i - firstRow) * 32, listBounds.width(), 32);
             if (i == 0) {
-                button(
-                        formCell(row, 0, 1, text("direction")),
-                        text(sending ? "send" : "receive"),
-                        () -> {
-                            sending = !sending;
-                            changed();
-                        },
-                        false);
-                button(
+                fieldButton(formCell(row, 0, 1, text("direction")), text(sending ? "send" : "receive"), () -> {
+                    sending = !sending;
+                    changed();
+                });
+                fieldButton(
                         formCell(row, 1, 1, text("scope")),
                         text(allTypes ? "all" : "type_count", selectedTypes.size()),
-                        () -> go(Page.SCOPE),
-                        false);
+                        () -> go(Page.SCOPE));
                 addRenderableWidget(intervalControl(
                         font, formCell(row, 2, 1, text("interval_label")), intervalDraft, active, value -> {
                             intervalDraft = value;
                             dirty = true;
                         }));
             } else if (i == 1) {
-                button(
+                fieldButton(
                         formCell(row, 0, 2, text("filter_label")),
                         Component.literal(filterName.isEmpty() ? label("filter_required") : filterName),
-                        () -> send(ExchangeRequest.PRESETS, 0, new byte[0]),
-                        false);
-                button(
+                        () -> send(ExchangeRequest.PRESETS, 0, new byte[0]));
+                fieldButton(
                         formCell(row, 2, 1, text("mode_label")),
                         text(mode == FilterMode.WHITELIST ? "whitelist" : "blacklist"),
                         () -> {
                             mode = mode == FilterMode.WHITELIST ? FilterMode.BLACKLIST : FilterMode.WHITELIST;
                             changed();
-                        },
-                        false);
+                        });
             } else if (i == 2) {
-                button(
+                addRenderableWidget(TerminalResourceSettingsList.entry(
                         new TerminalLayout.Rect(row.x(), row.y() + 6, row.width(), 20),
-                        text("rates_value", rates.size()),
-                        () -> go(Page.RATES),
-                        false);
-            } else {
-                Component warning = text(editingExisting ? "revision_warning" : "cycle");
-                if (editingExisting
-                        && reverse(detail.target().network(), detail.source().network()))
-                    warning = warning.copy().append(" · ").append(text("cycle"));
-                formLabels.add(new FormLabel(warning, new TerminalLayout.Rect(row.x(), row.y() + 4, row.width(), 20)));
+                        parameters.size(),
+                        !pending && !uncertain,
+                        () -> {
+                            if (!pending && !uncertain) go(Page.RATES);
+                        }));
             }
         }
+        if (termsWarning()) {
+            Component warning = text(editingExisting ? "revision_warning" : "cycle");
+            if (editingExisting
+                    && reverse(detail.target().network(), detail.source().network()))
+                warning = warning.copy().append(" · ").append(text("cycle"));
+            formLabels.add(new FormLabel(warning, geometry.warning()));
+        }
+        var defaults = new TerminalLayout.Rect(
+                layout.content().x() + 8,
+                footer.primary().y(),
+                Math.max(
+                        0,
+                        Math.min(140, footer.secondary().x() - layout.content().x() - 14)),
+                20);
+        button(defaults, text("default_control", rateText(null, defaultRate)), this::editDefaultRate, false);
         button(footer.secondary(), text("cancel"), () -> back(false), false);
         button(footer.primary(), text("save"), this::save, true);
     }
@@ -1024,14 +1178,17 @@ final class ExchangeScreen extends Screen {
         return box;
     }
 
+    private TerminalRowButton fieldButton(TerminalLayout.Rect bounds, Component label, Runnable action) {
+        var button = addRenderableWidget(TerminalFormGrid.field(bounds, label, !pending && !uncertain, () -> {
+            if (!pending && !uncertain) action.run();
+        }));
+        return button;
+    }
+
     private TerminalLayout.Rect formCell(TerminalLayout.Rect row, int column, int span, Component label) {
         var control = TerminalFormGrid.control(row, 3, column, span);
         formLabels.add(new FormLabel(label, new TerminalLayout.Rect(control.x(), row.y(), control.width(), 10)));
         return control;
-    }
-
-    private static Row info(String key, String value) {
-        return new Row(text("field", label(key), value), null);
     }
 
     private String endpoint(ExchangeRuleView.Endpoint endpoint) {
@@ -1067,17 +1224,33 @@ final class ExchangeScreen extends Screen {
                 },
                 primary));
         b.active = (!pending && !uncertain) || dialogText != null;
+        if (primary
+                && dialogText != null
+                && dialogSubmit == null
+                && shownCode == null
+                && dialogText.getContents()
+                        instanceof net.minecraft.network.chat.contents.TranslatableContents prompt) {
+            String key = prompt.getKey();
+            b.setDanger(key.endsWith("terminate_confirm")
+                    || key.endsWith("pair_close_confirm")
+                    || key.endsWith("discard")
+                    || key.endsWith("revoke_confirm")
+                    || key.endsWith("remove_unknown"));
+        }
         b.setTooltip(Tooltip.create(TerminalText.body(label)));
     }
 
     private void enterCode() {
-        input(text("enter_code"), "", false, value -> {
+        input(text("enter_code"), "", value -> {
             proposalCode = value.trim();
             send(ExchangeRequest.RESOLVE, 0, bytes(b -> b.writeUtf(proposalCode, 22)));
         });
     }
 
     private void showCode(Code code) {
+        suspendedInput = null;
+        parameterInput = null;
+        parameterEditor = null;
         shownCode = code;
         dialogText = text("code_help", code.value());
         dialogSubmit = null;
@@ -1095,10 +1268,46 @@ final class ExchangeScreen extends Screen {
         intent(new ExchangeIntent.Change(detail.id(), detail.revision(), action));
     }
 
+    private Component confirmationHeading() {
+        if (dialogText != null
+                && dialogText.getContents()
+                        instanceof net.minecraft.network.chat.contents.TranslatableContents content) {
+            String key = content.getKey();
+            if (key.endsWith("terminate_confirm")) {
+                Component heading = text("terminate");
+                if (detail != null) {
+                    var placement = placements.get(detail.id());
+                    if (placement != null)
+                        heading = heading.copy().append(" · ").append(placement.name());
+                }
+                return heading;
+            }
+            if (key.endsWith("pair_close_confirm"))
+                return text("pair_close").copy().append(" · ").append(peerName());
+            if (key.endsWith("discard")) return text("discard");
+            if (key.endsWith("approve_confirm")) return text("approve");
+            if (key.endsWith("revoke_confirm")) return text("revoke");
+        }
+        return text("confirm");
+    }
+
     private void confirm(Component prompt, Runnable action) {
+        suspendedInput = dialogSubmit == null
+                ? null
+                : new InputDialog(
+                        dialogText,
+                        dialogSubmit,
+                        parameterInput,
+                        parameterEditor,
+                        parameterEditor == null ? inputValue : parameterEditor.rate,
+                        inputOriginal,
+                        message);
+        parameterInput = null;
+        parameterEditor = null;
         shownCode = null;
         dialogText = prompt;
         dialogAction = () -> {
+            suspendedInput = null;
             dialogText = null;
             dialogAction = null;
             action.run();
@@ -1107,7 +1316,27 @@ final class ExchangeScreen extends Screen {
         rebuild();
     }
 
-    private void input(Component prompt, String initial, boolean interval, Consumer<String> apply) {
+    void input(Component prompt, String initial, Consumer<String> apply) {
+        input(prompt, initial, apply, null);
+    }
+
+    private void input(
+            Component prompt,
+            String initial,
+            Consumer<String> apply,
+            @Nullable TerminalResourceParameterView.Form parameter) {
+        input(prompt, initial, apply, parameter, null);
+    }
+
+    private void input(
+            Component prompt,
+            String initial,
+            Consumer<String> apply,
+            @Nullable TerminalResourceParameterView.Form parameter,
+            @Nullable ResourceParameterDraft editor) {
+        suspendedInput = null;
+        parameterEditor = editor;
+        parameterInput = parameter;
         shownCode = null;
         dialogText = prompt;
         dialogSubmit = apply;
@@ -1115,15 +1344,42 @@ final class ExchangeScreen extends Screen {
         inputValue = initial;
         inputOriginal = initial;
         message = null;
-        intervalInput = interval;
         rebuild();
     }
 
-    private void buildDialog() {
-        var bounds = dialogSubmit == null
+    private TerminalLayout.Rect dialogBounds() {
+        return dialogSubmit == null
                 ? TerminalDialogLayout.confirmation(layout.window(), font, dialogText)
-                : TerminalDialogLayout.editor(layout.window());
+                : parameterInput != null
+                        ? TerminalResourceParameterLayout.of(layout.content(), parameterEditor != null, false)
+                                .dialog()
+                        : TerminalDialogLayout.editor(layout.window());
+    }
+
+    private void buildDialog() {
+        var bounds = dialogBounds();
         var footer = TerminalActionLayout.of(bounds);
+        boolean parameter = dialogSubmit != null && parameterInput != null;
+        if (parameter) {
+            var geometry = TerminalResourceParameterLayout.of(layout.content(), parameterEditor != null, false);
+            input = TerminalResourceParameterView.build(
+                    font,
+                    geometry,
+                    parameterForm(),
+                    parameterEditor == null
+                            ? new TerminalResourceParameterView.Bindings(value -> inputValue = value, null, null)
+                            : parameterEditor.bindings(
+                                    () -> {
+                                        inputValue = parameterEditor.rate;
+                                        message = null;
+                                    },
+                                    this::rebuild),
+                    new TerminalResourceParameterView.Actions(
+                            this::restoreParameter, this::cancelDialog, () -> applyInput(inputValue)),
+                    this::addRenderableWidget);
+            setFocused(input);
+            return;
+        }
         if (shownCode != null) {
             Code code = shownCode;
             button(
@@ -1135,10 +1391,8 @@ final class ExchangeScreen extends Screen {
                     false);
         }
         if (dialogSubmit != null) {
-            input = intervalInput
-                    ? new TerminalIntervalBox(
-                            font, bounds.x() + 12, bounds.y() + 48, bounds.width() - 24, 20, dialogText)
-                    : new TerminalEditBox(font, bounds.x() + 12, bounds.y() + 48, bounds.width() - 24, 20, dialogText);
+            var field = new TerminalLayout.Rect(bounds.x() + 12, bounds.y() + 48, bounds.width() - 24, 20);
+            input = new TerminalEditBox(font, field.x(), field.y(), field.width(), field.height(), dialogText);
             input.setMaxLength(64);
             input.setValue(inputValue);
             input.setResponder(value -> inputValue = value);
@@ -1148,65 +1402,139 @@ final class ExchangeScreen extends Screen {
         button(
                 (shownCode == null ? footer.secondary() : TerminalActionLayout.button(bounds, 3, 1)),
                 text("cancel"),
-                () -> {
-                    dialogText = null;
-                    dialogSubmit = null;
-                    dialogAction = null;
-                    rebuild();
-                },
+                this::cancelDialog,
                 false);
         button(
                 (shownCode == null ? footer.primary() : TerminalActionLayout.button(bounds, 3, 2)),
                 text(shownCode != null ? "copy" : dialogSubmit == null ? "confirm" : "apply"),
                 () -> {
                     if (dialogSubmit != null) {
-                        Consumer<String> apply = dialogSubmit;
-                        Component prompt = dialogText;
-                        String value = inputValue;
-                        try {
-                            dialogText = null;
-                            dialogSubmit = null;
-                            apply.accept(value);
-                            rebuild();
-                        } catch (IllegalArgumentException | ArithmeticException failure) {
-                            dialogText = prompt;
-                            dialogSubmit = apply;
-                            message = text("invalid");
-                            rebuild();
-                        }
+                        applyInput(inputValue);
                     } else if (dialogAction != null) dialogAction.run();
                 },
                 true);
+    }
+
+    TerminalResourceParameterView.Form parameterForm() {
+        return parameterEditor == null
+                ? parameterInput.withRate(inputValue)
+                : parameterEditor.form(parameterInput.unit(), true, true);
+    }
+
+    void applyInput(String value) {
+        Consumer<String> apply = dialogSubmit;
+        Component prompt = dialogText;
+        try {
+            dialogText = null;
+            dialogSubmit = null;
+            apply.accept(value);
+            clearDialog();
+            rebuild();
+        } catch (IllegalArgumentException | ArithmeticException failure) {
+            dialogText = prompt;
+            dialogSubmit = apply;
+            message = parameterInput == null ? text("invalid") : NodeResourcePolicyView.text("invalid");
+            if (parameterEditor != null) parameterEditor.invalid = true;
+            inputValue = value;
+            rebuild();
+        }
+    }
+
+    boolean editingParameter() {
+        return dialogSubmit != null && parameterInput != null;
+    }
+
+    @Nullable
+    Component inputError() {
+        return message;
+    }
+
+    void cancelDialog() {
+        var retained = suspendedInput;
+        clearDialog();
+        if (retained != null) {
+            dialogText = retained.prompt();
+            dialogSubmit = retained.submit();
+            parameterInput = retained.form();
+            parameterEditor = retained.editor();
+            inputValue = retained.value();
+            inputOriginal = retained.original();
+            message = retained.error();
+        }
+        rebuild();
+    }
+
+    private void clearDialog() {
+        message = null;
+        suspendedInput = null;
+        dialogText = null;
+        dialogSubmit = null;
+        dialogAction = null;
+        parameterInput = null;
+        parameterEditor = null;
+        input = null;
+        inputValue = "";
+        inputOriginal = "";
+    }
+
+    void openParameterEditor(
+            ResourceParameterDraft editor, Component unit, Consumer<ResourceTransferPolicy.InputOverride> apply) {
+        input(
+                text("rate_help", NodeResourcePolicyView.typeName(editor.id), unit),
+                editor.rate,
+                value -> {
+                    editor.rate = value;
+                    apply.accept(editor.value());
+                },
+                editor.form(unit, true, true),
+                editor);
+    }
+
+    static Component parameterUnit(ResourceLocation type, String unit) {
+        return type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM)
+                ? NodeResourcePolicyView.text("unit.item")
+                : Component.literal(unit);
     }
 
     private void editRate(ResourceLocation type) {
         Type known = types.stream().filter(t -> t.id().equals(type)).findFirst().orElse(null);
         if (known == null) {
             confirm(text("remove_unknown"), () -> {
-                rates.remove(type);
+                parameters.remove(type);
                 dirty = true;
                 go(Page.RATES);
             });
             return;
         }
-        long value = rates.getOrDefault(type, known.batch());
-        boolean fluid = known.unit().equals("mB");
-        input(
-                text("rate_help", NodeResourcePolicyView.typeName(type), fluid ? "B" : known.unit()),
-                fluid ? BigDecimal.valueOf(value, 3).stripTrailingZeros().toPlainString() : Long.toString(value),
-                false,
-                v -> {
-                    if (v.isBlank()) rates.remove(type);
-                    else {
-                        long amount = fluid
-                                ? new BigDecimal(v.trim()).movePointRight(3).longValueExact()
-                                : positive(v);
-                        if (amount < 1) throw new IllegalArgumentException();
-                        rates.put(type, amount);
-                    }
-                    dirty = true;
-                    go(Page.RATES);
-                });
+        var editor = new ResourceParameterDraft(type, initialParameter(parameters, type, defaultRate, known.batch()));
+        openParameterEditor(editor, parameterUnit(type, known.unit()), complete -> {
+            parameters.put(type, complete);
+            dirty = true;
+            go(Page.RATES);
+        });
+    }
+
+    private void restoreParameter() {
+        if (parameterEditor == null) {
+            applyInput(Long.toString(ExchangeTerms.DEFAULT_RATE));
+            return;
+        }
+        parameters.remove(parameterEditor.id);
+        dirty = true;
+        clearDialog();
+        go(Page.RATES);
+    }
+
+    static ResourceTransferPolicy.InputOverride initialParameter(
+            Map<ResourceLocation, ResourceTransferPolicy.InputOverride> parameters,
+            ResourceLocation type,
+            long defaultLimit,
+            long defaultBatch) {
+        var override = parameters.get(type);
+        return override == null
+                ? new ResourceTransferPolicy.InputOverride(
+                        defaultLimit, ResourceTransferPolicy.BatchMode.GREEDY, defaultBatch)
+                : override;
     }
 
     private static long positive(String value) {
@@ -1215,18 +1543,26 @@ final class ExchangeScreen extends Screen {
         return n;
     }
 
+    private Component rateUnit(ResourceLocation type) {
+        for (var known : types) if (known.id().equals(type)) return parameterUnit(type, known.unit());
+        return NodeResourcePolicyView.text("native_units");
+    }
+
+    private String rateValueText(ResourceLocation type, long amount) {
+        return Long.toString(amount);
+    }
+
     private String rateText(@Nullable ResourceLocation type, long amount) {
-        if (amount == Long.MAX_VALUE) return label("unlimited");
         Type known = types.stream().filter(t -> t.id().equals(type)).findFirst().orElse(null);
-        return known != null && known.unit().equals("mB")
-                ? BigDecimal.valueOf(amount, 3).stripTrailingZeros().toPlainString() + " B"
-                : amount + (known == null ? "" : " " + known.unit());
+        return amount
+                + (known == null ? "" : " " + parameterUnit(type, known.unit()).getString());
     }
 
     @Override
     public void tick() {
         tick++;
-        if (search.due(tick)) {
+        if (resourceSelection != null && resourceSelection.tick(tick)) rebuild();
+        if (resourceSelection == null && search.due(tick)) {
             search.handled();
             firstRow = 0;
             rebuild();
@@ -1246,12 +1582,15 @@ final class ExchangeScreen extends Screen {
         g.fill(0, 0, width, height, TerminalTheme.WORLD_DIM);
         TerminalTheme.renderWindow(g, layout);
         var top = TerminalHeaderLayout.topBarContent(layout.window());
-        var header = TerminalHeaderLayout.atRightEdge(top, searchable());
+        var header = TerminalHeaderLayout.atRightEdge(top, searchable() || page == Page.RATES);
         var name = TerminalNetworkContext.layout(header.remaining(), false, false);
         TerminalText.drawHeaderTitle(
                 g,
                 font,
-                label("page." + page.name().toLowerCase(java.util.Locale.ROOT)),
+                label(
+                        page == Page.EDIT && !editingExisting
+                                ? "page.create"
+                                : "page." + page.name().toLowerCase(java.util.Locale.ROOT)),
                 new TerminalLayout.Rect(top.x(), top.y(), name.x() - top.x() - 6, 20));
         TerminalText.drawNetworkLabel(
                 network.name(),
@@ -1259,73 +1598,103 @@ final class ExchangeScreen extends Screen {
                 font::width,
                 TerminalTheme.TEXT,
                 (value, x, y, color, shadow) -> g.drawString(font, value, x, y, color, shadow));
-        TerminalTheme.renderPanel(g, layout.content());
-        if (dialogText == null)
-            for (var label : formLabels) {
-                var r = label.bounds();
-                if (r.height() > 10) {
-                    var lines = font.split(TerminalText.body(label.text()), r.width());
-                    for (int i = 0; i < Math.min(lines.size(), r.height() / 10); i++)
-                        g.drawString(font, lines.get(i), r.x(), r.y() + i * 10, TerminalTheme.MUTED, false);
-                } else
-                    g.drawString(
-                            font,
-                            TerminalText.ellipsize(font, label.text().getString(), r.width()),
-                            r.x(),
-                            r.y(),
-                            TerminalTheme.MUTED,
-                            false);
-                if (mouseX >= r.x()
-                        && mouseX < r.right()
-                        && mouseY >= r.y()
-                        && mouseY < r.bottom()
-                        && font.width(label.text()) > r.width())
-                    setTooltipForNextRenderPass(TerminalText.body(label.text()));
-            }
-        if (dialogText != null) {
-            var bounds = dialogSubmit == null
-                    ? TerminalDialogLayout.confirmation(layout.window(), font, dialogText)
-                    : TerminalDialogLayout.editor(layout.window());
-            TerminalDialogLayout.render(g, layout.window(), bounds);
-            int y = bounds.y() + 12;
-            for (var line : font.split(TerminalText.body(dialogText), bounds.width() - 24)) {
-                g.drawString(font, line, bounds.x() + 12, y, TerminalTheme.TEXT, false);
-                y += 10;
-            }
-        } else {
-            if (listBounds != null)
-                TerminalTheme.renderScrollbar(
-                        g,
-                        listBounds.right() - 6,
-                        listBounds.y(),
-                        listBounds.height(),
-                        visibleRowCount(),
-                        visibleRows,
-                        firstRow);
-            if (message != null || pending)
+        for (var label : formLabels) {
+            var r = label.bounds();
+            if (r.height() > 10) {
+                var lines = font.split(TerminalText.body(label.text()), r.width());
+                for (int i = 0; i < Math.min(lines.size(), r.height() / 10); i++)
+                    g.drawString(font, lines.get(i), r.x(), r.y() + i * 10, TerminalTheme.MUTED, false);
+            } else
                 g.drawString(
                         font,
-                        TerminalText.ellipsize(
-                                font,
-                                (pending ? text("waiting") : message).getString(),
-                                layout.content().width() - 8),
-                        layout.content().x() + 4,
-                        (editing()
-                                        ? TerminalActionLayout.of(layout.content())
-                                                .content()
-                                                .bottom()
-                                        : layout.content().bottom())
-                                - 10,
+                        TerminalText.ellipsize(font, label.text().getString(), r.width()),
+                        r.x(),
+                        r.y(),
                         TerminalTheme.MUTED,
                         false);
+            if (dialogText == null
+                    && mouseX >= r.x()
+                    && mouseX < r.right()
+                    && mouseY >= r.y()
+                    && mouseY < r.bottom()
+                    && font.width(label.text()) > r.width())
+                setTooltipForNextRenderPass(TerminalText.body(label.text()));
         }
-        if (dialogText != null && message != null && dialogSubmit != null) {
-            var d = TerminalDialogLayout.editor(layout.window());
+        if (resourceSelection != null)
+            ResourceTypeSelectionView.render(g, font, layout.content(), resourceSelection, tick);
+        else if (page == Page.RATES)
+            TerminalResourceSettingsList.renderPage(g, font, layout.content(), parameters.size(), firstRow);
+        else if (listBounds != null)
+            TerminalTheme.renderScrollbar(
+                    g,
+                    listBounds.right() - 6,
+                    listBounds.y(),
+                    listBounds.height(),
+                    visibleRowCount(),
+                    visibleRows,
+                    firstRow);
+        if (dialogText == null && (message != null || pending))
+            g.drawString(
+                    font,
+                    TerminalText.ellipsize(
+                            font,
+                            (pending ? text("waiting") : message).getString(),
+                            layout.content().width() - 8),
+                    layout.content().x() + 4,
+                    (editing()
+                                    ? TerminalActionLayout.of(layout.content())
+                                            .content()
+                                            .bottom()
+                                    : layout.content().bottom())
+                            - 10,
+                    TerminalTheme.MUTED,
+                    false);
+        if (dialogText != null) modalBackdrop.render(widget -> widget.render(g, -1, -1, partialTick));
+    }
+
+    @Override
+    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        renderPageLayers(
+                () -> super.render(graphics, mouseX, mouseY, partialTick),
+                dialogText == null
+                        ? null
+                        : () -> modalBackdrop.renderForeground(
+                                graphics, mouseX, mouseY, partialTick, () -> renderDialog(graphics)));
+    }
+
+    static void renderPageLayers(Runnable page, @Nullable Runnable dialog) {
+        if (dialog == null) page.run();
+        else TerminalForegroundLayer.ordered(page, dialog);
+    }
+
+    private void renderDialog(GuiGraphics g) {
+        var bounds = dialogBounds();
+        ModalBackdrop.renderShade(g, layout);
+        if (parameterInput != null && dialogSubmit != null) {
+            TerminalResourceParameterView.render(
+                    g,
+                    font,
+                    TerminalResourceParameterLayout.of(layout.content(), parameterEditor != null, false),
+                    parameterForm(),
+                    inputError());
+        } else TerminalTheme.renderDialogPanel(g, bounds);
+        if (dialogSubmit == null) {
+            TerminalText.drawDialogTitle(g, font, confirmationHeading(), bounds);
+            int y = bounds.y() + 34;
+            for (var line : font.split(TerminalText.body(dialogText), bounds.width() - 24)) {
+                g.drawString(font, line, bounds.x() + 12, y, TerminalTheme.MUTED, false);
+                y += 10;
+            }
+        } else if (parameterInput == null) {
+            TerminalText.drawDialogTitle(g, font, dialogText, bounds);
+        }
+        if (dialogText != null && message != null && dialogSubmit != null && parameterInput == null) {
+            var d = dialogBounds();
             TerminalDialogLayout.renderInputError(
                     g,
                     font,
                     input,
-                    message,
+                    inputError(),
                     TerminalActionLayout.of(d).primary().y());
         }
     }
@@ -1333,6 +1702,20 @@ final class ExchangeScreen extends Screen {
     @Override
     public boolean mouseScrolled(double x, double y, double dx, double dy) {
         if (dialogText != null) return super.mouseScrolled(x, y, dx, dy);
+        if (resourceSelection != null) {
+            var bounds = ResourceTypeSelectionView.layout(layout.content(), resourceSelection)
+                    .list();
+            if (x >= bounds.rows().x()
+                    && x < bounds.scrollbar().right()
+                    && y >= bounds.rows().y()
+                    && y < bounds.rows().bottom()
+                    && dy != 0) {
+                resourceSelection.wheel(dy, bounds.visibleRows());
+                rebuild();
+                return true;
+            }
+            return super.mouseScrolled(x, y, dx, dy);
+        }
         if (page == Page.EDIT)
             for (var widget : children())
                 if (widget instanceof TerminalIntervalBox field && field.mouseScrolled(x, y, dx, dy)) return true;
@@ -1355,13 +1738,17 @@ final class ExchangeScreen extends Screen {
     }
 
     private boolean handleMouseClick(double x, double y, int button) {
-        boolean was = search.expanded();
+        var currentSearch = activeSearch();
+        boolean was = currentSearch.expanded();
         boolean handled = super.mouseClicked(x, y, button);
-        search.finishToggleClick(
+        if (currentSearch != activeSearch()) return handled;
+        currentSearch.finishToggleClick(
                 was,
                 this,
-                search.expanded()
-                        ? search.field(font, searchBounds(), text("search"), 256, v -> search.edit(v, tick))
+                currentSearch.expanded()
+                        ? resourceSelection == null
+                                ? search.field(font, searchBounds(), text("search"), 256, v -> search.edit(v, tick))
+                                : resourceSearchField
                         : null);
         return handled;
     }
@@ -1389,20 +1776,22 @@ final class ExchangeScreen extends Screen {
         return super.keyPressed(key, scan, modifiers);
     }
 
-    private void back(boolean root) {
+    void back(boolean root) {
         if (root) {
             leave(true);
             return;
         }
         if (dialogText != null) {
-            dialogText = null;
-            dialogAction = null;
-            dialogSubmit = null;
-            rebuild();
+            cancelDialog();
             return;
         }
         if (pending || uncertain) {
             leave(false);
+            return;
+        }
+        if (resourceSelection != null) {
+            if (resourceSelection.closeSearch(tick)) rebuild();
+            else go(page == Page.SCOPE ? Page.EDIT : Page.RATES);
             return;
         }
         if (search.close(tick)) {
@@ -1422,8 +1811,7 @@ final class ExchangeScreen extends Screen {
             return;
         }
         if (page == Page.EDIT) {
-            if (new ClientDraftExit(dirty || dialogSubmit != null && !inputValue.equals(inputOriginal), submitted)
-                    .requiresConfirmation()) {
+            if (new ClientDraftExit(draftDirty(), submitted).requiresConfirmation()) {
                 confirm(text("discard"), () -> {
                     dirty = false;
                     go(editingExisting ? Page.DETAIL : Page.RULES);
@@ -1445,10 +1833,10 @@ final class ExchangeScreen extends Screen {
     }
 
     private void leave(boolean root) {
-        if (new ClientDraftExit(dirty || dialogSubmit != null && !inputValue.equals(inputOriginal), submitted)
-                .requiresConfirmation()) {
+        if (new ClientDraftExit(draftDirty(), submitted).requiresConfirmation()) {
             confirm(text("discard"), () -> {
                 dirty = false;
+                resourceSelection = null;
                 leave(root);
             });
             return;

@@ -97,14 +97,8 @@ final class TerminalLayoutTest {
     }
 
     @Test
-    void directionDraftDefaultsToInputWhileExistingDirectionsCommitTheOppositeImmediately() {
-        NodeDirectionView.Draft created = NodeDirectionView.Draft.start(null);
-
+    void directionCycleKeepsTheCurrentResourceFormOpposites() {
         assertAll(
-                () -> assertEquals(io.github.loongin.omniresonance.network.TransferDirection.INPUT, created.selected()),
-                () -> assertFalse(NodeDirectionView.commitsImmediately(null)),
-                () -> assertTrue(NodeDirectionView.commitsImmediately(
-                        io.github.loongin.omniresonance.network.TransferDirection.INPUT)),
                 () -> assertEquals(
                         io.github.loongin.omniresonance.network.TransferDirection.OUTPUT,
                         NodeDirectionView.opposite(io.github.loongin.omniresonance.network.TransferDirection.INPUT)),

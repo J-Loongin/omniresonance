@@ -4,6 +4,7 @@ package io.github.loongin.omniresonance.client;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.loongin.omniresonance.compat.ae2.Ae2InterfacePayloads;
 import java.util.ArrayList;
@@ -13,6 +14,86 @@ import net.minecraft.client.gui.Font;
 import org.junit.jupiter.api.Test;
 
 class AeInterfaceSelectionTest {
+    private static Ae2InterfaceScreen readyScreen(ArrayList<Ae2InterfacePayloads.Request> requests) {
+        var screen = new Ae2InterfaceScreen(
+                new Ae2InterfacePayloads.Frame(
+                        new UUID(1, 1),
+                        0,
+                        true,
+                        null,
+                        "unbound",
+                        "",
+                        List.of(new Ae2InterfacePayloads.Choice(new UUID(2, 2), "Network")),
+                        1,
+                        false),
+                (key, scan) -> false,
+                requests::add);
+        screen.build(
+                new Font(
+                        id -> {
+                            throw new AssertionError("No glyph rendering");
+                        },
+                        false),
+                427,
+                240);
+        return screen;
+    }
+
+    @Test
+    void unansweredStatusReadsStayBoundedToOneRequest() {
+        var requests = new ArrayList<Ae2InterfacePayloads.Request>();
+        var screen = readyScreen(requests);
+        for (int i = 0; i < 100; i++) screen.tick();
+        assertEquals(1, requests.size());
+        assertEquals(4, requests.getFirst().action());
+    }
+
+    @Test
+    void lateWriteReplyCannotReactivateAPageAfterItsUnconfirmedResultDeadline() {
+        var requests = new ArrayList<Ae2InterfacePayloads.Request>();
+        var screen = readyScreen(requests);
+        screen.children().stream()
+                .filter(TerminalRowButton.class::isInstance)
+                .map(TerminalRowButton.class::cast)
+                .findFirst()
+                .orElseThrow()
+                .onPress();
+        var write = requests.getLast();
+        for (int i = 0; i < 400; i++) screen.tick();
+        screen.accept(new Ae2InterfacePayloads.Frame(
+                write.session(), write.sequence(), false, write.network(), "ready", "", List.of(), -1, false));
+        assertTrue(screen.children().stream()
+                .filter(TerminalRowButton.class::isInstance)
+                .map(TerminalRowButton.class::cast)
+                .noneMatch(row -> row.active));
+        assertEquals(1, requests.size());
+    }
+
+    @Test
+    void expandedSearchFieldIsLockedAlongWithRowsDuringBinding() {
+        var requests = new ArrayList<Ae2InterfacePayloads.Request>();
+        var screen = readyScreen(requests);
+        screen.children().stream()
+                .filter(TerminalSearchButton.class::isInstance)
+                .map(TerminalSearchButton.class::cast)
+                .findFirst()
+                .orElseThrow()
+                .onPress();
+        screen.children().stream()
+                .filter(TerminalRowButton.class::isInstance)
+                .map(TerminalRowButton.class::cast)
+                .findFirst()
+                .orElseThrow()
+                .onPress();
+        var field = screen.children().stream()
+                .filter(TerminalSearchBox.class::isInstance)
+                .map(TerminalSearchBox.class::cast)
+                .findFirst()
+                .orElseThrow();
+        assertFalse(field.active);
+        assertFalse(field.canConsumeInput());
+    }
+
     @Test
     void actualRowsToggleBindingWithoutAnExtraUnbindRowAndWaitForServer() {
         var session = new UUID(1, 1);

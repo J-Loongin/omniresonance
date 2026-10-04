@@ -28,7 +28,7 @@ enum UiFontScale {
             throw new IllegalArgumentException("Resolved GUI scale must be finite and positive");
         }
         for (UiFontScale profile : PROFILES) {
-            if (guiScale <= profile.sampling) {
+            if (profile.sampling >= 4 && guiScale <= profile.sampling) {
                 return profile;
             }
         }

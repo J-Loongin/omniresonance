@@ -49,7 +49,7 @@ final class DomainInventoryView implements AutoCloseable {
     private @Nullable Consumer<AbstractWidget> add;
     private @Nullable Consumer<GuiEventListener> remove;
     private @Nullable TerminalSearchBox field;
-    private @Nullable TerminalButton sortButton;
+    private @Nullable TerminalSymbolButton sortButton;
     private @Nullable TerminalButton retryButton;
     private String query = "";
     private int scroll, pendingTicks, tooltipScroll, tooltipMaximum, statusAgeTicks, loadingTicks;
@@ -226,10 +226,6 @@ final class DomainInventoryView implements AutoCloseable {
                 click.bulk()));
     }
 
-    private int inventoryX() {
-        return geometry().gridX();
-    }
-
     private int inventoryY() {
         return geometry().inventoryY();
     }
@@ -351,8 +347,7 @@ final class DomainInventoryView implements AutoCloseable {
         cells.clear();
         retryButton = null;
         var geometry = geometry();
-        field = new TerminalSearchBox(
-                font, geometry.gridX(), body.y() + 3, geometry.columns() * CELL, 20, text("search"));
+        field = new TerminalSearchBox(font, body.x() + 26, body.y() + 3, body.width() - 52, 20, text("search"));
         field.setMaxLength(256);
         field.setHint(TerminalText.body(text("search")));
         field.setValue(query);
@@ -364,17 +359,18 @@ final class DomainInventoryView implements AutoCloseable {
         field.active = !receiver.mirror().failed();
         field.setEditable(field.active);
         add.accept(field);
-        var help = new TerminalRowButton(
-                body.x() + 2, geometry.gridY() + 24, 20, 20, Component.literal("?"), ignored -> {});
+        var help = new TerminalSymbolButton(
+                new TerminalLayout.Rect(body.x() + 2, body.y() + 3, 20, 20),
+                Component.literal("?"),
+                TerminalGlyph.HELP,
+                ignored -> {});
         help.setReadOnly();
         help.setTooltip(Tooltip.create(TerminalText.body(text("search_help"))));
         add.accept(help);
-        sortButton = new TerminalButton(
-                body.x() + 2,
-                geometry.gridY(),
-                20,
-                20,
+        sortButton = new TerminalSymbolButton(
+                new TerminalLayout.Rect(body.right() - 22, body.y() + 3, 20, 20),
                 text("sort_icon"),
+                TerminalGlyph.SORT,
                 ignored -> {
                     search.sort(
                             DomainInventorySearch.Sort.values()[
@@ -382,8 +378,7 @@ final class DomainInventoryView implements AutoCloseable {
                     sortButton.setTooltip(Tooltip.create(
                             TerminalText.body(sortLabel().copy().append("\n").append(text("sort_help")))));
                     scroll = 0;
-                },
-                false);
+                });
         sortButton.active = field.active;
         sortButton.setTooltip(
                 Tooltip.create(TerminalText.body(sortLabel().copy().append("\n").append(text("sort_help")))));
@@ -900,8 +895,7 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     private static void renderSlot(GuiGraphics graphics, int x, int y, boolean highlight) {
-        graphics.fill(x, y, x + CELL, y + CELL, 0xFF10191F);
-        graphics.fill(x + 1, y + 1, x + CELL - 1, y + CELL - 1, highlight ? 0xFF426772 : 0xFF35434B);
+        TerminalTheme.renderSlot(graphics, x, y, CELL, highlight);
     }
 
     static Component slotCount(long amount, boolean buckets) {
@@ -939,7 +933,8 @@ final class DomainInventoryView implements AutoCloseable {
         cells.clear();
         hovered = null;
         field = null;
-        sortButton = retryButton = null;
+        sortButton = null;
+        retryButton = null;
         add = null;
         remove = null;
         font = null;

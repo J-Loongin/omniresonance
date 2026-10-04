@@ -90,7 +90,13 @@ public final class ExchangeDraftResolver {
             ExchangeStateNbt.encodeFilter(filter);
         }
         return new ExchangeTerms(
-                draft.scope(), draft.filterMode(), filter, draft.defaultRate(), draft.rates(), draft.intervalTicks());
+                draft.scope(),
+                draft.filterMode(),
+                filter,
+                draft.defaultRate(),
+                Map.of(),
+                draft.intervalTicks(),
+                draft.resourceParameters());
     }
 
     private void validateTypes(ExchangeTermsDraft draft, @Nullable ExchangeAgreement baseline) {
@@ -101,10 +107,11 @@ public final class ExchangeDraftResolver {
                     || !baseline.terms().scope().resourceTypeIds().contains(type))
                 throw new IllegalArgumentException("Cannot introduce an unregistered exchange resource type");
         }
-        for (var entry : draft.rates().entrySet()) {
+        for (var entry : draft.resourceParameters().entrySet()) {
             if (registered.contains(entry.getKey())) continue;
             if (baseline == null
-                    || !entry.getValue().equals(baseline.terms().rates().get(entry.getKey())))
+                    || !entry.getValue()
+                            .equals(baseline.terms().resourceParameters().get(entry.getKey())))
                 throw new IllegalArgumentException("Unknown resource overrides may only be retained unchanged");
         }
     }

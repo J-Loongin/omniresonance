@@ -33,6 +33,103 @@ public final class ExchangePersistenceGameTests {
     private ExchangePersistenceGameTests() {}
 
     @GameTest(template = "bootstrap")
+    public static void exactNodeParametersTransferAndReloadWithoutBypassingReapproval(GameTestHelper helper)
+            throws IOException {
+        Path path = Files.createTempDirectory("omniresonance-exact-exchange-");
+        try {
+            var disk = storage(helper, path);
+            var repository = new SavedNetworkRepository(disk, path);
+            var a = new NetworkMetadata(
+                    new UUID(18101, 1), new UUID(18102, 1), new ManagedName("Batch A"), 0, Set.of());
+            var b = new NetworkMetadata(
+                    new UUID(18101, 2), new UUID(18102, 2), new ManagedName("Batch B"), 0, Set.of());
+            repository.createNetwork(a);
+            repository.createNetwork(b);
+            var networks = new io.github.loongin.omniresonance.network.NetworkDirectory(java.util.List.of(a, b));
+            var data = ExchangeSavedData.create(new ExchangeSavedData.Limits(20, 20));
+            UUID code = new UUID(18103, 1), pair = new UUID(18104, 1), channel = new UUID(18105, 1);
+            data.issue(code, b.ownerId(), b, 0);
+            data.proposePair(pair, code, a.ownerId(), a, b, 0, 1);
+            data.approvePair(pair, b.ownerId(), b, a, 0, 2);
+            disk.set(ExchangeSavedData.STORAGE_ID, data);
+            var type = io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY;
+            var parameter = new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.InputOverride(
+                    130, io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.BatchMode.EXACT, 64);
+            var terms = new ExchangeTerms(
+                    ResourceScope.all(),
+                    FilterMode.WHITELIST,
+                    io.github.loongin.omniresonance.exchange.fixtures.ExchangeFilters.allResources(),
+                    ExchangeTerms.DEFAULT_RATE,
+                    Map.of(),
+                    5,
+                    Map.of(type, parameter));
+            data.createChannel(channel, pair, a.ownerId(), a, b, 1, new ManagedName("Exact batch"), true, terms);
+            data.approve(channel, ExchangeConsent.Side.TARGET, b.ownerId(), a, b, 0, 3);
+            var key = io.github.loongin.omniresonance.transfer.EnergyVariant.INSTANCE.key();
+            var source = repository.domainStorage(a.id()).activate().orElseThrow();
+            var target = repository.domainStorage(b.id()).activate().orElseThrow();
+            try (var deposit = source.reserveDeposit(key, 1000, -1).orElseThrow()) {
+                deposit.commit(1000);
+            }
+            try (var runtime = new io.github.loongin.omniresonance.exchange.ExchangeRuntime(
+                    helper.getLevel().getServer(),
+                    repository,
+                    networks,
+                    io.github.loongin.omniresonance.config.ServerSettings::defaults,
+                    ignored -> null,
+                    () -> 4L)) {
+                for (int i = 0; i < 30; i++)
+                    runtime.step(new io.github.loongin.omniresonance.transfer.TransferWorkBudget(
+                            64, 1000000000, 1000000, () -> 0));
+                helper.assertTrue(
+                        source.amount(key) == 872 && target.amount(key) == 128, "Exact channel moved a partial batch");
+                helper.assertTrue(runtime.failure() == null, "Exact exchange runtime failed");
+            }
+            disk.save();
+            IOUtilities.waitUntilIOWorkerComplete();
+            var reloaded = new SavedNetworkRepository(storage(helper, path), path);
+            var restored = reloaded.exchangeRepository()
+                    .find()
+                    .orElseThrow()
+                    .agreement(channel)
+                    .orElseThrow();
+            helper.assertTrue(
+                    restored.terms().parameter(type).equals(parameter), "Native save lost batch mode or amount");
+            reloaded.loadNetworks();
+            helper.assertTrue(
+                    reloaded.domainStorage(b.id()).activate().orElseThrow().amount(key) == 128,
+                    "Native save lost exact exchanged resources");
+            data.revise(
+                    channel,
+                    ExchangeConsent.Side.SOURCE,
+                    a.ownerId(),
+                    a,
+                    b,
+                    1,
+                    new ExchangeTerms(
+                            ResourceScope.all(),
+                            FilterMode.WHITELIST,
+                            terms.filter(),
+                            ExchangeTerms.DEFAULT_RATE,
+                            Map.of(),
+                            5,
+                            Map.of(
+                                    type,
+                                    new io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.InputOverride(
+                                            130,
+                                            io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.BatchMode
+                                                    .EXACT,
+                                            32))));
+            helper.assertTrue(
+                    !data.agreement(channel).orElseThrow().consent().permitsExecution(a, b),
+                    "Batch-only edit retained old approvals");
+        } finally {
+            removeDirectory(path);
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void optionalResourcesUseApprovedChannelFiltersAndLongRates(GameTestHelper helper)
             throws IOException {
         Path path = Files.createTempDirectory("omniresonance-optional-exchange-");

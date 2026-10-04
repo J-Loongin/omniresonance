@@ -15,13 +15,15 @@ import org.jetbrains.annotations.Nullable;
 
 /** One read-only view. Layout is cached per snapshot/mode/resize; updates retain scroll and revocation discards data. */
 final class TerminalStatusView {
-    private record Line(
+    record Line(
             TerminalStatusPresentation.Row row,
             int top,
             int height,
             List<FormattedCharSequence> labels,
             List<FormattedCharSequence> values,
             boolean card) {}
+
+    record Divider(TerminalLayout.Rect bounds, boolean strong) {}
 
     private final UUID session, network;
     private final long generation;
@@ -31,6 +33,9 @@ final class TerminalStatusView {
     private Font font;
     private TerminalLayout.Rect body;
     private List<Line> lines = List.of();
+    // Relative row dividers are owned by this view, rebuilt with snapshot/mode/size and reused while scrolling.
+    private List<TerminalLayout.Rect> parameterDividers = List.of();
+    private List<Divider> dividers = List.of();
     private List<Component> countLabels = List.of(), countValues = List.of();
     private int scroll, loadingTicks, contentHeight, labelWidth;
     private boolean detailed;
@@ -109,7 +114,7 @@ final class TerminalStatusView {
         if (copyButton != null) copyButton.active = ready;
         if (detailButton != null) {
             detailButton.active = ready;
-            detailButton.setMessage(text(detailed ? "back" : "details"));
+            detailButton.setMessage(text(detailed ? "overview" : "details"));
         }
     }
 
@@ -153,6 +158,8 @@ final class TerminalStatusView {
         int valueWidth = Math.max(1, body.width() - 24 - labelWidth - 10);
         int top = hasOverview() ? 44 : 0;
         var result = new ArrayList<Line>();
+        var parameterLines = new ArrayList<TerminalLayout.Rect>();
+        var separatorLines = new ArrayList<Divider>();
         for (int index = 0; index < rows.size(); index++) {
             var row = rows.get(index);
             boolean card = hasOverview() && index < 2;
@@ -162,11 +169,25 @@ final class TerminalStatusView {
             var values = font.split(TerminalText.body(row.value()), card ? width : valueWidth);
             int height = card
                     ? 14 + (labels.size() + values.size()) * 12
-                    : Math.max(labels.size(), values.size()) * 12 + (row.section() ? 10 : 6);
+                    : Math.max(labels.size(), values.size()) * 12 + (row.section() ? 10 : 12);
             result.add(new Line(row, top, height, labels, values, card));
+            boolean precededByParameter =
+                    index > 0 && !rows.get(index - 1).section() && !(hasOverview() && index - 1 < 2);
+            if (row.section() && !precededByParameter)
+                separatorLines.add(new Divider(new TerminalLayout.Rect(body.x() + 8, top, body.width() - 24, 1), true));
+            if (frame != null && frame.snapshot() != null && !row.section() && !card) {
+                int textHeight = Math.max(labels.size(), values.size()) * 12;
+                var bounds = new TerminalLayout.Rect(body.x() + 8, top + textHeight + 5, body.width() - 24, 1);
+                parameterLines.add(bounds);
+                boolean nextSection =
+                        index + 1 < rows.size() && rows.get(index + 1).section();
+                separatorLines.add(new Divider(bounds, nextSection));
+            }
             top += height + (card ? 6 : 0);
         }
         lines = List.copyOf(result);
+        parameterDividers = List.copyOf(parameterLines);
+        dividers = List.copyOf(separatorLines);
         contentHeight = top;
         scroll = Math.clamp(scroll, 0, maximumScroll());
     }
@@ -174,6 +195,18 @@ final class TerminalStatusView {
     private static TerminalStatusPresentation.Row message(String key) {
         return new TerminalStatusPresentation.Row(
                 text(key), Component.empty(), TerminalStatusPresentation.Tone.MUTED, Component.empty(), false);
+    }
+
+    List<TerminalLayout.Rect> parameterDividers() {
+        return parameterDividers;
+    }
+
+    List<Divider> dividers() {
+        return dividers;
+    }
+
+    List<Line> layoutLines() {
+        return lines;
     }
 
     void tick() {
@@ -192,7 +225,6 @@ final class TerminalStatusView {
 
     void render(GuiGraphics graphics) {
         if (body == null) return;
-        TerminalTheme.renderPanel(graphics, body);
         graphics.drawString(
                 font,
                 TerminalText.body(text(detailed ? "diagnosis" : "overview")),
@@ -211,7 +243,6 @@ final class TerminalStatusView {
                 continue;
             }
             if (line.row().section()) {
-                graphics.fill(body.x() + 8, y, body.right() - 16, y + 1, TerminalTheme.LINE);
                 y += 6;
             }
             drawLines(graphics, line.labels(), body.x() + 8, y, TerminalTheme.MUTED);
@@ -221,6 +252,17 @@ final class TerminalStatusView {
                     body.x() + 8 + labelWidth + 10,
                     y,
                     color(line.row().tone()));
+        }
+        for (var divider : dividers) {
+            var bounds = divider.bounds();
+            int y = start + bounds.y();
+            if (y < body.y() + 36 || y >= body.bottom() - 6) continue;
+            graphics.fill(
+                    bounds.x(),
+                    y,
+                    bounds.right(),
+                    y + 1,
+                    divider.strong() ? TerminalTheme.LINE : TerminalTheme.DETAIL_LINE);
         }
         graphics.disableScissor();
         TerminalTheme.renderScrollbar(
@@ -235,7 +277,7 @@ final class TerminalStatusView {
 
     private void renderStatusCard(GuiGraphics graphics, Line line, int y) {
         int x = body.x() + 8, width = body.width() - 24;
-        TerminalTheme.fillRounded(graphics, x, y, width, line.height(), 4, 0x70224956);
+        TerminalTheme.fillRounded(graphics, x, y, width, line.height(), 4, TerminalTheme.RAISED);
         int accent = line.row().tone() == TerminalStatusPresentation.Tone.MUTED
                 ? TerminalTheme.LINE
                 : color(line.row().tone());
@@ -262,7 +304,8 @@ final class TerminalStatusView {
         for (int index = 0; index < 3; index++) {
             int offset = index * (column + 6);
             int x = body.x() + 8 + offset;
-            TerminalTheme.fillRounded(graphics, x, y, index == 2 ? available - offset : column, 36, 4, 0x401F414E);
+            TerminalTheme.fillRounded(
+                    graphics, x, y, index == 2 ? available - offset : column, 36, 4, TerminalTheme.RAISED);
             graphics.drawString(font, countLabels.get(index), x + 10, y + 4, TerminalTheme.MUTED, false);
             graphics.drawString(font, countValues.get(index), x + 10, y + 19, TerminalTheme.ACCENT, false);
         }

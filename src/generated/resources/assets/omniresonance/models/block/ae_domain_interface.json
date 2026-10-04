@@ -37,7 +37,13 @@
       "faces": {
         "north": {
           "texture": "#port",
-          "tintindex": 0
+          "tintindex": 0,
+          "uv": [
+            0,
+            0,
+            16,
+            16
+          ]
         }
       },
       "from": [
@@ -55,7 +61,13 @@
       "faces": {
         "south": {
           "texture": "#port",
-          "tintindex": 0
+          "tintindex": 0,
+          "uv": [
+            0,
+            0,
+            16,
+            16
+          ]
         }
       },
       "from": [
@@ -73,7 +85,13 @@
       "faces": {
         "west": {
           "texture": "#port",
-          "tintindex": 0
+          "tintindex": 0,
+          "uv": [
+            0,
+            0,
+            16,
+            16
+          ]
         }
       },
       "from": [
@@ -91,7 +109,13 @@
       "faces": {
         "east": {
           "texture": "#port",
-          "tintindex": 0
+          "tintindex": 0,
+          "uv": [
+            0,
+            0,
+            16,
+            16
+          ]
         }
       },
       "from": [
@@ -109,7 +133,13 @@
       "faces": {
         "down": {
           "texture": "#port",
-          "tintindex": 0
+          "tintindex": 0,
+          "uv": [
+            0,
+            0,
+            16,
+            16
+          ]
         }
       },
       "from": [
@@ -127,7 +157,13 @@
       "faces": {
         "up": {
           "texture": "#port",
-          "tintindex": 0
+          "tintindex": 0,
+          "uv": [
+            0,
+            0,
+            16,
+            16
+          ]
         }
       },
       "from": [
@@ -143,8 +179,8 @@
     }
   ],
   "textures": {
-    "case": "omniresonance:block/resonance_transfer_node_top",
-    "particle": "omniresonance:block/resonance_transfer_node_top",
-    "port": "minecraft:block/white_concrete"
+    "case": "omniresonance:block/ae_domain_interface_case",
+    "particle": "omniresonance:block/ae_domain_interface_case",
+    "port": "omniresonance:block/ae_domain_interface_port"
   }
 }

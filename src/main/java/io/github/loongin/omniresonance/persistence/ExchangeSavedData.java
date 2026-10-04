@@ -279,8 +279,7 @@ public final class ExchangeSavedData extends SavedData {
     /** Strict clean restoration; malformed, oversized or future data fails rather than creating empty authority. */
     public static ExchangeSavedData load(CompoundTag tag, Limits limits) {
         int version = ManagedDataNbt.readSchemaVersion(tag);
-        if (version != 1 && version != 2 && version != 3 && version != 4)
-            throw new IllegalArgumentException("Invalid exchange shard schema");
+        if (version < 1 || version > 5) throw new IllegalArgumentException("Invalid exchange shard schema");
         Set<String> fields = version == 1
                 ? Set.of("schema_version", "revision", "invitations", "agreements")
                 : version == 2
@@ -312,7 +311,9 @@ public final class ExchangeSavedData extends SavedData {
         }
         Map<UUID, ExchangeAgreement> agreements = new HashMap<>();
         for (Tag row : ExchangeStateNbt.list(tag, "agreements", Tag.TAG_COMPOUND)) {
-            ExchangeAgreement agreement = ExchangeStateNbt.decodeAgreement((CompoundTag) row);
+            ExchangeAgreement agreement = version < 5
+                    ? ExchangeStateNbt.decodeLegacyAgreement((CompoundTag) row)
+                    : ExchangeStateNbt.decodeAgreement((CompoundTag) row);
             if (agreements.putIfAbsent(agreement.id(), agreement) != null)
                 throw new IllegalArgumentException("Duplicate agreement");
         }
@@ -339,7 +340,7 @@ public final class ExchangeSavedData extends SavedData {
                 : ExchangePairingCatalog.decode(ExchangeStateNbt.compound(tag, "pairing"));
         ExchangeSavedData data = new ExchangeSavedData(
                 limits, checked(tag.getLong("revision"), invitations, agreements, accepted, terminated, pairing));
-        if (version < 4) {
+        if (version < 5) {
             ManagedObjectNbtSize.validate(encode(data.state));
             data.setDirty();
         }
@@ -915,7 +916,7 @@ public final class ExchangeSavedData extends SavedData {
 
     private static CompoundTag encode(State state) {
         CompoundTag tag = new CompoundTag();
-        tag.putInt("schema_version", 4);
+        tag.putInt("schema_version", 5);
         tag.put("pairing", state.pairing.encode());
         tag.putLong("revision", state.revision);
         ListTag invitations = new ListTag();

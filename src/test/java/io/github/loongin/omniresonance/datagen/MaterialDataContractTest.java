@@ -55,20 +55,20 @@ final class MaterialDataContractTest {
     }
 
     @Test
-    void generatedModelsUseDocumentedVanillaTemporaryTextures() throws IOException {
-        assertItemTexture("omni_dust", "minecraft:item/sugar");
-        assertItemTexture("resonance_substrate", "minecraft:item/paper");
-        assertItemTexture("resonance_core", "minecraft:item/nether_star");
+    void generatedModelsUseConfirmedIndependentMaterialTextures() throws IOException {
+        assertItemTexture("omni_dust", "omniresonance:item/omni_dust");
+        assertItemTexture("resonance_substrate", "omniresonance:item/resonance_substrate");
+        assertItemTexture("resonance_core", "omniresonance:item/resonance_core");
 
         for (String name : List.of("omni_dust", "resonance_substrate", "resonance_core")) {
-            assertNull(
-                    resource("assets/omniresonance/textures/item/" + name + ".png"),
-                    () -> name + " unexpectedly uses custom art");
+            try (InputStream texture = resource("assets/omniresonance/textures/item/" + name + ".png")) {
+                assertTrue(texture != null, () -> name + " is missing confirmed artwork");
+            }
         }
     }
 
     @Test
-    void internalResonatingBlockUsesVanillaAppearanceWithoutItemOrLootData() throws IOException {
+    void internalResonatingBlockUsesIndependentAppearanceWithoutItemOrLootData() throws IOException {
         JsonObject state = generatedJson("assets/omniresonance/blockstates/resonating_amethyst.json");
         assertEquals(
                 "omniresonance:block/resonating_amethyst",
@@ -79,7 +79,7 @@ final class MaterialDataContractTest {
         JsonObject model = generatedJson("assets/omniresonance/models/block/resonating_amethyst.json");
         assertEquals("minecraft:block/cube_all", model.get("parent").getAsString());
         assertEquals(
-                "minecraft:block/amethyst_block",
+                "omniresonance:block/resonating_amethyst",
                 model.getAsJsonObject("textures").get("all").getAsString());
         assertNull(resource("assets/omniresonance/models/item/resonating_amethyst.json"));
         assertNull(resource("data/omniresonance/loot_table/blocks/resonating_amethyst.json"));
@@ -235,6 +235,24 @@ final class MaterialDataContractTest {
         var cube = model.getAsJsonArray("elements").get(0).getAsJsonObject();
         assertEquals(List.of(0, 0, 0), integerArray(cube.getAsJsonArray("from")));
         assertEquals(List.of(16, 16, 16), integerArray(cube.getAsJsonArray("to")));
+        assertEquals(
+                "omniresonance:block/ae_domain_interface_case",
+                model.getAsJsonObject("textures").get("case").getAsString());
+        assertEquals(
+                "omniresonance:block/ae_domain_interface_port",
+                model.getAsJsonObject("textures").get("port").getAsString());
+        assertEquals(7, model.getAsJsonArray("elements").size());
+        for (int index = 1; index < 7; index++) {
+            var faces = model.getAsJsonArray("elements")
+                    .get(index)
+                    .getAsJsonObject()
+                    .getAsJsonObject("faces");
+            for (var entry : faces.entrySet()) {
+                var face = entry.getValue().getAsJsonObject();
+                assertEquals(List.of(0, 0, 16, 16), integerArray(face.getAsJsonArray("uv")));
+                assertEquals(0, face.get("tintindex").getAsInt());
+            }
+        }
         assertEquals(
                 "omniresonance:block/ae_domain_interface",
                 generatedJson("assets/omniresonance/models/item/ae_domain_interface.json")

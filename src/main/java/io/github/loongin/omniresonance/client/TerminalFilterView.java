@@ -241,6 +241,10 @@ final class TerminalFilterView {
     private boolean choosingReference;
     private final TerminalSamplePicker samplePicker = new TerminalSamplePicker();
 
+    boolean sampleOpen() {
+        return samplePicker.isOpen();
+    }
+
     boolean closeLocalLayer() {
         if (samplePicker.back()) {
             rebuild.run();
@@ -669,7 +673,6 @@ final class TerminalFilterView {
         if (state instanceof NetworkTerminalState.Filters filters)
             state = new NetworkTerminalState.Filters(filters.network(), library);
         TerminalLayout.Rect body = layout.content();
-        TerminalTheme.renderPanel(graphics, body);
         if (fullMode
                 && !management
                 && (state instanceof NetworkTerminalState.Preset
@@ -694,14 +697,18 @@ final class TerminalFilterView {
                                 .operation()
                                 .name()
                                 .toLowerCase(java.util.Locale.ROOT));
-        graphics.drawString(
-                font,
-                TerminalText.body(
-                        Component.literal(TerminalText.ellipsize(font, heading.getString(), body.width() - 24))),
-                body.x() + 8,
-                body.y() + 7,
-                TerminalTheme.TEXT,
-                false);
+        if (state instanceof NetworkTerminalState.PresetEdit)
+            TerminalText.drawDialogTitle(graphics, font, heading, body);
+        else {
+            graphics.drawString(
+                    font,
+                    TerminalText.body(
+                            Component.literal(TerminalText.ellipsize(font, heading.getString(), body.width() - 24))),
+                    body.x() + 8,
+                    body.y() + 7,
+                    TerminalTheme.TEXT,
+                    false);
+        }
         if (state instanceof NetworkTerminalState.PresetEdit edit) {
             Component help = edit.operation() == PresetEditOperation.DELETE
                     ? label("delete_help")
@@ -1040,11 +1047,7 @@ final class TerminalFilterView {
                     rebuild.run();
                 };
                 Component message = index >= 7
-                        ? Component.literal((draft.selected.contains(
-                                                net.minecraft.resources.ResourceLocation.parse(keys.get(index - 7)))
-                                        ? "✓ "
-                                        : "")
-                                + keys.get(index - 7))
+                        ? Component.literal(keys.get(index - 7))
                         : index == 0
                                         && !draft.type.equals(
                                                 io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM)
@@ -1064,7 +1067,12 @@ final class TerminalFilterView {
                                     ? net.minecraft.world.item.ItemStack.EMPTY
                                     : player.getInventory().getItem(sampleSlot);
                         })
-                        : new TerminalButton(bounds.x(), bounds.y(), bounds.width(), 20, message, press, false);
+                        : index >= 7
+                                ? new TerminalRowButton(bounds, message, press)
+                                : new TerminalButton(bounds.x(), bounds.y(), bounds.width(), 20, message, press, false);
+                if (widget instanceof TerminalRowButton selectionRow)
+                    selectionRow.setSelected(draft.selected.contains(
+                            net.minecraft.resources.ResourceLocation.parse(keys.get(index - 7))));
                 if (index == 1) selectorButton = widget;
                 widget.active = !pending
                         && !deleting
@@ -1099,10 +1107,7 @@ final class TerminalFilterView {
         buildLibrarySearch(font, new TerminalLayout.Rect(body.x() + 4, body.y() + 2, body.width() - 8, 20), add);
         int inset = librarySearch.expanded() ? 50 : 26;
         libraryBounds = new TerminalLayout.Rect(
-                body.x() + 4,
-                body.y() + inset,
-                body.width() - 8,
-                Math.max(0, footer.content().height() - inset));
+                body.x() + 4, body.y() + inset, body.width() - 8, Math.max(0, body.height() - inset));
         var entries = libraryEntries();
         var rows = RoutingListLayout.calculateRows(libraryBounds, entries.size(), libraryScroll);
         libraryScroll = rows.scroll();
@@ -1121,8 +1126,6 @@ final class TerminalFilterView {
             widget.active = !pending && !queryPending;
             add.accept(widget);
         }
-        var back = footer.primary();
-        button(add, back.x(), back.y(), back.width(), "sample_back", this::closeLocalLayer, !pending, false);
     }
 
     private void buildRuleBrowser(TerminalLayout.Rect body, Consumer<AbstractWidget> add, Consumer<Action> actions) {

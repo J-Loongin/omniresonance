@@ -74,6 +74,26 @@ final class TerminalText {
                 false);
     }
 
+    static void drawDialogTitle(GuiGraphics graphics, Font font, Component title, TerminalLayout.Rect bounds) {
+        int width = Math.max(0, bounds.width() - 36);
+        Component shown = title(font, title.getString(), width);
+        TerminalTheme.renderTitleMark(graphics, bounds.x() + 12, bounds.y() + 13);
+        graphics.drawString(font, shown, bounds.x() + 24, bounds.y() + 9, TerminalTheme.TEXT, false);
+        if (font.width(title(title)) <= width) return;
+        var minecraft = Minecraft.getInstance();
+        if (minecraft == null) return;
+        int mouseX = (int) (minecraft.mouseHandler.xpos()
+                * graphics.guiWidth()
+                / minecraft.getWindow().getScreenWidth());
+        int mouseY = (int) (minecraft.mouseHandler.ypos()
+                * graphics.guiHeight()
+                / minecraft.getWindow().getScreenHeight());
+        if (mouseX >= bounds.x() + 24
+                && mouseX < bounds.right() - 12
+                && mouseY >= bounds.y() + 4
+                && mouseY < bounds.y() + 25) renderTooltip(graphics, font, title, mouseX, mouseY);
+    }
+
     static void drawControlText(
             Component text, int measuredWidth, TerminalLayout.Rect bounds, int color, TextDraw draw) {
         draw.draw(
@@ -129,6 +149,14 @@ final class TerminalText {
 
     static String ellipsize(Font font, String value, int maximumWidth) {
         return ellipsize(value, maximumWidth, font::width);
+    }
+
+    record StatusText(String prefix, String status) {}
+
+    static StatusText statusText(String prefix, String status, int maximumWidth, ToIntFunction<String> measure) {
+        String shownStatus = ellipsize(status, maximumWidth, measure);
+        int prefixWidth = Math.max(0, maximumWidth - measure.applyAsInt(shownStatus) - 3);
+        return new StatusText(ellipsize(prefix, prefixWidth, measure), shownStatus);
     }
 
     static String ellipsize(String value, int maximumWidth, ToIntFunction<String> measure) {

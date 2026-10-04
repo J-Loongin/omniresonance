@@ -336,13 +336,8 @@ final class TerminalNetworkSettingsView {
     private static void renderRename(GuiGraphics graphics, Font font, TerminalLayout terminal) {
         TerminalLayout.Rect content = TerminalDialogLayout.editor(terminal.content());
         TerminalDialogLayout.render(graphics, terminal.content(), content);
-        graphics.drawString(
-                font,
-                Component.translatable("omniresonance.terminal.settings.rename_title"),
-                content.x() + 12,
-                content.y() + 18,
-                TerminalTheme.TEXT,
-                false);
+        TerminalText.drawDialogTitle(
+                graphics, font, Component.translatable("omniresonance.terminal.settings.rename_title"), content);
         graphics.drawString(
                 font,
                 Component.translatable("omniresonance.terminal.settings.network_name"),
@@ -356,17 +351,15 @@ final class TerminalNetworkSettingsView {
             GuiGraphics graphics, Font font, TerminalLayout terminal, NetworkTerminalState.NetworkDelete state) {
         TerminalLayout.Rect content = terminal.content();
         TerminalLayout.Rect modal = TerminalDialogLayout.confirmation(terminal.content(), font, deletionMessage(state));
-        graphics.fill(content.x(), content.y(), content.right(), content.bottom(), 0xA000070C);
-        TerminalTheme.renderPanel(graphics, modal);
-        TerminalText.drawCentered(
+        graphics.fill(content.x(), content.y(), content.right(), content.bottom(), TerminalTheme.MODAL_DIM);
+        TerminalTheme.renderDialogPanel(graphics, modal);
+        TerminalText.drawDialogTitle(
                 graphics,
                 font,
                 Component.translatable(
                         "omniresonance.terminal.settings.delete.title",
                         state.deletion().name()),
-                modal.x() + modal.width() / 2,
-                modal.y() + 12,
-                TerminalTheme.TEXT);
+                modal);
         graphics.drawWordWrap(
                 font,
                 TerminalText.body(deletionMessage(state)),

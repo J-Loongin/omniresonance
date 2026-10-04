@@ -14,6 +14,27 @@ import net.minecraft.resources.ResourceLocation;
 import org.junit.jupiter.api.Test;
 
 class DomainExchangeTest {
+    @Test
+    void exactLongMaximumMoveCostsOneTransferAndNeverCreatesPartialBatches() {
+        var created = new AtomicInteger();
+        var source = ledger(SOURCE, created);
+        var target = ledger(TARGET, created);
+        deposit(source, Long.MAX_VALUE);
+        long expected = Long.MAX_VALUE - Long.MAX_VALUE % 64;
+        assertEquals(expected, source.transferTo(target, KEY, Long.MAX_VALUE, -1, 64));
+        assertEquals(63, source.amount(KEY));
+        assertEquals(expected, target.amount(KEY));
+        assertEquals(2, created.get());
+        assertEquals(2, source.revision());
+        assertEquals(1, target.revision());
+        assertFalse(source.hasReservations());
+        assertFalse(target.hasReservations());
+        long revision = source.revision();
+        assertEquals(0, source.transferTo(target, KEY, 63, -1, 64));
+        assertEquals(revision, source.revision());
+        assertThrows(IllegalArgumentException.class, () -> source.transferTo(target, KEY, 1, -1, 0));
+    }
+
     private static final UUID SOURCE = new UUID(1, 1), TARGET = new UUID(1, 2);
     private static final ResourceVariantKey KEY =
             new ResourceVariantKey(ResourceLocation.parse("example:resource"), new byte[] {1, 2, 3});

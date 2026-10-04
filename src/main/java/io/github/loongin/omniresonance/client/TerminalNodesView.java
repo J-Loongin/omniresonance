@@ -16,6 +16,7 @@ import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.util.FormattedCharSequence;
 import org.jetbrains.annotations.Nullable;
 
 /** Searchable node browser with persistent side-by-side panes and explicit node operations. */
@@ -63,6 +64,11 @@ final class TerminalNodesView {
     private long sequence, ticks, anchor;
     private boolean before;
     private NodeDirectoryRequest.Action lastAction = NodeDirectoryRequest.Action.QUERY;
+
+    private record ConfigurationCard(
+            NodeDirectoryPage.Card card, List<FormattedCharSequence> lines, int height, boolean expanded) {}
+    // Only this bounded page's cards; rebuilt with the page, width or expansion and never measured each frame.
+    private List<ConfigurationCard> configurationCards = List.of();
 
     TerminalNodesView(
             UUID view,
@@ -136,11 +142,12 @@ final class TerminalNodesView {
         add.accept(widget);
     }
 
-    private void button(TerminalLayout.Rect r, Component label, boolean active, Runnable click) {
+    private TerminalButton button(TerminalLayout.Rect r, Component label, boolean active, Runnable click) {
         var b = new TerminalButton(r.x(), r.y(), r.width(), r.height(), label, ignored -> click.run(), false);
         b.active = active;
         b.setTooltip(Tooltip.create(TerminalText.body(label)));
         add(b);
+        return b;
     }
 
     private boolean dirty() {
@@ -519,27 +526,22 @@ final class TerminalNodesView {
         return List.copyOf(result);
     }
 
-    private int cardHeight(NodeDirectoryPage.Card card) {
-        if (!key(card).equals(expanded)) return 32;
-        int lines = 0;
+    private ConfigurationCard layoutCard(NodeDirectoryPage.Card card) {
+        boolean open = key(card).equals(expanded);
+        if (!open) return new ConfigurationCard(card, List.of(), 20, false);
+        var lines = new ArrayList<FormattedCharSequence>();
         for (var line : cardLines(card))
-            lines += font.split(
-                            TerminalText.body(line), Math.max(1, layout.detail().width() - 28))
-                    .size();
-        return 64 + lines * 10;
+            lines.addAll(font.split(
+                    TerminalText.body(line), Math.max(1, layout.detail().width() - 28)));
+        return new ConfigurationCard(card, List.copyOf(lines), 60 + lines.size() * 10, true);
     }
 
     private int actionColumns() {
-        return layout.detail().width() >= 340 ? 4 : layout.detail().width() >= 140 ? 2 : 1;
+        return layout.detail().width() >= 140 ? 2 : 1;
     }
 
     private int detailTop() {
-        int count = page != null
-                        && page.selected() != null
-                        && !page.selected().node().enabled()
-                ? 3
-                : 4;
-        return ((count + actionColumns() - 1) / actionColumns()) * 26 + 8;
+        return ((4 + actionColumns() - 1) / actionColumns()) * 26 + 8;
     }
 
     private void buildDetail() {
@@ -573,13 +575,19 @@ final class TerminalNodesView {
             }
         }
         int full = basicHeight();
+        var cards = new ArrayList<ConfigurationCard>();
         if (node.enabled() && !page.cards().isEmpty()) {
-            for (var card : page.cards()) full += cardHeight(card) + 6;
+            for (var card : page.cards()) {
+                var measured = layoutCard(card);
+                cards.add(measured);
+                full += measured.height() + 6;
+            }
         } else {
             for (var line : font.split(
                     TerminalText.body(text(node.enabled() ? "no_configuration" : "disabled_notice")),
                     Math.max(1, rect.width() - 28))) full += 10;
         }
+        configurationCards = List.copyOf(cards);
         detailMaximum = Math.max(0, full - Math.max(0, rect.height() - detailTop() - 4));
         detailScroll = Math.clamp(detailScroll, 0, detailMaximum);
         int y = rect.y() + detailTop() - detailScroll;
@@ -590,24 +598,26 @@ final class TerminalNodesView {
                 basicFieldHeight(basicFields(page.selected()).getLast()));
         y += basicHeight();
         if (!node.enabled()) return;
-        for (var card : page.cards()) {
+        for (var measured : configurationCards) {
+            var card = measured.card();
             final var entry = card;
-            int h = cardHeight(card);
-            if (y >= rect.y() + detailTop() - 2 && y + 24 <= rect.bottom() - 6) {
+            int h = measured.height();
+            if (y >= rect.y() + detailTop() - 2 && y + 20 <= rect.bottom() - 6) {
                 button(
-                        new TerminalLayout.Rect(rect.x() + 8, y, rect.width() - 20, 24),
-                        Component.literal(
-                                        card.channel() == null
-                                                ? Component.translatable("omniresonance.terminal.home.domain")
-                                                        .getString()
-                                                : card.name())
-                                .append(" · ")
-                                .append(text(card.input() ? "input" : "output")),
-                        !pending,
-                        () -> {
-                            expanded = key(entry).equals(expanded) ? null : key(entry);
-                            rebuild();
-                        });
+                                new TerminalLayout.Rect(rect.x() + 8, y, rect.width() - 20, 20),
+                                Component.literal(
+                                                card.channel() == null
+                                                        ? Component.translatable("omniresonance.terminal.home.domain")
+                                                                .getString()
+                                                        : card.name())
+                                        .append(" · ")
+                                        .append(text(card.input() ? "input" : "output")),
+                                !pending,
+                                () -> {
+                                    expanded = key(entry).equals(expanded) ? null : key(entry);
+                                    rebuild();
+                                })
+                        .setSelected(measured.expanded());
             }
             if (key(card).equals(expanded)
                     && y + h - 28 >= rect.y() + detailTop() - 2
@@ -861,8 +871,7 @@ final class TerminalNodesView {
 
     void render(GuiGraphics g) {
         if (layout == null) return;
-        TerminalTheme.renderPanel(g, layout.list());
-        TerminalTheme.renderPanel(g, layout.detail());
+        TerminalTheme.renderPaneDivider(g, layout.list(), layout.detail());
         if (page != null && page.available()) {
             {
                 var r = layout.list();
@@ -886,7 +895,7 @@ final class TerminalNodesView {
                 int infoY = r.y() + detailTop() - detailScroll;
                 renderBasicFields(g, infoY);
                 int separatorY = infoY + basicHeight() - 6;
-                g.fill(r.x() + 10, separatorY, r.right() - 12, separatorY + 1, TerminalTheme.ACCENT);
+                g.fill(r.x() + 10, separatorY, r.right() - 12, separatorY + 1, TerminalTheme.LINE);
                 if (!page.selected().node().enabled() || page.cards().isEmpty()) {
                     lines(
                             g,
@@ -896,11 +905,22 @@ final class TerminalNodesView {
                             r.width() - 28);
                 } else {
                     int y = infoY + basicHeight();
-                    for (var card : page.cards()) {
-                        int h = cardHeight(card);
-                        if (key(card).equals(expanded)) {
-                            g.fill(r.x() + 4, y, r.x() + 6, y + h, TerminalTheme.ACCENT);
-                            lines(g, cardLines(card), r.x() + 12, y + 30, r.width() - 28);
+                    for (var measured : configurationCards) {
+                        int h = measured.height();
+                        if (measured.expanded()) {
+                            int x = r.x() + 8, width = r.width() - 20;
+                            TerminalTheme.renderSurface(
+                                    g,
+                                    new TerminalLayout.Rect(x, y + 20, width, h - 20),
+                                    TerminalTheme.BUTTON_RADIUS,
+                                    TerminalTheme.INPUT,
+                                    TerminalTheme.LINE);
+                            g.fill(x + 1, y + 20, x + width - 1, y + 21, TerminalTheme.INPUT);
+                            int textY = y + 26;
+                            for (var line : measured.lines()) {
+                                g.drawString(font, line, r.x() + 12, textY, TerminalTheme.MUTED, false);
+                                textY += 10;
+                            }
                         }
                         y += h + 6;
                     }
@@ -925,13 +945,12 @@ final class TerminalNodesView {
         if (modal != Modal.NONE) {
             var r = dialog();
             TerminalDialogLayout.render(g, body, r);
-            g.drawString(
-                    font,
-                    TerminalText.body(text(modal.name().toLowerCase(Locale.ROOT))),
-                    r.x() + 10,
-                    r.y() + 10,
-                    TerminalTheme.TEXT,
-                    false);
+            Component heading = text(modal.name().toLowerCase(Locale.ROOT));
+            if (page != null && page.selected() != null)
+                heading = heading.copy()
+                        .append(" · ")
+                        .append(page.selected().node().nodeName());
+            TerminalText.drawDialogTitle(g, font, heading, r);
             if (modal != Modal.RENAME) lines(g, List.of(dialogMessage()), r.x() + 10, r.y() + 35, r.width() - 20);
             if (modal == Modal.RENAME && page != null && page.rejected())
                 TerminalDialogLayout.renderInputError(

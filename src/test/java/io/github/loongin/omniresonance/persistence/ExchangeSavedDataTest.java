@@ -22,6 +22,47 @@ import net.minecraft.nbt.ListTag;
 import org.junit.jupiter.api.Test;
 
 class ExchangeSavedDataTest {
+    @Test
+    void schemaFourMigratesToNodeBatchMetadataWithoutChangingApprovedTermsOrInput() {
+        var data = pending();
+        data.revise(
+                AGREEMENT,
+                ExchangeConsent.Side.SOURCE,
+                OWNER_A,
+                SOURCE,
+                TARGET,
+                0,
+                new ExchangeTerms(
+                        ResourceScope.all(),
+                        FilterMode.WHITELIST,
+                        null,
+                        Long.MAX_VALUE,
+                        Map.of(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM, 17L),
+                        1));
+        var legacy = data.save(new CompoundTag(), null);
+        legacy.putInt("schema_version", 4);
+        var agreements = (ListTag) legacy.get("agreements");
+        for (var row : agreements) {
+            var rates = (ListTag) ((CompoundTag) row).getCompound("terms").get("rates");
+            for (var rate : rates) {
+                ((CompoundTag) rate).remove("batch_mode");
+                ((CompoundTag) rate).remove("batch_size");
+            }
+        }
+        var original = legacy.copy();
+        var migrated = ExchangeSavedData.load(legacy, LIMITS);
+        assertTrue(migrated.isDirty());
+        assertEquals(5, migrated.save(new CompoundTag(), null).getInt("schema_version"));
+        assertEquals(original, legacy);
+        var terms = migrated.agreement(AGREEMENT).orElseThrow().terms();
+        assertEquals(Long.MAX_VALUE, terms.defaultRate());
+        assertEquals(17, terms.rate(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM));
+        assertEquals(
+                io.github.loongin.omniresonance.transfer.ResourceTransferPolicy.BatchMode.GREEDY,
+                terms.parameter(io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM)
+                        .batchMode());
+    }
+
     static final UUID OWNER_A = new UUID(1, 1),
             OWNER_B = new UUID(1, 2),
             INVITE = new UUID(2, 1),
@@ -127,7 +168,7 @@ class ExchangeSavedDataTest {
         assertEquals(original, legacy);
         assertTrue(migrated.isDirty());
         CompoundTag current = migrated.save(new CompoundTag(), null);
-        assertEquals(4, current.getInt("schema_version"));
+        assertEquals(5, current.getInt("schema_version"));
         current.getList("terminated_revisions", net.minecraft.nbt.Tag.TAG_COMPOUND)
                 .getCompound(0)
                 .putLong("revision", Long.MAX_VALUE);
@@ -229,7 +270,7 @@ class ExchangeSavedDataTest {
                 ExchangeInvitation.State.OPEN,
                 data.invitation(INVITE).orElseThrow().state());
         CompoundTag invalid = data.save(new CompoundTag(), null);
-        invalid.putInt("schema_version", 5);
+        invalid.putInt("schema_version", 6);
         assertThrows(IllegalArgumentException.class, () -> ExchangeSavedData.load(invalid, LIMITS));
         CompoundTag duplicate = data.save(new CompoundTag(), null);
         ListTag rows = (ListTag) duplicate.get("agreements");

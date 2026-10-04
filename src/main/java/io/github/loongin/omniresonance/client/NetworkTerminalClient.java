@@ -6,6 +6,7 @@ import io.github.loongin.omniresonance.bootstrap.OmniResonanceMod;
 import io.github.loongin.omniresonance.networking.NetworkPayloads;
 import io.github.loongin.omniresonance.networking.NetworkTerminalRequest;
 import io.github.loongin.omniresonance.networking.NetworkTerminalResponse;
+import io.github.loongin.omniresonance.registry.ModParticles;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
@@ -15,6 +16,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
+import net.neoforged.neoforge.client.event.RegisterParticleProvidersEvent;
 import net.neoforged.neoforge.client.settings.IKeyConflictContext;
 import net.neoforged.neoforge.client.settings.KeyConflictContext;
 import net.neoforged.neoforge.client.settings.KeyModifier;
@@ -77,6 +79,13 @@ public final class NetworkTerminalClient {
                                     : 0xFF66E5F1,
                             io.github.loongin.omniresonance.compat.ae2.Ae2InterfaceContent.BLOCK.get()));
         }
+        modBus.addListener((net.neoforged.neoforge.client.event.EntityRenderersEvent.RegisterRenderers event) ->
+                event.registerBlockEntityRenderer(
+                        io.github.loongin.omniresonance.registry.ModBlockEntities.RESONATING_AMETHYST.get(),
+                        ResonatingAmethystRenderer::new));
+        modBus.addListener((RegisterParticleProvidersEvent event) ->
+                event.registerSprite(ModParticles.RESONANCE_MOTE.get(), ResonanceParticle::mote));
+        NeoForge.EVENT_BUS.addListener(ResonanceParticle::resetParticleBudget);
         new NodeHighlightClient();
         modBus.addListener(this::registerKeyMappings);
         NeoForge.EVENT_BUS.addListener(this::onClientTick);

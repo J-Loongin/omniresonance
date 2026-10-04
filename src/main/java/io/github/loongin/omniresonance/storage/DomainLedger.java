@@ -314,16 +314,28 @@ public final class DomainLedger {
      * and throws UncertainTransfer; callers must retain evidence and stop, never infer a refund or retry.
      */
     public long transferTo(DomainLedger target, ResourceVariantKey key, long maximum, long variantLimit) {
+        return transferTo(target, key, maximum, variantLimit, 1);
+    }
+
+    /**
+     * Owner-thread execution of whole positive batch multiples for one variant and one target. Source availability,
+     * target capacity and maximum are checked and rounded before reservations or extraction. Returns zero without
+     * creating buckets when no batch fits. Cost is independent of batch count; mutation failure has the same
+     * quarantine and retained-evidence semantics as the greedy overload. This method is never simulation.
+     */
+    public long transferTo(
+            DomainLedger target, ResourceVariantKey key, long maximum, long variantLimit, long batchSize) {
         checkThread();
         Objects.requireNonNull(target);
         Objects.requireNonNull(key);
         target.checkThread();
-        if (networkId.equals(target.networkId) || maximum < 0 || variantLimit < -1)
+        if (networkId.equals(target.networkId) || maximum < 0 || variantLimit < -1 || batchSize < 1)
             throw new IllegalArgumentException("Invalid domain transfer identity or amount");
         if (maximum == 0) return 0;
         long amount = Math.min(maximum, amount(key));
         if (amount == 0) return 0;
         amount = Math.min(amount, target.insertCapacity(key, variantLimit));
+        amount -= amount % batchSize;
         if (amount == 0) return 0;
         Optional<Deposit> capacity = target.reserveDeposit(key, amount, variantLimit);
         if (capacity.isEmpty()) return 0;

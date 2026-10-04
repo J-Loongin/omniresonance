@@ -12,6 +12,8 @@ final class TerminalCardButton extends TerminalClickButton {
     private final Component description;
     private final net.minecraft.client.gui.components.Tooltip fullTooltip;
     private boolean tooltipVisible;
+    private TerminalModuleIcon module;
+    private boolean modeCard;
 
     TerminalCardButton(
             TerminalLayout.Rect bounds, Component mark, Component title, Component description, OnPress onPress) {
@@ -22,27 +24,41 @@ final class TerminalCardButton extends TerminalClickButton {
                 TerminalText.body(title.copy().append("\n").append(description)));
     }
 
+    void module(String module) {
+        this.module = TerminalModuleIcon.forModule(module);
+        setTooltip(fullTooltip);
+    }
+
+    void mode(boolean direct) {
+        module = direct ? TerminalModuleIcon.DIRECT : TerminalModuleIcon.DOMAIN;
+        modeCard = true;
+        setTooltip(fullTooltip);
+    }
+
     @Override
     protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        int border = active && isHoveredOrFocused() ? TerminalTheme.FRAME_LINE : TerminalTheme.LINE;
-        int background = !active
-                ? TerminalTheme.RAISED_DISABLED
-                : isHoveredOrFocused() ? TerminalTheme.RAISED_HOVERED : TerminalTheme.PANEL;
-        TerminalTheme.fillRounded(
-                graphics, getX(), getY(), getWidth(), getHeight(), TerminalTheme.PANEL_RADIUS, border);
-        TerminalTheme.fillRounded(
-                graphics,
-                getX() + 1,
-                getY() + 1,
-                Math.max(0, getWidth() - 2),
-                Math.max(0, getHeight() - 2),
-                Math.max(0, TerminalTheme.PANEL_RADIUS - 1),
-                background);
-        if (active && isHoveredOrFocused()) {
-            graphics.fillGradient(
-                    getX() + 1, getY() + 5, getX() + 3, getBottom() - 5, TerminalTheme.ACCENT, TerminalTheme.VIOLET);
-        }
+        var style = TerminalTheme.controlStyle(active, isHovered, isFocused(), false, false, false);
+        TerminalTheme.renderControl(graphics, new TerminalLayout.Rect(getX(), getY(), getWidth(), getHeight()), style);
         Font font = TerminalText.font(Minecraft.getInstance());
+        if (module != null && getHeight() >= 40 && getWidth() >= 24) {
+            int ink = active ? TerminalTheme.TEXT : TerminalTheme.DISABLED_TEXT;
+            int iconY = getY() + Math.max(4, (getHeight() - (modeCard ? 58 : 36)) / 2);
+            module.render(graphics, getX() + (getWidth() - 20) / 2, iconY, ink);
+            Component title = TerminalText.title(font, getMessage().getString(), Math.max(0, getWidth() - 12));
+            TerminalText.drawCentered(graphics, font, title, getX() + getWidth() / 2, iconY + 26, ink);
+            if (modeCard) {
+                String detail = TerminalText.ellipsize(font, description.getString(), Math.max(0, getWidth() - 16));
+                graphics.fill(getX() + 8, iconY + 39, getRight() - 8, iconY + 40, TerminalTheme.LINE);
+                TerminalText.drawCentered(
+                        graphics,
+                        font,
+                        TerminalText.body(Component.literal(detail)),
+                        getX() + getWidth() / 2,
+                        iconY + 45,
+                        TerminalTheme.MUTED);
+            }
+            return;
+        }
         int titleY = getY() + Math.max(5, getHeight() / 3 - 5);
         int textColor = active ? TerminalTheme.TEXT : TerminalTheme.MUTED;
         if (getWidth() >= 120)

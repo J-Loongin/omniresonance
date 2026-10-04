@@ -8,13 +8,43 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Renderable;
 import net.minecraft.client.gui.components.events.GuiEventListener;
+import org.jetbrains.annotations.Nullable;
 
 /** Screen-owned visual widgets detached from event routing until the next rebuild. */
 final class ModalBackdrop {
-    private final List<Renderable> widgets = new ArrayList<>();
+    private record RetainedWidget(AbstractWidget widget, boolean active) {}
+
+    private final List<RetainedWidget> widgets = new ArrayList<>();
     private final List<Renderable> foreground = new ArrayList<>();
 
+    static void buildLayers(Runnable page, @Nullable Runnable dialog) {
+        page.run();
+        if (dialog != null) dialog.run();
+    }
+
+    static TerminalLayout.Rect shadeBounds(TerminalLayout layout) {
+        var window = layout.window();
+        int top = layout.titleBar().bottom();
+        return new TerminalLayout.Rect(window.x(), top, window.width(), Math.max(0, window.bottom() - top));
+    }
+
+    static void renderShade(GuiGraphics graphics, TerminalLayout layout) {
+        var shade = shadeBounds(layout);
+        graphics.fill(shade.x(), shade.y(), shade.right(), shade.bottom(), TerminalTheme.MODAL_DIM);
+    }
+
+    void open(
+            List<? extends GuiEventListener> children,
+            Consumer<GuiEventListener> remove,
+            List<Renderable> renderables,
+            Runnable dialog) {
+        retain(children, remove);
+        dialog.run();
+        captureForeground(renderables);
+    }
+
     void clear() {
+        for (var entry : widgets) entry.widget().active = entry.active();
         widgets.clear();
         foreground.clear();
     }
@@ -24,14 +54,15 @@ final class ModalBackdrop {
         for (GuiEventListener child : List.copyOf(children)) {
             if (child instanceof AbstractWidget widget) {
                 widget.setFocused(false);
-                widgets.add(widget);
+                widgets.add(new RetainedWidget(widget, widget.active));
+                widget.active = false;
                 remove.accept(child);
             }
         }
     }
 
     void render(Consumer<Renderable> render) {
-        widgets.forEach(render);
+        for (var entry : widgets) render.accept(entry.widget());
     }
 
     void captureForeground(List<Renderable> renderables) {
@@ -40,13 +71,9 @@ final class ModalBackdrop {
     }
 
     void renderForeground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick, Runnable panel) {
-        graphics.flush();
-        graphics.pose().pushPose();
-        // Native item icons use positive GUI depth; the entire modal including its buttons must cover them.
-        graphics.pose().translate(0, 0, 400);
-        panel.run();
-        for (Renderable widget : foreground) widget.render(graphics, mouseX, mouseY, partialTick);
-        graphics.flush();
-        graphics.pose().popPose();
+        TerminalForegroundLayer.render(graphics, () -> {
+            panel.run();
+            for (Renderable widget : foreground) widget.render(graphics, mouseX, mouseY, partialTick);
+        });
     }
 }

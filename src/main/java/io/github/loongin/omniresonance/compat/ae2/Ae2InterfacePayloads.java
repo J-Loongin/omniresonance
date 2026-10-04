@@ -141,6 +141,24 @@ public final class Ae2InterfacePayloads {
         return v == 1;
     }
 
+    static Frame unavailable(Request request) {
+        return new Frame(
+                request.session(),
+                request.sequence(),
+                false,
+                null,
+                "unavailable",
+                "unavailable",
+                java.util.List.of(),
+                -1,
+                false);
+    }
+
+    static void reject(net.minecraft.server.level.ServerPlayer player, Request request) {
+        if (request.action() != 3)
+            net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, unavailable(request));
+    }
+
     public static void register(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
         var registrar = event.registrar(NetworkProtocol.VERSION)
                 .executesOn(net.neoforged.neoforge.network.registration.HandlerThread.MAIN);
@@ -148,6 +166,7 @@ public final class Ae2InterfacePayloads {
             var player = (net.minecraft.server.level.ServerPlayer) context.player();
             var runtime = Ae2InterfaceRuntime.find(player.server);
             if (runtime != null) runtime.request(player, request);
+            else reject(player, request);
         });
         registrar.playToClient(Frame.TYPE, Frame.CODEC, (frame, context) -> receiver.accept(frame));
     }

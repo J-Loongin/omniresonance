@@ -99,18 +99,11 @@ final class NodeResourcePolicyView {
                 case COMMON ->
                     common(font, bounds, row, layout.threeColumns(), draft, active, add, workingFaces, actions);
                 case TYPE_HEADER ->
-                    button(
-                            add,
+                    add.accept(TerminalResourceSettingsList.entry(
                             new TerminalLayout.Rect(bounds.x(), bounds.y() + 6, bounds.width(), 20),
-                            text(
-                                    "settings_entry",
-                                    draft.settingIds().isEmpty()
-                                            ? text("defaults")
-                                            : text(
-                                                    "override_count",
-                                                    draft.settingIds().size())),
+                            draft.settingIds().size(),
                             active,
-                            actions.chooseType());
+                            actions.chooseType()));
             }
         }
     }
@@ -166,7 +159,7 @@ final class NodeResourcePolicyView {
             var bounds = cell.bounds();
             switch (cell.field()) {
                 case DIRECTION ->
-                    button(
+                    formField(
                                     add,
                                     bounds,
                                     text(draft.direction == TransferDirection.INPUT ? "input_short" : "output_short"),
@@ -174,9 +167,9 @@ final class NodeResourcePolicyView {
                                     actions.changeDirection())
                             .setTooltip(
                                     Tooltip.create(TerminalText.body(NodeItemPolicyView.direction(draft.direction))));
-                case SCOPE -> button(add, bounds, scopeText(draft), active, actions.chooseScope());
+                case SCOPE -> formField(add, bounds, scopeText(draft), active, actions.chooseScope());
                 case PRESET ->
-                    button(
+                    formField(
                             add,
                             bounds,
                             draft.presetId == null
@@ -188,7 +181,7 @@ final class NodeResourcePolicyView {
                             active,
                             actions.choosePreset());
                 case FILTER ->
-                    button(
+                    formField(
                             add,
                             bounds,
                             legacy(draft.filterMode == FilterMode.WHITELIST ? "whitelist" : "blacklist"),
@@ -201,12 +194,12 @@ final class NodeResourcePolicyView {
                                 actions.rebuild().run();
                             });
                 case REDSTONE ->
-                    button(add, bounds, NodeItemPolicyView.redstone(draft.redstone), active, () -> {
+                    formField(add, bounds, NodeItemPolicyView.redstone(draft.redstone), active, () -> {
                         draft.redstone = RedstoneCondition.values()[(draft.redstone.ordinal() + 1) % 3];
                         actions.changed().run();
                         actions.rebuild().run();
                     });
-                case FACES -> button(add, bounds, faces, active, actions.chooseFaces());
+                case FACES -> formField(add, bounds, faces, active, actions.chooseFaces());
                 case QUANTITY ->
                     field(
                             font,
@@ -307,6 +300,17 @@ final class NodeResourcePolicyView {
                 y,
                 TerminalTheme.MUTED,
                 false);
+    }
+
+    private static TerminalRowButton formField(
+            Consumer<AbstractWidget> add,
+            TerminalLayout.Rect bounds,
+            Component label,
+            boolean active,
+            Runnable action) {
+        var button = TerminalFormGrid.field(bounds, label, active, action);
+        add.accept(button);
+        return button;
     }
 
     static TerminalButton button(

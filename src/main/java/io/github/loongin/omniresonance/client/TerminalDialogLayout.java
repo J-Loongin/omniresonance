@@ -10,8 +10,8 @@ final class TerminalDialogLayout {
 
     static void render(
             net.minecraft.client.gui.GuiGraphics graphics, TerminalLayout.Rect parent, TerminalLayout.Rect dialog) {
-        graphics.fill(parent.x(), parent.y(), parent.right(), parent.bottom(), 0x88000000);
-        TerminalTheme.renderPanel(graphics, dialog);
+        graphics.fill(parent.x(), parent.y(), parent.right(), parent.bottom(), TerminalTheme.MODAL_DIM);
+        TerminalTheme.renderDialogPanel(graphics, dialog);
     }
 
     static TerminalLayout.Rect editor(TerminalLayout.Rect parent) {
@@ -31,8 +31,21 @@ final class TerminalDialogLayout {
             Component error,
             int footerTop) {
         if (field == null || !field.visible) return false;
-        var bounds = inputFeedback(
-                new TerminalLayout.Rect(field.getX(), field.getY(), field.getWidth(), field.getHeight()), footerTop);
+        return renderFieldError(
+                graphics,
+                font,
+                new TerminalLayout.Rect(field.getX(), field.getY(), field.getWidth(), field.getHeight()),
+                error,
+                footerTop);
+    }
+
+    static boolean renderFieldError(
+            net.minecraft.client.gui.GuiGraphics graphics,
+            Font font,
+            TerminalLayout.Rect field,
+            Component error,
+            int footerTop) {
+        var bounds = inputFeedback(field, footerTop);
         if (bounds.height() < font.lineHeight) return false;
         graphics.drawString(
                 font,
@@ -41,6 +54,17 @@ final class TerminalDialogLayout {
                 bounds.y(),
                 TerminalTheme.ERROR,
                 false);
+        if (font.width(TerminalText.body(error)) > bounds.width()) {
+            var minecraft = net.minecraft.client.Minecraft.getInstance();
+            int mouseX = (int) (minecraft.mouseHandler.xpos()
+                    * graphics.guiWidth()
+                    / minecraft.getWindow().getScreenWidth());
+            int mouseY = (int) (minecraft.mouseHandler.ypos()
+                    * graphics.guiHeight()
+                    / minecraft.getWindow().getScreenHeight());
+            if (mouseX >= bounds.x() && mouseX < bounds.right() && mouseY >= bounds.y() && mouseY < bounds.bottom())
+                TerminalText.renderTooltip(graphics, font, error, mouseX, mouseY);
+        }
         return true;
     }
 

@@ -18,6 +18,7 @@ public final class OmniDataGenerators {
         event.createProvider(output -> new OmniItemModelProvider(output, event.getExistingFileHelper()));
         event.createProvider(output -> new OmniBlockStateProvider(output, event.getExistingFileHelper()));
         event.createProvider(output -> new OmniSoundDefinitionsProvider(output, event.getExistingFileHelper()));
+        event.createProvider(output -> new OmniParticleDescriptions(output, event.getExistingFileHelper()));
         event.createProvider((output, registries) -> new LootTableProvider(
                 output,
                 Set.of(),
