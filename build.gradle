@@ -7,7 +7,7 @@ plugins {
     id 'java-library'
     id 'java-test-fixtures'
     id 'net.neoforged.moddev' version '2.0.144'
-    id 'com.diffplug.spotless' version '8.10.1'
+    id 'com.diffplug.spotless' version '8.10.3'
 }
 
 group = providers.gradleProperty('mod_group').get()
