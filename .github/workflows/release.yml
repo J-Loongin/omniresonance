@@ -53,4 +53,4 @@ jobs:
             prerelease=(--prerelease)
           fi
           gh release create "$RELEASE_TAG" --verify-tag --generate-notes \
-            "${prerelease[@]}" build/release/*.jar build/release/LICENSE build/release/SHA256SUMS
+            "${prerelease[@]}" build/release/*.jar build/release/LICENSE build/release/README.md build/release/SHA256SUMS

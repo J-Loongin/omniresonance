@@ -9,6 +9,11 @@ version="${mod_version}"
 displayName="Omni Resonance"
 authors="loongin"
 displayURL="https://github.com/J-Loongin/omniresonance"
+logoFile="assets/omniresonance/textures/item/resonance_core.png"
+logoBlur=true
+description='''
+Wireless cross-dimensional logistics.
+'''
 
 [[dependencies.omniresonance]]
 modId="neoforge"

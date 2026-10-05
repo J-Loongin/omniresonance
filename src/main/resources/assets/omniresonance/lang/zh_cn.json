@@ -917,5 +917,6 @@
   "omniresonance.sample_slot.offhand": "副手栏",
   "omniresonance.node_menu.save_pending": "上一份节点配置仍在保存，请稍候。",
   "omniresonance.node_menu.save_failed": "节点配置未保存，请重新打开节点检查。",
-  "omniresonance.node_menu.save_unknown": "节点保存结果未确认，请重新打开检查，勿重复提交。"
+  "omniresonance.node_menu.save_unknown": "节点保存结果未确认，请重新打开检查，勿重复提交。",
+  "fml.menu.mods.info.description.omniresonance": "无线跨维度物流。"
 }

@@ -352,6 +352,7 @@ tasks.register('prepareReleaseBundle', Sync) {
     from tasks.named('jar', Jar).flatMap { it.archiveFile }
     from tasks.named('sourcesJar', Jar).flatMap { it.archiveFile }
     from 'LICENSE'
+    from 'README.md'
     into layout.buildDirectory.dir('release')
     doLast {
         def root = destinationDir

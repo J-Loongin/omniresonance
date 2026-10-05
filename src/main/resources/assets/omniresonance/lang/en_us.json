@@ -917,5 +917,6 @@
   "omniresonance.sample_slot.offhand": "Offhand slot",
   "omniresonance.node_menu.save_pending": "A node configuration is still saving. Please wait.",
   "omniresonance.node_menu.save_failed": "Node configuration was not saved. Reopen the node to review it.",
-  "omniresonance.node_menu.save_unknown": "Node save result is unconfirmed. Reopen the node to check before saving again."
+  "omniresonance.node_menu.save_unknown": "Node save result is unconfirmed. Reopen the node to check before saving again.",
+  "fml.menu.mods.info.description.omniresonance": "Wireless cross-dimensional logistics."
 }
