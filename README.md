@@ -1,5 +1,7 @@
 # 万象共鸣（Omni Resonance）
 
+![万象共鸣宣传封面：无线传输、共鸣存储、跨网交换](assets/promotion/cover.png)
+
 面向 Minecraft 1.21.1 / NeoForge 的无线跨维度物流与存储模组。当前版本为 **0.1.0-beta.1**，首批功能已完成，进入多人及长期组合测试阶段。
 
 ## 已支持的功能
@@ -10,6 +12,19 @@
 - 节点强加载、高亮、需要OP的传送，以及运行诊断。
 - 可选联动：Mekanism化学品、Ars Nouveau魔源、Industrial Foregoing: Souls监守者灵魂，以及AE2共鸣域接口。
 - JEI侧栏、预设拖放与标签复制；EMI仅支持标签复制。
+
+<details>
+<summary>展开功能、节点与联动介绍</summary>
+
+以下为宣传插画与界面示意。
+
+![功能总览：无线直连、精细策略、共鸣域、跨网交换、权限协作与运行诊断](assets/promotion/features.png)
+
+![节点与终端：六面可选的方块节点、固定贴附面的面板与终端八模块](assets/promotion/nodes-terminal.png)
+
+![共鸣存储、双方确认的跨网交换，以及 AE2 等可选联动](assets/promotion/storage-exchange-ae.png)
+
+</details>
 
 ## 安装与使用
 
