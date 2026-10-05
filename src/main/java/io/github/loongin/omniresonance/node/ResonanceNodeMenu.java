@@ -64,7 +64,6 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         final @Nullable UUID channel;
         final @Nullable UUID tunnel;
         final int length;
-        final @Nullable NodeMenuRequest.BeginPolicyUpload upload;
         int offset;
 
         PolicyTransfer(
@@ -74,8 +73,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 NetworkTopologyService.Edit edit,
                 UUID channel,
                 UUID tunnel,
-                int length,
-                @Nullable NodeMenuRequest.BeginPolicyUpload upload) {
+                int length) {
             this.id = id;
             this.sequence = sequence;
             this.deadline = deadline;
@@ -83,7 +81,6 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
             this.channel = channel;
             this.tunnel = tunnel;
             this.length = length;
-            this.upload = upload;
         }
     }
 
@@ -202,6 +199,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         }
         lastSequence = request.sequence();
         try {
+            if (service.saving(playerId, sessionId)) return invalid(request);
             // Native validity checks run on ticks; packets must not use a physical context that
             // became invalid between them. The shared gate preserves authorized remote editors.
             if (!service.canKeepOpen(player, this)) {
@@ -832,18 +830,16 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                 || topologyEdit == null) return invalid(request);
         validateResourceEdit(player, topologyEdit, edit);
         request.faces().validate(edit.node().form());
-        long now = service.currentTick();
-        service.transfers().beginUpload(playerId, sessionId, request.transfer(), request.length(), now);
-        transfer = new PolicyTransfer(
-                request.transfer(),
-                request.sequence(),
-                now + 200,
-                topologyEdit,
-                resourceChannel(edit),
-                resourceTunnel(edit),
-                request.length(),
-                request);
+        service.beginSubmittedSave(player, this, request, topologyEdit, edit);
+        topologyEdit = null;
+        editNetworkId = null;
+        editKind = EditKind.NONE;
         return new NodeMenuResponse.UploadReady(containerId, sessionId, request.sequence(), request.transfer());
+    }
+
+    void completeSubmittedSave(NodeMenuResponse response) {
+        if (closed || !response.sessionId().equals(sessionId)) return;
+        state = response instanceof NodeMenuResponse.State success ? success.state() : new NodeMenuState.Unavailable();
     }
 
     void cancelTransfer() {
@@ -878,89 +874,17 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     /** Actual-connection router; only approved uploads accept chunks, and arbitrary Begin grants no authority. */
     public @Nullable NodeMenuResponse handleTransfer(
             ServerPlayer player, io.github.loongin.omniresonance.networking.ManagementTransferMessage message) {
+        if (service != null && service.matchesSubmitted(player, message))
+            return service.receiveSubmittedTransfer(player, message);
         PolicyTransfer active = transfer;
         if (active == null
                 || !player.getUUID().equals(playerId)
                 || !message.session().equals(sessionId)
                 || !message.transfer().equals(active.id)) return null;
-        boolean[] committing = {false};
-        try {
-            authorizeTransfer(player, active, service.currentTick());
-            if (message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Abort) {
-                cancelTransfer();
-                return null;
-            }
-            if (active.upload == null) throw new IllegalArgumentException("Unexpected upload direction");
-            if (message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk chunk) {
-                service.transfers()
-                        .upload(playerId, sessionId, active.id, chunk.offset(), chunk.data(), service.currentTick());
-                return null;
-            }
-            if (!(message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish))
-                throw new IllegalArgumentException("Unapproved Begin");
-            io.github.loongin.omniresonance.transfer.ResourcePolicyEdit[] decoded =
-                    new io.github.loongin.omniresonance.transfer.ResourcePolicyEdit[1];
-            service.transfers()
-                    .finishUpload(
-                            playerId,
-                            sessionId,
-                            active.id,
-                            service.currentTick(),
-                            view -> {
-                                decoded[0] =
-                                        io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.decode(view);
-                                if (active.channel == null)
-                                    service.topology().validateDomainPolicyIntent(player, active.edit, decoded[0]);
-                                else
-                                    service.topology()
-                                            .validatePolicyIntent(player, active.edit, active.channel, decoded[0]);
-                            },
-                            () -> {
-                                authorizeTransfer(player, active, service.currentTick());
-                                return true;
-                            },
-                            view -> {
-                                committing[0] = true;
-                                if (active.channel == null)
-                                    service.topology()
-                                            .saveDomainConfiguration(
-                                                    player,
-                                                    active.edit,
-                                                    decoded[0],
-                                                    active.upload.faces(),
-                                                    active.upload.confirmedReset());
-                                else
-                                    service.topology()
-                                            .saveDirectBinding(
-                                                    player,
-                                                    active.edit,
-                                                    active.channel,
-                                                    decoded[0],
-                                                    active.upload.faces(),
-                                                    active.upload.confirmedReset());
-                            });
-            transfer = null;
-            clearEdit();
-            state = active.channel == null
-                    ? service.domainRoot(player, linkedNetworkId, nodeId)
-                    : service.channelRoot(player, linkedNetworkId, nodeId, active.tunnel, active.channel);
-            return new NodeMenuResponse.State(containerId, sessionId, active.sequence, state);
-        } catch (RuntimeException failure) {
-            cancelTransfer();
-            if (committing[0]) {
-                safeCancel(player);
-                state = new NodeMenuState.Unavailable();
-                linkedNetworkId = null;
-                return new NodeMenuResponse.Failure(
-                        containerId, sessionId, active.sequence, NodeMenuResponse.Reason.INTERNAL_ERROR, null);
-            }
-            return new NodeMenuResponse.Failure(
-                    containerId,
-                    sessionId,
-                    active.sequence,
-                    NodeMenuResponse.Reason.INVALID_REQUEST,
-                    state instanceof NodeMenuState.ResourceEdit edit ? edit.withPolicy(null) : state);
-        }
+        cancelTransfer();
+        if (message instanceof io.github.loongin.omniresonance.networking.ManagementTransferMessage.Abort) return null;
+        return new NodeMenuResponse.Failure(
+                containerId, sessionId, active.sequence, NodeMenuResponse.Reason.INVALID_REQUEST, null);
     }
 
     /** Server tick sends one bounded fragment, with authorization and a fixed nonrenewable deadline. */
@@ -977,7 +901,6 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
         if (active == null) return;
         try {
             authorizeTransfer(player, active, now);
-            if (active.upload != null) return;
             byte[] bytes = service.transfers().nextDownload(playerId, sessionId, active.id, now);
             sender.accept(new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
                     sessionId, active.id, active.offset, bytes));
@@ -1467,7 +1390,7 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
                             () -> io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encode(
                                     edit.policy()));
             transfer = new PolicyTransfer(
-                    id, sequence, now + 200, topologyEdit, resourceChannel(edit), resourceTunnel(edit), length, null);
+                    id, sequence, now + 200, topologyEdit, resourceChannel(edit), resourceTunnel(edit), length);
             return new NodeMenuResponse.Download(containerId, sessionId, sequence, edit.withPolicy(null), id, length);
         }
         return response;

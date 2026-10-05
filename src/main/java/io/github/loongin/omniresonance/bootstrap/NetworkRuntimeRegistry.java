@@ -462,6 +462,16 @@ public final class NetworkRuntimeRegistry {
         return server == player.server && runtime != null ? runtime.terminal().handleTransfer(player, message) : null;
     }
 
+    /** Dispatches an accepted save independently of the current Menu, on the actual sender's server thread. */
+    public boolean handleSubmittedNodeSave(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.ManagementTransferMessage message) {
+        requireServerThread(player.server);
+        return server == player.server
+                && runtime != null
+                && runtime.nodeMenus() != null
+                && runtime.nodeMenus().handleSubmittedTransfer(player, message);
+    }
+
     private void closePlayer(ServerPlayer player) {
         MinecraftServer senderServer = player.server;
         requireServerThread(senderServer);

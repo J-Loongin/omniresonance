@@ -970,12 +970,19 @@ public final class NodeRoutingMenuGameTests {
                     owner,
                     new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Abort(SESSION, first));
             helper.assertTrue(f.menus.transfers().reservedBytes() == 0, "Cancel retained reservation");
+            menu.removed(owner);
+            menu = f.menus.createMenu(93, owner, position, SESSION);
+            owner.containerMenu = menu;
+            menu.handle(owner, new NodeMenuRequest.OpenTunnel(93, SESSION, 1, TUNNEL));
+            menu.handle(owner, new NodeMenuRequest.OpenChannel(93, SESSION, 2, CHANNEL));
+            menu.handle(owner, new NodeMenuRequest.BeginBinding(93, SESSION, 3, CHANNEL));
+
             menu.handle(
                     owner,
                     new NodeMenuRequest.BeginPolicyUpload(
                             93,
                             SESSION,
-                            5,
+                            4,
                             second,
                             bytes.length,
                             io.github.loongin.omniresonance.network.WorkingFaces.explicit(48),
@@ -986,7 +993,7 @@ public final class NodeRoutingMenuGameTests {
                             SESSION, first, 0, bytes));
             helper.assertTrue(
                     f.menus.transfers().reservedBytes() == bytes.length, "Old upload damaged current transfer");
-            menu.transferTick(owner, f.menus.currentTick() + 200, payload -> {});
+            f.menus.tickSubmittedSaves(f.menus.currentTick() + 200, (player, payload) -> {});
             helper.assertTrue(
                     f.menus.transfers().reservedBytes() == 0 && !f.source.isDirty(),
                     "Fixed timeout retained upload or mutated authority");
@@ -997,13 +1004,20 @@ public final class NodeRoutingMenuGameTests {
                                             SESSION, second))
                             == null,
                     "Expired finish resumed mutation");
+
+            menu.removed(owner);
+            menu = f.menus.createMenu(93, owner, position, SESSION);
+            owner.containerMenu = menu;
+            menu.handle(owner, new NodeMenuRequest.OpenTunnel(93, SESSION, 1, TUNNEL));
+            menu.handle(owner, new NodeMenuRequest.OpenChannel(93, SESSION, 2, CHANNEL));
+            menu.handle(owner, new NodeMenuRequest.BeginBinding(93, SESSION, 3, CHANNEL));
             UUID third = new UUID(930, 3);
             menu.handle(
                     owner,
                     new NodeMenuRequest.BeginPolicyUpload(
                             93,
                             SESSION,
-                            6,
+                            4,
                             third,
                             bytes.length,
                             io.github.loongin.omniresonance.network.WorkingFaces.explicit(48),
@@ -1027,16 +1041,26 @@ public final class NodeRoutingMenuGameTests {
     @GameTest(template = "bootstrap")
     public static void largePolicyRoutesRegisteredFramesAndCommitsFacesExactlyOnce(GameTestHelper helper)
             throws IOException {
-        largePolicyRoute(helper, false);
+        largePolicyRoute(helper, false, false);
     }
 
     @GameTest(template = "bootstrap")
     public static void largeDomainPolicyRoutesRegisteredFramesWithoutAChannel(GameTestHelper helper)
             throws IOException {
-        largePolicyRoute(helper, true);
+        largePolicyRoute(helper, true, false);
     }
 
-    private static void largePolicyRoute(GameTestHelper helper, boolean domain) throws IOException {
+    @GameTest(template = "bootstrap")
+    public static void closedDirectPolicySaveContinuesAfterWalkingAway(GameTestHelper helper) throws IOException {
+        largePolicyRoute(helper, false, true);
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void closedDomainPolicySaveContinuesAfterWalkingAway(GameTestHelper helper) throws IOException {
+        largePolicyRoute(helper, true, true);
+    }
+
+    private static void largePolicyRoute(GameTestHelper helper, boolean domain, boolean close) throws IOException {
         try (Fixture f = new Fixture(helper)) {
             BlockPos position = helper.absolutePos(new BlockPos(2, 3, 2));
             f.authority.link(SOURCE, place(helper, position), new ManagedName("Node"));
@@ -1171,6 +1195,13 @@ public final class NodeRoutingMenuGameTests {
                     registeredResponse(ready) instanceof NodeMenuResponse.UploadReady
                             && f.source.findNode(NODE).orElseThrow().revision() == updated.revision(),
                     "Upload admission completed Save early");
+            if (close) {
+                owner.closeContainer();
+                owner.setPos(position.getX() + 500, position.getY(), position.getZ() + 500);
+            }
+            helper.assertTrue(
+                    f.menus.transfers().reservedBytes() == bytes.length,
+                    "Closing the editor aborted a save that was already accepted");
             for (int offset = 0; offset < bytes.length; ) {
                 int end = Math.min(
                         bytes.length,
@@ -1217,6 +1248,82 @@ public final class NodeRoutingMenuGameTests {
             assembler.close();
             helper.succeed();
         }
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void closedSaveRevalidatesAuthorityAndReleasesDisconnectedWork(GameTestHelper helper)
+            throws IOException {
+        for (int scenario = 0; scenario < 4; scenario++) {
+            try (Fixture f = new Fixture(helper)) {
+                BlockPos position = helper.absolutePos(new BlockPos(2, 3, 2));
+                f.authority.link(SOURCE, place(helper, position), new ManagedName("Node"));
+                f.seedTunnels();
+                f.setDirectMode();
+                ServerPlayer actor = player(helper, ADMIN, position);
+                var menu = f.menus.createMenu(95, actor, position, SESSION);
+                actor.containerMenu = menu;
+                menu.handle(actor, new NodeMenuRequest.OpenTunnel(95, SESSION, 1, TUNNEL));
+                menu.handle(actor, new NodeMenuRequest.OpenChannel(95, SESSION, 2, CHANNEL));
+                var editing = (NodeMenuState.DirectBindingEdit) state(
+                                helper,
+                                menu.handle(actor, new NodeMenuRequest.BeginBinding(95, SESSION, 3, CHANNEL)),
+                                NodeMenuState.DirectBindingEdit.class)
+                        .state();
+                byte[] bytes =
+                        io.github.loongin.omniresonance.networking.ResourcePolicyEditCodec.encode(editing.policy());
+                UUID transfer = new UUID(950, scenario);
+                helper.assertTrue(
+                        menu.handle(
+                                        actor,
+                                        new NodeMenuRequest.BeginPolicyUpload(
+                                                95,
+                                                SESSION,
+                                                4,
+                                                transfer,
+                                                bytes.length,
+                                                io.github.loongin.omniresonance.network.WorkingFaces.explicit(1),
+                                                false))
+                                instanceof NodeMenuResponse.UploadReady,
+                        "Save admission failed");
+                actor.closeContainer();
+                f.menus.receiveSubmittedTransfer(
+                        actor,
+                        new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
+                                SESSION, transfer, 0, bytes));
+                if (scenario == 0) {
+                    helper.getLevel().removeBlock(position, false);
+                } else if (scenario == 1) {
+                    var old = f.nodes.byId(NODE).entry().orElseThrow();
+                    var changed = f.source
+                            .setNodeEnabled(NODE, old.record().revision(), false)
+                            .orElseThrow();
+                    f.nodes.update(old, new NetworkNodeDirectory.Entry(SOURCE, changed));
+                } else if (scenario == 2) {
+                    f.menus.disconnect(actor);
+                } else {
+                    var previous = f.source.metadata();
+                    var change = f.source.prepareAdministratorChange(ADMIN, false, f.source.managementRevision(), -1);
+                    var next = f.source.commitAdministratorChange(change);
+                    f.networks.commitMetadataReplacement(f.networks.prepareMetadataReplacement(previous, next));
+                }
+                var replies = new java.util.ArrayList<NodeMenuResponse>();
+                f.menus.tickSubmittedSaves(f.menus.currentTick(), (player, response) -> replies.add(response));
+                helper.assertTrue(
+                        replies.size() == (scenario == 2 ? 0 : 1), "Rejected task feedback missing or duplicated");
+                helper.assertTrue(
+                        f.menus.receiveSubmittedTransfer(
+                                        actor,
+                                        new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Finish(
+                                                SESSION, transfer))
+                                == null,
+                        "Cancelled save accepted a late commit");
+                helper.assertTrue(
+                        f.menus.transfers().reservedBytes() == 0
+                                && f.source.directBindings(NODE).isEmpty(),
+                        "Rejected save leaked storage or committed");
+            }
+        }
+        helper.succeed();
     }
 
     @GameTest(template = "bootstrap")
@@ -1416,7 +1523,7 @@ public final class NodeRoutingMenuGameTests {
                                             false))
                             instanceof NodeMenuResponse.UploadReady,
                     "Domain upload was not admitted");
-            menu.transferTick(owner, f.menus.currentTick() + 200, ignored -> {});
+            f.menus.tickSubmittedSaves(f.menus.currentTick() + 200, (player, payload) -> {});
             menu.handleTransfer(
                     owner,
                     new io.github.loongin.omniresonance.networking.ManagementTransferMessage.Chunk(
@@ -1443,6 +1550,7 @@ public final class NodeRoutingMenuGameTests {
         private final NetworkTopologyService topology;
         private final NodeMenuService menus;
         private final NetworkNodeDirectory nodes;
+        private final NetworkDirectory networks;
 
         private Fixture(GameTestHelper helper) throws IOException {
             path = Files.createTempDirectory("omniresonance-node-routing-menu-test-");
@@ -1457,7 +1565,7 @@ public final class NodeRoutingMenuGameTests {
             repository.createNetwork(targetMetadata);
             source = repository.findLoadedNetwork(SOURCE).orElseThrow();
             target = repository.findLoadedNetwork(TARGET).orElseThrow();
-            NetworkDirectory networks = new NetworkDirectory(List.of(sourceMetadata, targetMetadata));
+            networks = new NetworkDirectory(List.of(sourceMetadata, targetMetadata));
             nodes = new NetworkNodeDirectory(List.of());
             ArrayDeque<UUID> replacementIds = new ArrayDeque<>(List.of(new UUID(516, 1), new UUID(516, 2)));
             authority = new NodeAuthorityService(

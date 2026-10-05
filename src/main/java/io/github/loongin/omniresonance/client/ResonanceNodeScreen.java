@@ -71,7 +71,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     private @Nullable NodeResourcePolicyDraft itemDraft;
     private final ManagementDownloadAssembler downloads = new ManagementDownloadAssembler();
     private @Nullable NodeMenuResponse.Download policyDownload;
-    private final NodePolicyUpload upload = new NodePolicyUpload();
+
     private final NodeResourceTypeCatalog resourceCatalog = new NodeResourceTypeCatalog();
     private @Nullable NodeResourceTypeCatalog.Request catalogRequest;
     private @Nullable ResourceTypeSelection resourceSelection;
@@ -145,16 +145,12 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         if (!matches(response)) {
             return;
         }
-        if (response instanceof NodeMenuResponse.UploadReady ready) {
-            if (interaction.pending() != null && interaction.pending().sequence() == ready.sequence())
-                upload.ready(ready.transfer());
-            return;
-        }
+        if (response instanceof NodeMenuResponse.UploadReady) return;
         if (response instanceof NodeMenuResponse.Download download) {
             if (interaction.pending() == null
                     || interaction.pending().sequence() != download.sequence()
                     || policyDownload != null
-                    || upload.active()) return;
+                    || ResonanceNodeClient.saves().belongsTo(menu.containerId, menu.sessionId())) return;
             policyDownload = download;
             var pin = new ManagementDownloadAssembler.Expected(
                     menu.sessionId(),
@@ -188,11 +184,6 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                     .model();
             rebuildIfActive();
             return;
-        }
-        if (upload.active()
-                && interaction.pending() != null
-                && response.sequence() == interaction.pending().sequence()) {
-            upload.clear();
         }
         boolean preserveChunkLocation = NodeMenuInteractionPolicy.preservesChunkToggleLocation(interaction, response);
         NodeMenuInteractionPolicy.EditKind previous = interaction.editKind();
@@ -416,15 +407,6 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     protected void containerTick() {
         clientTicks++;
         if (downloads.expire(clientTicks) && policyDownload != null) failPolicyTransfer();
-        if (upload.expired(clientTicks)) failPolicyTransfer();
-        if (upload.hasNext()) {
-            var fragment = upload.next();
-            PacketDistributor.sendToServer(new ManagementTransferMessage.Chunk(
-                    menu.sessionId(), upload.id(), fragment.offset(), fragment.bytes()));
-            if (!upload.hasNext()) {
-                PacketDistributor.sendToServer(new ManagementTransferMessage.Finish(menu.sessionId(), upload.id()));
-            }
-        }
         if (interaction.heartbeatDue(clientTicks)) {
             long sequence = nextSequence();
             interaction = interaction.heartbeatSent(sequence, clientTicks);
@@ -956,8 +938,8 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     void applyTransfer(ManagementTransferMessage message) {
         if (!message.session().equals(menu.sessionId())) return;
         if (message instanceof ManagementTransferMessage.Abort
-                && ((policyDownload != null && policyDownload.transfer().equals(message.transfer()))
-                        || message.transfer().equals(upload.id()))) {
+                && policyDownload != null
+                && policyDownload.transfer().equals(message.transfer())) {
             failPolicyTransfer();
             return;
         }
@@ -982,13 +964,12 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     }
 
     private void cancelPolicyTransfer() {
-        UUID id = policyDownload != null ? policyDownload.transfer() : upload.id();
+        UUID id = policyDownload == null ? null : policyDownload.transfer();
         if (id != null) {
             downloads.abort(menu.sessionId(), id);
             PacketDistributor.sendToServer(new ManagementTransferMessage.Abort(menu.sessionId(), id));
         }
         policyDownload = null;
-        upload.clear();
     }
 
     private void failPolicyTransfer() {
@@ -1318,21 +1299,32 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
             error = NodeResourcePolicyView.text("invalid");
             return;
         }
-        if (frameSize > NodePolicyFrames.MAXIMUM_BYTES) {
-            UUID id = UUID.randomUUID();
-            upload.begin(id, policy, clientTicks);
-            if (!send(
-                    sequence ->
-                            resourceSaveRequest(menu.containerId, menu.sessionId(), sequence, itemDraft, faceDraft, id),
-                    NodeMenuInteractionPolicy.PendingKind.SAVE)) {
-                upload.clear();
-            }
+        var saves = ResonanceNodeClient.saves();
+        if (saves.active()) {
+            error = Component.translatable("omniresonance.node_menu.save_pending");
+            rebuildIfActive();
             return;
         }
+        UUID transfer = frameSize > NodePolicyFrames.MAXIMUM_BYTES ? UUID.randomUUID() : null;
         send(
-                sequence -> resourceSaveRequest(
-                        menu.containerId, menu.sessionId(), sequence, itemDraft, faceDraft, new UUID(0, 0)),
+                sequence -> {
+                    var request = resourceSaveRequest(
+                            menu.containerId,
+                            menu.sessionId(),
+                            sequence,
+                            itemDraft,
+                            faceDraft,
+                            transfer == null ? new UUID(0, 0) : transfer);
+                    saves.begin(
+                            menu.containerId, menu.sessionId(), sequence, transfer, transfer == null ? null : policy);
+                    return request;
+                },
                 NodeMenuInteractionPolicy.PendingKind.SAVE);
+    }
+
+    void saveFeedback(Component message) {
+        error = message;
+        rebuildIfActive();
     }
 
     private TerminalLayout.Rect itemPickerBody() {
@@ -1777,7 +1769,10 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         NodeMenuRequest request = Objects.requireNonNull(factory.apply(sequence), "request");
         interaction = submitted;
         if (kind != NodeMenuInteractionPolicy.PendingKind.STATUS) error = null;
-        PacketDistributor.sendToServer(request);
+        if (kind == NodeMenuInteractionPolicy.PendingKind.SAVE
+                && ResonanceNodeClient.saves().belongsTo(menu.containerId, menu.sessionId()))
+            ResonanceNodeClient.sendSaveRequest(request);
+        else PacketDistributor.sendToServer(request);
         if (kind != NodeMenuInteractionPolicy.PendingKind.STATUS) rebuildIfActive();
         return true;
     }

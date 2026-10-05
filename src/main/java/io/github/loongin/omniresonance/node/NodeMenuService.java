@@ -49,11 +49,15 @@ import org.jetbrains.annotations.Nullable;
  * Runtime-scoped physical-node Menu opener and bounded initial-state mapper.
  *
  * <p>The service shares the existing management authority and network directory; it creates no index, lock table or
- * global Menu collection. Opening and all helpers run on the matching server thread, never load a chunk, retain a
- * block entity/player after a call, save synchronously, simulate transfer or access client classes.
+ * global Menu collection. Accepted saves retain only one bounded exact-connection context until completion,
+ * disconnect or timeout. Opening and helpers run on the matching server thread and never load a chunk,
+ * retain a block entity, save synchronously to disk, simulate transfer or access client classes.
  */
 public final class NodeMenuService implements AutoCloseable {
     private static final int PAGE_SIZE = 128;
+    /** One accepted save per connection, bounded by the shared transfer pool; cleared on completion/logout/stop. */
+    private final java.util.Map<UUID, SubmittedNodePolicySave> submittedSaves = new java.util.HashMap<>();
+
     private final io.github.loongin.omniresonance.networking.ManagementTransferPool transfers =
             new io.github.loongin.omniresonance.networking.ManagementTransferPool();
     private @Nullable MinecraftServer server;
@@ -234,6 +238,102 @@ public final class NodeMenuService implements AutoCloseable {
         return transfers;
     }
 
+    void beginSubmittedSave(
+            ServerPlayer player,
+            ResonanceNodeMenu menu,
+            io.github.loongin.omniresonance.networking.NodeMenuRequest.BeginPolicyUpload request,
+            NetworkTopologyService.Edit edit,
+            NodeMenuState.ResourceEdit metadata) {
+        requirePlayer(player);
+        if (submittedSaves.containsKey(player.getUUID()))
+            throw new IllegalStateException("A node save is already pending");
+        long now = currentTick();
+        var save =
+                new SubmittedNodePolicySave(player, menu.sessionId(), menu.containerId, request, edit, metadata, now);
+        save.validate(this, now);
+        transfers.beginUpload(player.getUUID(), menu.sessionId(), request.transfer(), request.length(), now);
+        submittedSaves.put(player.getUUID(), save);
+    }
+
+    boolean saving(UUID player, UUID session) {
+        var save = submittedSaves.get(player);
+        return save != null && save.session.equals(session);
+    }
+
+    boolean matchesSubmitted(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.ManagementTransferMessage message) {
+        var save = submittedSaves.get(player.getUUID());
+        return save != null && save.matches(player, message);
+    }
+
+    /**
+     * Consumes a previously authorized exact connection/session/transfer on the owning server thread.
+     * Unknown frames return false without mutation; accepted frames may commit only on a validated Finish.
+     * Sends one terminal response and releases ownership on completion/failure. Does not load chunks or retry.
+     */
+    public boolean handleSubmittedTransfer(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.ManagementTransferMessage message) {
+        requirePlayer(player);
+        if (!matchesSubmitted(player, message)) return false;
+        var response = receiveSubmittedTransfer(player, message);
+        if (response != null) PacketDistributor.sendToPlayer(player, response);
+        return true;
+    }
+
+    @Nullable
+    io.github.loongin.omniresonance.networking.NodeMenuResponse receiveSubmittedTransfer(
+            ServerPlayer player, io.github.loongin.omniresonance.networking.ManagementTransferMessage message) {
+        requirePlayer(player);
+        var save = submittedSaves.get(player.getUUID());
+        if (save == null || !save.matches(player, message)) return null;
+        var response = save.accept(this, message);
+        if (response != null) {
+            submittedSaves.remove(player.getUUID(), save);
+            if (player.containerMenu instanceof ResonanceNodeMenu menu
+                    && menu.sessionId().equals(save.session)) menu.completeSubmittedSave(response);
+        }
+        return response;
+    }
+
+    void validateSubmittedPhysical(NodeMenuNodeSummary node) {
+        var dimension = net.minecraft.resources.ResourceKey.create(Registries.DIMENSION, node.dimension());
+        var level = server.getLevel(dimension);
+        if (level == null) throw new IllegalStateException("Saved node dimension is unavailable");
+        var pos = node.position();
+        var chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        // Do not load distant chunks. Persistent authority was just validated, as for remote configuration.
+        if (chunk == null) return;
+        var entity = chunk.getBlockEntity(pos);
+        if (!(entity instanceof ResonanceNodeBlockEntity physical)
+                || physical.state().isEmpty()
+                || !physical.state().orElseThrow().nodeId().equals(node.nodeId())
+                || !(physical.getBlockState().getBlock() instanceof AbstractResonanceNodeBlock block)
+                || block.form() != node.form()
+                || physical.getBlockState().getValue(AbstractResonanceNodeBlock.FACING) != node.facing())
+            throw new IllegalStateException("Submitted node identity changed");
+    }
+
+    void tickSubmittedSaves(
+            long now,
+            java.util.function.BiConsumer<ServerPlayer, io.github.loongin.omniresonance.networking.NodeMenuResponse>
+                    sender) {
+        var iterator = submittedSaves.values().iterator();
+        while (iterator.hasNext()) {
+            var save = iterator.next();
+            try {
+                save.validate(this, now);
+            } catch (RuntimeException invalid) {
+                iterator.remove();
+                save.cancel(this);
+                var failure = save.failure(
+                        io.github.loongin.omniresonance.networking.NodeMenuResponse.Reason.INVALID_REQUEST);
+                if (save.player.containerMenu instanceof ResonanceNodeMenu menu
+                        && menu.sessionId().equals(save.session)) menu.completeSubmittedSave(failure);
+                sender.accept(save.player, failure);
+            }
+        }
+    }
+
     long currentTick() {
         requireServerThread();
         return server.overworld().getGameTime();
@@ -243,6 +343,12 @@ public final class NodeMenuService implements AutoCloseable {
     public void disconnect(ServerPlayer player) {
         requirePlayer(player);
         if (player.containerMenu instanceof ResonanceNodeMenu menu) menu.cancelTransfer();
+        var save = submittedSaves.get(player.getUUID());
+        if (save != null && save.player != player) return;
+        if (save != null) {
+            submittedSaves.remove(player.getUUID());
+            save.cancel(this);
+        }
         transfers.disconnect(player.getUUID());
     }
 
@@ -250,6 +356,7 @@ public final class NodeMenuService implements AutoCloseable {
     public void tick() {
         requireServerThread();
         long now = currentTick();
+        tickSubmittedSaves(now, PacketDistributor::sendToPlayer);
         transfers.expire(now);
         for (ServerPlayer player : server.getPlayerList().getPlayers())
             if (player.containerMenu instanceof ResonanceNodeMenu menu) {
@@ -296,7 +403,7 @@ public final class NodeMenuService implements AutoCloseable {
         if (server != null) {
             requireServerThread();
         }
-        transfers.cancelSession(menu.playerId(), menu.sessionId());
+        if (!saving(menu.playerId(), menu.sessionId())) transfers.cancelSession(menu.playerId(), menu.sessionId());
         menu.markClosed();
     }
 
@@ -331,6 +438,8 @@ public final class NodeMenuService implements AutoCloseable {
         }
         for (ServerPlayer player : activeServer.getPlayerList().getPlayers())
             if (player.containerMenu instanceof ResonanceNodeMenu menu) menu.cancelTransfer();
+        for (var save : submittedSaves.values()) save.cancel(this);
+        submittedSaves.clear();
         transfers.close();
         server = null;
         management = null;

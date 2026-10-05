@@ -10,7 +10,7 @@ import net.neoforged.neoforge.network.registration.HandlerThread;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 import org.jetbrains.annotations.Nullable;
 
-/** Common typed payload routing bound to the actual sender's currently open physical-node Menu. */
+/** Common typed payload routing for active node menus and already authorized connection-owned saves. */
 public final class NodeMenuPayloads {
     private static volatile @Nullable Consumer<NodeMenuResponse> clientReceiver;
     private static volatile @Nullable Consumer<ManagementTransferMessage> transferReceiver;
@@ -18,6 +18,18 @@ public final class NodeMenuPayloads {
     private static volatile @Nullable java.util.function.BiFunction<
                     ServerPlayer, ManagementTransferMessage, NetworkTerminalResponse>
             terminalTransferHandler;
+
+    private static volatile @Nullable java.util.function.BiPredicate<ServerPlayer, ManagementTransferMessage>
+            submittedSaveHandler;
+
+    /**
+     * Installs the server bootstrap callback. Invoked on the sender's server thread; true consumes an exact
+     * accepted save frame, false permits ordinary menu routing. Never grants authority to an unknown frame.
+     */
+    public static void installSubmittedSaveHandler(
+            java.util.function.BiPredicate<ServerPlayer, ManagementTransferMessage> handler) {
+        submittedSaveHandler = Objects.requireNonNull(handler);
+    }
 
     private static volatile @Nullable Consumer<NodeChunkStatus> chunkReceiver;
 
@@ -62,6 +74,7 @@ public final class NodeMenuPayloads {
         registrar.playBidirectional(
                 ManagementTransferMessage.TYPE, ManagementTransferMessage.STREAM_CODEC, (message, context) -> {
                     if (context.player() instanceof ServerPlayer sender) {
+                        if (submittedSaveHandler != null && submittedSaveHandler.test(sender, message)) return;
                         if (sender.containerMenu instanceof ResonanceNodeMenu menu
                                 && menu.sessionId().equals(message.session())) {
                             NodeMenuResponse response = menu.handleTransfer(sender, message);

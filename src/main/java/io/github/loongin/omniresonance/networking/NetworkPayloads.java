@@ -68,6 +68,7 @@ public final class NetworkPayloads {
     public static void register(RegisterPayloadHandlersEvent event, NetworkRuntimeRegistry registry) {
         Objects.requireNonNull(registry, "registry");
         NodeMenuPayloads.installTerminalTransferHandler(registry::handleTerminalTransfer);
+        NodeMenuPayloads.installSubmittedSaveHandler(registry::handleSubmittedNodeSave);
         PayloadRegistrar registrar = event.registrar(NetworkProtocol.VERSION).executesOn(HandlerThread.MAIN);
         registrar.playToClient(NetworkStatusFrame.TYPE, NetworkStatusFrame.STREAM_CODEC, (frame, context) -> {
             var receiver = statusReceiver;

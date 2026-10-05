@@ -7,7 +7,7 @@ import java.util.Objects;
 import java.util.UUID;
 import org.jetbrains.annotations.Nullable;
 
-/** Client-thread lifecycle of one node-policy upload. The screen validates session and request sequence before
+/** Client-thread lifecycle of one node-policy upload. The connection save coordinator validates session and request sequence before
  * authorizing ready or accepting completion. No sends, retries, or optimistic commits occur here. */
 final class NodePolicyUpload {
     private enum Stage {
