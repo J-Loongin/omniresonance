@@ -288,7 +288,7 @@
   "omniresonance.item_policy.status.waiting_budget": "等待预算",
   "omniresonance.item_policy.status.blocked": "已阻断",
   "omniresonance.item_policy.status.failed": "故障退避",
-  "omniresonance.terminal.filters.home_meta": "精确物品 ID 预设",
+  "omniresonance.terminal.filters.home_meta": "管理各类资源的过滤规则",
   "omniresonance.terminal.filters.title": "过滤预设",
   "omniresonance.terminal.filters.value": "预设内容",
   "omniresonance.terminal.filters.cancel": "取消",

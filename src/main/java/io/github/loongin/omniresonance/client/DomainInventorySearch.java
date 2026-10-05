@@ -42,6 +42,7 @@ final class DomainInventorySearch implements AutoCloseable {
     private DomainInventoryQuery query = DomainInventoryQuery.parse("");
     private Sort sort = Sort.NAME_ASC;
     private boolean invalid;
+    private boolean queryWorkPending = true;
     private @Nullable Job job;
     private @Nullable List<Long> pending;
     private List<Long> visible = List.of();
@@ -87,6 +88,11 @@ final class DomainInventorySearch implements AutoCloseable {
         return job != null;
     }
 
+    /** Only explicit query/index work needs a visible status; passive inventory refresh keeps usable results. */
+    boolean searching() {
+        return queryWorkPending && working();
+    }
+
     boolean settled() {
         return !invalid
                 && job == null
@@ -113,6 +119,7 @@ final class DomainInventorySearch implements AutoCloseable {
     }
 
     private void invalidate() {
+        queryWorkPending = true;
         job = null;
         pending = null;
         pendingKeys = Map.of();
@@ -180,6 +187,7 @@ final class DomainInventorySearch implements AutoCloseable {
                     displayVersion = Math.incrementExact(displayVersion);
                 }
                 completedVersion = job.version;
+                queryWorkPending = false;
                 job = null;
                 if (!frozen) publish();
             }
@@ -265,6 +273,7 @@ final class DomainInventorySearch implements AutoCloseable {
 
     @Override
     public void close() {
+        queryWorkPending = true;
         job = null;
         pending = null;
         visible = List.of();

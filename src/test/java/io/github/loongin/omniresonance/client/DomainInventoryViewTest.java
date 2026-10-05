@@ -24,7 +24,8 @@ class DomainInventoryViewTest {
                     font(),
                     DomainInventoryLayout.window(427, 240).content(),
                     widgets::add,
-                    widget -> widgets.remove(widget));
+                    widget -> widgets.remove(widget),
+                    ignored -> {});
             field.setValue("missing-resource");
             assertTrue(view.emptyMessage().getString().isEmpty());
             view.accept(new DomainInventoryFrame.Begin(session, 1, 0, 0, 0));
@@ -56,7 +57,7 @@ class DomainInventoryViewTest {
             var widgets = new ArrayList<AbstractWidget>();
             var body = DomainInventoryLayout.window(427, 240).content();
             var geometry = new DomainInventoryLayout(body, true);
-            view.build(font(), body, widgets::add, widget -> widgets.remove(widget));
+            view.build(font(), body, widgets::add, widget -> widgets.remove(widget), ignored -> {});
             var hits = new ArrayList<Integer>();
             view.paintSlots(geometry.gridX() + 1, geometry.gridY() + 1, true, (x, y, slot, hovered) -> {
                 if (hovered) hits.add(slot);
@@ -74,6 +75,158 @@ class DomainInventoryViewTest {
                 if (hovered) hits.add(slot);
             });
             assertTrue(hits.isEmpty());
+        }
+    }
+
+    @Test
+    void passiveInventoryUpdatesNeverAnnounceANewSearchWithOrWithoutShift() {
+        UUID session = new UUID(19, 3);
+        try (var view = new DomainInventoryView(() -> {})) {
+            view.request(session, 1);
+            var widgets = new ArrayList<AbstractWidget>();
+            var field = view.build(
+                    font(),
+                    DomainInventoryLayout.window(427, 240).content(),
+                    widgets::add,
+                    widget -> widgets.remove(widget),
+                    ignored -> {});
+            seed(view, session, 80);
+            for (int tick = 0; tick < 4; tick++) view.tick(false, () -> 0);
+            for (int revision = 1; revision <= 3; revision++) {
+                byte[] data = inventoryRecord(1, 64 + revision, revision);
+                view.accept(new DomainInventoryFrame.Data(session, 1, 81 + revision, false, data.length, 0, data));
+                for (int tick = 0; tick < 4; tick++) {
+                    view.tick(revision == 1, () -> 0);
+                    assertFalse(
+                            view.statusMessage().equals(DomainInventoryView.text("searching")),
+                            "A background inventory refresh flashed the search status");
+                }
+            }
+            field.setValue(" ");
+            view.tick(false, () -> 0);
+            assertEquals(
+                    DomainInventoryView.text("searching"),
+                    view.statusMessage(),
+                    "An explicit unfinished query must still report its work");
+            for (int tick = 0; tick < 4; tick++) view.tick(false, () -> 0);
+            assertFalse(view.statusMessage().equals(DomainInventoryView.text("searching")));
+        }
+    }
+
+    @Test
+    void smallFirstResultCompletesWithoutAnExtraTickButLaterQueriesRemainIncremental() {
+        for (int count : new int[] {86, 128}) {
+            UUID session = new UUID(19, count);
+            try (var view = new DomainInventoryView(() -> {})) {
+                view.request(session, 1);
+                var widgets = new ArrayList<AbstractWidget>();
+                var field = view.build(
+                        font(),
+                        DomainInventoryLayout.window(427, 240).content(),
+                        widgets::add,
+                        widget -> widgets.remove(widget),
+                        ignored -> {});
+                seed(view, session, count);
+                long[] clock = {0};
+                long unitNanos = count == 86 ? 20_000 : 10_000;
+                view.tick(false, () -> clock[0] += unitNanos);
+                assertTrue(widgets.size() > 3, "Small complete inventory unnecessarily waited for another tick");
+                assertFalse(view.statusMessage().equals(DomainInventoryView.text("searching")));
+                assertTrue(clock[0] < 4_100_000, "Initial work exceeded its soft time boundary");
+                field.setValue(" ");
+                view.tick(false, () -> 0);
+                assertEquals(
+                        DomainInventoryView.text("searching"),
+                        view.statusMessage(),
+                        "The first-open allowance must not persist for ordinary queries");
+            }
+        }
+    }
+
+    @Test
+    void initialPreparationStillWaitsForValidationAndYieldsForLargeOrSlowInventories() {
+        for (int count : new int[] {86, 129}) {
+            UUID session = new UUID(20, count);
+            try (var view = new DomainInventoryView(() -> {})) {
+                view.request(session, 1);
+                var widgets = new ArrayList<AbstractWidget>();
+                view.build(
+                        font(),
+                        DomainInventoryLayout.window(427, 240).content(),
+                        widgets::add,
+                        widget -> widgets.remove(widget),
+                        ignored -> {});
+                view.accept(new DomainInventoryFrame.Begin(session, 1, 0, count, count));
+                for (int id = 1; id <= count; id++) {
+                    byte[] data = inventoryRecord(id, 64, 0);
+                    view.accept(new DomainInventoryFrame.Data(session, 1, id, true, data.length, 0, data));
+                }
+                view.tick(false, () -> 0);
+                assertEquals(3, widgets.size(), "Unvalidated resources became visible");
+                view.accept(new DomainInventoryFrame.End(session, 1, count + 1, count, 0));
+                long[] clock = {0};
+                view.tick(false, () -> count == 86 ? clock[0] += 100_000 : 0);
+                assertEquals(3, widgets.size(), "Large or expensive work was forced through in one tick");
+                assertTrue(clock[0] <= 4_100_000);
+                for (int tick = 0; tick < 5; tick++) view.tick(false, () -> 0);
+                assertTrue(widgets.size() > 3, "Yielded work did not resume");
+            }
+        }
+    }
+
+    @Test
+    void inventoryRowReplacementClearsOldFocusAndKeepsSearchFocus() {
+        UUID session = new UUID(19, 4);
+        try (var view = new DomainInventoryView(() -> {})) {
+            var host = new InventoryHost();
+            var body = DomainInventoryLayout.window(427, 240).content();
+            var geometry = new DomainInventoryLayout(body, true);
+            view.request(session, 1);
+            var field = view.build(font(), body, host::add, host::remove, host::setFocused);
+            seed(view, session, 80);
+            for (int tick = 0; tick < 4; tick++) view.tick(false, () -> 0);
+            var old = host.children().get(3);
+            host.setFocused(old);
+            view.wheel(geometry.gridX() + 1, geometry.gridY() + 1, -1);
+            org.junit.jupiter.api.Assertions.assertNull(host.getFocused(), "Invisible cell retained keyboard focus");
+            assertFalse(old.isFocused());
+            assertFalse(host.keyPressed(org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE, 0, 0));
+            host.setFocused(field);
+            field.setCursorPosition(0);
+            view.wheel(geometry.gridX() + 1, geometry.gridY() + 1, 1);
+            org.junit.jupiter.api.Assertions.assertSame(field, host.getFocused());
+            assertTrue(field.isFocused());
+        }
+    }
+
+    private static byte[] inventoryRecord(int id, long amount, long revision) {
+        var key = new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                net.minecraft.resources.ResourceLocation.parse("example:opaque"),
+                java.nio.ByteBuffer.allocate(4).putInt(id).array());
+        return io.github.loongin.omniresonance.networking.DomainInventoryRecordCodec.encode(
+                new io.github.loongin.omniresonance.storage.DomainLedger.Change(id, key, amount, revision));
+    }
+
+    private static void seed(DomainInventoryView view, UUID session, int count) {
+        view.accept(new DomainInventoryFrame.Begin(session, 1, 0, count, count));
+        for (int id = 1; id <= count; id++) {
+            var data = inventoryRecord(id, 64, 0);
+            view.accept(new DomainInventoryFrame.Data(session, 1, id, true, data.length, 0, data));
+        }
+        view.accept(new DomainInventoryFrame.End(session, 1, count + 1, count, 0));
+    }
+
+    private static final class InventoryHost extends net.minecraft.client.gui.screens.Screen {
+        private InventoryHost() {
+            super(net.minecraft.network.chat.Component.empty());
+        }
+
+        private void add(AbstractWidget widget) {
+            addRenderableWidget(widget);
+        }
+
+        private void remove(net.minecraft.client.gui.components.events.GuiEventListener widget) {
+            removeWidget(widget);
         }
     }
 
@@ -115,7 +268,7 @@ class DomainInventoryViewTest {
             view.request(session, 1);
             var widgets = new ArrayList<AbstractWidget>();
             var body = TerminalLayout.calculate(427, 240).content();
-            view.build(font(), body, widgets::add, widget -> widgets.remove(widget));
+            view.build(font(), body, widgets::add, widget -> widgets.remove(widget), ignored -> {});
             var change = new io.github.loongin.omniresonance.storage.DomainLedger.Change(1, variant.key(), 3, 0);
             var data = io.github.loongin.omniresonance.networking.DomainInventoryRecordCodec.encode(change);
             view.accept(new DomainInventoryFrame.Begin(session, 1, 0, 1, 1));
@@ -163,7 +316,7 @@ class DomainInventoryViewTest {
             view.request(session, 1);
             var widgets = new ArrayList<AbstractWidget>();
             var body = TerminalLayout.calculate(427, 240).content();
-            view.build(font(), body, widgets::add, widget -> widgets.remove(widget));
+            view.build(font(), body, widgets::add, widget -> widgets.remove(widget), ignored -> {});
             var key = new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
                     net.minecraft.resources.ResourceLocation.parse("example:opaque"), new byte[] {1});
             byte[] record = io.github.loongin.omniresonance.networking.DomainInventoryRecordCodec.encode(
@@ -194,7 +347,7 @@ class DomainInventoryViewTest {
                 view.request(session, 1);
                 var widgets = new ArrayList<AbstractWidget>();
                 var body = TerminalLayout.calculate(size[0], size[1]).content();
-                var field = view.build(font(), body, widgets::add, widget -> widgets.remove(widget));
+                var field = view.build(font(), body, widgets::add, widget -> widgets.remove(widget), ignored -> {});
                 assertTrue(field.active);
                 assertEquals(3, widgets.size());
                 assertTrue(widgets.stream().allMatch(w -> w.getX() >= body.x() && w.getRight() <= body.right()));

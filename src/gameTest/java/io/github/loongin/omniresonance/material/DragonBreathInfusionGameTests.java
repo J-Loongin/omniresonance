@@ -298,6 +298,11 @@ public final class DragonBreathInfusionGameTests {
             for (int slot = 0; slot < dispenser.getContainerSize(); slot++) {
                 dispenser.setItem(slot, new ItemStack(Items.COBBLESTONE, 64));
             }
+            // Native entity-ticking promotion requires a radius-two FULL neighborhood. The accelerated
+            // GameTest clock must not race background generation of those neighboring chunks.
+            ChunkPos overflowChunk = new ChunkPos(overflow.target());
+            for (int dx = -2; dx <= 2; dx++)
+                for (int dz = -2; dz <= 2; dz++) overflow.level().getChunk(overflowChunk.x + dx, overflowChunk.z + dz);
             helper.startSequence()
                     .thenWaitUntil(() -> helper.assertTrue(
                             overflow.level().areEntitiesLoaded(ChunkPos.asLong(overflow.target())),

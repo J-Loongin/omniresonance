@@ -75,7 +75,8 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     private final NodeResourceTypeCatalog resourceCatalog = new NodeResourceTypeCatalog();
     private @Nullable NodeResourceTypeCatalog.Request catalogRequest;
     private @Nullable ResourceTypeSelection resourceSelection;
-    private final java.util.List<TerminalRowButton> resourceRows = new java.util.ArrayList<>();
+    private final TerminalResultRows resourceRows =
+            new TerminalResultRows(this, this::addRenderableWidget, this::removeWidget);
     private boolean choosingItemPreset;
     private final NodePresetPicker presetPicker = new NodePresetPicker();
     private final TerminalResultRows presetResultRows =
@@ -1182,16 +1183,12 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
 
     private void updateResourceRows() {
         if (resourceSelection == null) return;
-        for (var row : resourceRows) removeWidget(row);
         resourceRows.clear();
         ResourceTypeSelectionView.buildRows(
                 ResourceTypeSelectionView.layout(bodyBounds, resourceSelection),
                 resourceSelection,
                 !interaction.mutationPending(),
-                row -> {
-                    resourceRows.add(row);
-                    addRenderableWidget(row);
-                },
+                resourceRows::add,
                 () -> {
                     if (resourceSelection.scope() == null) {
                         var chosen = resourceSelection.chosen();

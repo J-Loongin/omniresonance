@@ -30,6 +30,21 @@ public final class ItemVariant implements ResourceVariant {
     /** Restores one trusted stored key on the server thread, without mutation or native calls. Unknown IDs,
      * malformed structure, or any lossy component decoding reject; callers must retain the opaque original key. */
     public static ItemVariant restore(ResourceVariantKey key, HolderLookup.Provider provider) {
+        return restoreValue(key, provider).variant();
+    }
+
+    /**
+     * Returns an independently reconstructed one-unit stack after the same strict identity checks as restore.
+     * Call on the registry-owning game thread (including client presentation); no world access, simulation,
+     * mutation of authority or caching occurs. The caller owns the returned stack. Malformed or lossy keys throw.
+     */
+    public static ItemStack restoreStack(ResourceVariantKey key, HolderLookup.Provider provider) {
+        return restoreValue(key, provider).stack();
+    }
+
+    private record Restored(ItemVariant variant, ItemStack stack) {}
+
+    private static Restored restoreValue(ResourceVariantKey key, HolderLookup.Provider provider) {
         Objects.requireNonNull(key);
         Objects.requireNonNull(provider);
         if (!key.typeId().equals(TYPE_ID)) throw new IllegalArgumentException("Wrong resource type");
@@ -43,9 +58,10 @@ public final class ItemVariant implements ResourceVariant {
         if (!id.toString().equals(identity.getString("id")) || !BuiltInRegistries.ITEM.containsKey(id))
             throw new IllegalArgumentException("Missing stored item");
         ItemVariant restored = new ItemVariant(key, provider, BuiltInRegistries.ITEM.get(id));
-        ItemVariant roundTrip = from(restored.stack(1), provider);
+        ItemStack stack = restored.stack(1, identity);
+        ItemVariant roundTrip = from(stack, provider);
         if (!roundTrip.key().equals(key)) throw new IllegalArgumentException("Stored item identity cannot round trip");
-        return restored;
+        return new Restored(restored, stack);
     }
 
     /** Captures full effective components without count or patch history; rejects lossy codecs before mutation. */
@@ -100,6 +116,10 @@ public final class ItemVariant implements ResourceVariant {
             throw new IllegalArgumentException("Item amount must be positive");
         }
         CompoundTag identity = (CompoundTag) CanonicalResourceNbt.decode(key.canonicalBytes());
+        return stack(amount, identity);
+    }
+
+    private ItemStack stack(int amount, CompoundTag identity) {
         DataComponentMap components = DataComponentMap.CODEC
                 .parse(
                         provider.createSerializationContext(NbtOps.INSTANCE),

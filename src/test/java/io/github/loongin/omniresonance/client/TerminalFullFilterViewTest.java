@@ -319,6 +319,80 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
+    void referencePickerUsesTheCompleteLocalCatalogAtBothScrollBoundaries() {
+        for (boolean searched : new boolean[] {false, true}) {
+            var view = new TerminalFilterView(() -> {});
+            var entries = new ArrayList<FilterPresetSummary>();
+            for (int i = 0; i < 260; i++)
+                entries.add(new FilterPresetSummary(i == 0 ? PRESET : new UUID(90, i), "Candidate " + i, 0, 0, true));
+            var directory =
+                    new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(entries.subList(0, 128), 0, 260, 1));
+            view.apply(directory);
+            var actions = new ArrayList<TerminalFilterView.Action>();
+            var layout = TerminalLayout.terminal(640, 360);
+            build(view, layout, directory, actions);
+            for (int offset : new int[] {128, 256}) {
+                view.tick(offset, false);
+                view.acceptLibrary(new NetworkTerminalResponse.FilterLibrary(
+                        NETWORK.id(),
+                        NETWORK.ownerId(),
+                        offset,
+                        "",
+                        new FilterPresetPage(entries.subList(offset, Math.min(260, offset + 128)), offset, 260, 1)));
+            }
+            view.apply(STATE);
+            var edit = new NetworkTerminalState.PresetEdit(
+                    NETWORK, SUMMARY, PresetEditOperation.ADD_RULE, new FilterImpactSummary(0, 0, 0, true));
+            view.apply(edit);
+            for (int i = 0; i < 4; i++) {
+                var widgets = build(view, layout, edit, actions);
+                ((TerminalButton) widgets.stream()
+                                .filter(w -> key(w).contains(".selector_") && w instanceof TerminalButton)
+                                .findFirst()
+                                .orElseThrow())
+                        .onPress();
+            }
+            var widgets = build(view, layout, edit, actions);
+            if (searched) {
+                ((TerminalSearchButton) widgets.stream()
+                                .filter(TerminalSearchButton.class::isInstance)
+                                .findFirst()
+                                .orElseThrow())
+                        .onPress();
+                widgets = build(view, layout, edit, actions);
+                ((TerminalSearchBox) widgets.stream()
+                                .filter(TerminalSearchBox.class::isInstance)
+                                .findFirst()
+                                .orElseThrow())
+                        .setValue("Candidate");
+                view.tick(300, false);
+                widgets = build(view, layout, edit, actions);
+            }
+            int requests = actions.size();
+            for (int i = 0; i < 300; i++) {
+                var row = widgets.stream()
+                        .filter(TerminalRowButton.class::isInstance)
+                        .findFirst()
+                        .orElseThrow();
+                view.scroll(row.getX() + 1, row.getY() + 1, -1);
+                widgets = build(view, layout, edit, actions);
+            }
+            assertEquals(requests, actions.size(), "Local reference scrolling must not request another server page");
+            assertTrue(widgets.stream().anyMatch(w -> w.getMessage().getString().equals("Candidate 259")));
+            for (int i = 0; i < 300; i++) {
+                var row = widgets.stream()
+                        .filter(TerminalRowButton.class::isInstance)
+                        .findFirst()
+                        .orElseThrow();
+                view.scroll(row.getX() + 1, row.getY() + 1, 1);
+                widgets = build(view, layout, edit, actions);
+            }
+            assertEquals(requests, actions.size());
+            assertTrue(widgets.stream().anyMatch(w -> w.getMessage().getString().equals("Candidate 0")));
+        }
+    }
+
+    @Test
     void sampleSelectionIsLocalAndReferenceSelectionPreservesTheDraft() {
         var view = new TerminalFilterView(() -> {});
         view.apply(new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(SUMMARY), 0, 1, 0)));

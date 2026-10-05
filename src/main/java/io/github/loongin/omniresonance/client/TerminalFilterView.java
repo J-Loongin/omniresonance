@@ -795,15 +795,7 @@ final class TerminalFilterView {
             return true;
         }
         if (fullMode && !management && inside(libraryBounds, x, y)) {
-            if (!queryPending
-                    && (amount < 0 && libraryScroll == maxLibraryScroll && library.hasNext()
-                            || amount > 0 && libraryScroll == 0 && library.offset() > 0)) {
-                queryPending = true;
-                actions.accept(new Action.Query(
-                        librarySearch.draft(),
-                        amount < 0 ? library.offset() + libraryEntries().size() : Math.max(0, library.offset() - 128),
-                        library.libraryRevision()));
-            } else libraryScroll = Math.max(0, Math.min(maxLibraryScroll, libraryScroll + (amount < 0 ? 1 : -1)));
+            libraryScroll = Math.max(0, Math.min(maxLibraryScroll, libraryScroll + (amount < 0 ? 1 : -1)));
             rebuild.run();
             return true;
         }

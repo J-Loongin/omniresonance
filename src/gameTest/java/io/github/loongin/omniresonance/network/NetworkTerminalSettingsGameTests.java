@@ -1277,6 +1277,13 @@ public final class NetworkTerminalSettingsGameTests {
     @GameTest(template = "bootstrap")
     public static void deletionClosesOnlySessionsForTheRemovedNetwork(GameTestHelper helper) throws IOException {
         try (Fixture fixture = new Fixture(helper)) {
+            var controller = new io.github.loongin.omniresonance.exchange.ExchangeTerminalController(
+                    helper.getLevel().getServer(),
+                    fixture.repository,
+                    fixture.directory,
+                    ServerSettings::defaults,
+                    () -> {});
+            fixture.terminal.installExchange(controller, fixture.repository);
             ServerPlayer owner = player(helper, OWNER);
             ServerPlayer administrator = player(helper, ADMINISTRATOR);
             ServerPlayer otherOwner = player(helper, OTHER_OWNER);
@@ -1309,8 +1316,30 @@ public final class NetworkTerminalSettingsGameTests {
                                     .administratorCount()
                             == 1,
                     "Deletion confirmation omitted administrator count");
+            // An admitted exchange download reserves the complete body until MORE consumes its last fragment.
+            fixture.menus
+                    .transfers()
+                    .beginDownload(
+                            ADMINISTRATOR,
+                            ADMIN_SESSION,
+                            new UUID(992, 1),
+                            262144,
+                            helper.getLevel().getGameTime(),
+                            () -> new byte[262144]);
+            fixture.menus
+                    .transfers()
+                    .beginDownload(
+                            OTHER_OWNER,
+                            OTHER_SESSION,
+                            new UUID(992, 2),
+                            17,
+                            helper.getLevel().getGameTime(),
+                            () -> new byte[17]);
             NetworkTerminalResponse response = fixture.terminal.handle(
                     owner, new NetworkTerminalRequest.ConfirmDeleteNetwork(OWNER_VIEW, OWNER_SESSION, 4));
+            helper.assertTrue(
+                    fixture.menus.transfers().reservedBytes() == 17,
+                    "Deleting a network did not immediately release its session's exchange reservation");
             helper.assertTrue(
                     response instanceof NetworkTerminalResponse.Success success
                             && success.page().entries().isEmpty(),
@@ -1332,6 +1361,7 @@ public final class NetworkTerminalSettingsGameTests {
                     fixture.terminal.handle(otherOwner, new NetworkTerminalRequest.Back(OTHER_VIEW, OTHER_SESSION, 2))
                             instanceof NetworkTerminalResponse.Success,
                     "Unrelated network session was closed");
+            controller.close();
             helper.succeed();
         }
     }
@@ -2125,6 +2155,56 @@ public final class NetworkTerminalSettingsGameTests {
         }
     }
 
+    @GameTest(template = "bootstrap")
+    public static void revokingAdministratorImmediatelyReleasesExchangeReservation(GameTestHelper helper)
+            throws Exception {
+        try (var f = new Fixture(helper, true)) {
+            var controller = new io.github.loongin.omniresonance.exchange.ExchangeTerminalController(
+                    helper.getLevel().getServer(), f.repository, f.directory, ServerSettings::defaults, () -> {});
+            f.terminal.installExchange(controller, f.repository);
+            var owner = player(helper, OWNER);
+            var admin = player(helper, ADMINISTRATOR);
+            f.open(owner, OWNER_VIEW, OWNER_SESSION);
+            f.open(admin, ADMIN_VIEW, ADMIN_SESSION);
+            f.terminal.handle(owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK));
+            f.terminal.handle(admin, new NetworkTerminalRequest.OpenNetwork(ADMIN_VIEW, ADMIN_SESSION, 1, NETWORK));
+            var peer = new ExchangePeer(f.terminal, admin, ADMIN_VIEW, ADMIN_SESSION);
+            helper.assertTrue(
+                    peer.send(0, new byte[0]).kind() == io.github.loongin.omniresonance.networking.ExchangeFrame.META,
+                    "Exchange did not open");
+            // Model the pool reservation retained between two fragments of an admitted exchange download.
+            f.menus
+                    .transfers()
+                    .beginDownload(
+                            ADMINISTRATOR,
+                            ADMIN_SESSION,
+                            new UUID(993, 1),
+                            262144,
+                            helper.getLevel().getGameTime(),
+                            () -> new byte[262144]);
+            f.terminal.handle(owner, new NetworkTerminalRequest.OpenMembers(OWNER_VIEW, OWNER_SESSION, 2));
+            var confirmation = f.terminal.handle(
+                    owner,
+                    new NetworkTerminalRequest.RequestRemoveAdministrator(OWNER_VIEW, OWNER_SESSION, 3, ADMINISTRATOR));
+            helper.assertTrue(
+                    confirmation instanceof NetworkTerminalResponse.ViewState,
+                    "Administrator removal confirmation failed");
+            f.terminal.handle(
+                    owner, new NetworkTerminalRequest.ConfirmRemoveAdministrator(OWNER_VIEW, OWNER_SESSION, 4));
+            helper.assertTrue(
+                    !f.directory.find(NETWORK).orElseThrow().administrators().contains(ADMINISTRATOR),
+                    "Administrator was not revoked");
+            helper.assertTrue(f.menus.transfers().reservedBytes() == 0, "Revocation retained exchange reservation");
+            helper.assertTrue(
+                    peer.send(io.github.loongin.omniresonance.networking.ExchangeRequest.MORE, 1, new byte[0])
+                                    .kind()
+                            == io.github.loongin.omniresonance.networking.ExchangeFrame.ERROR,
+                    "Revoked exchange remained usable");
+            controller.close();
+            helper.succeed();
+        }
+    }
+
     private static final class ExchangePeer {
         private final NetworkTerminalService terminal;
         private final ServerPlayer player;
@@ -2181,6 +2261,10 @@ public final class NetworkTerminalSettingsGameTests {
         private long nextPresetId;
 
         private Fixture(GameTestHelper helper) throws IOException {
+            this(helper, false);
+        }
+
+        private Fixture(GameTestHelper helper, boolean withAdministration) throws IOException {
             path = Files.createTempDirectory("omniresonance-terminal-settings-test-");
             DimensionDataStorage storage = new DimensionDataStorage(
                     path.toFile(), DataFixers.getDataFixer(), helper.getLevel().registryAccess());
@@ -2219,7 +2303,10 @@ public final class NetworkTerminalSettingsGameTests {
                     directory,
                     creation,
                     topology,
-                    null,
+                    withAdministration
+                            ? new NetworkAdministrationService(
+                                    helper.getLevel().getServer(), repository, directory, locks, profiles, config)
+                            : null,
                     settings,
                     menus,
                     config,

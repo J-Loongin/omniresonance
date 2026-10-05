@@ -288,7 +288,7 @@
   "omniresonance.item_policy.status.waiting_budget": "Waiting for budget",
   "omniresonance.item_policy.status.blocked": "Blocked",
   "omniresonance.item_policy.status.failed": "Failure backoff",
-  "omniresonance.terminal.filters.home_meta": "Exact item ID presets",
+  "omniresonance.terminal.filters.home_meta": "Manage filtering rules for multiple resource types",
   "omniresonance.terminal.filters.title": "Filter presets",
   "omniresonance.terminal.filters.value": "Preset value",
   "omniresonance.terminal.filters.cancel": "Cancel",

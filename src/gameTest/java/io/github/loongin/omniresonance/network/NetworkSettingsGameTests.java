@@ -480,6 +480,36 @@ public final class NetworkSettingsGameTests {
         }
     }
 
+    @GameTest(template = "bootstrap")
+    public static void networkDeletionRechecksAllTopologyLeases(GameTestHelper helper) throws IOException {
+        try (Fixture f = new Fixture(helper)) {
+            UUID tunnel = new UUID(990, 1), channel = new UUID(990, 2);
+            f.target.createTunnel(tunnel, new ManagedName("Tunnel"), channel, new ManagedName("Channel"), -1);
+            var owner = player(helper, OWNER);
+            for (UUID lockId : List.of(
+                    new TopologyEditKey.TunnelCollection(TARGET).lockId(),
+                    new TopologyEditKey.Tunnel(TARGET, tunnel).lockId(),
+                    new TopologyEditKey.ChannelCollection(TARGET, tunnel).lockId(),
+                    new TopologyEditKey.Channel(TARGET, channel).lockId())) {
+                var deletion = f.settings.beginDeletion(owner, TARGET);
+                var held = f.locks.tryAcquire(lockId, ADMINISTRATOR, 0).orElseThrow();
+                f.target.setDirty(false);
+                rejected(helper, NetworkSettingsService.Reason.LOCKED, () -> f.settings.delete(owner, deletion));
+                helper.assertTrue(
+                        !f.target.isDirty() && f.directory.find(TARGET).isPresent(), "Locked network changed");
+                f.locks.release(held, ADMINISTRATOR);
+            }
+            var unrelated = f.locks
+                    .tryAcquire(new TopologyEditKey.TunnelCollection(UNRELATED).lockId(), ADMINISTRATOR, 0)
+                    .orElseThrow();
+            f.settings.delete(owner, f.settings.beginDeletion(owner, TARGET));
+            helper.assertTrue(
+                    f.directory.find(TARGET).isEmpty() && f.locks.isHeld(unrelated, ADMINISTRATOR, 0),
+                    "Deletion affected an unrelated edit");
+            helper.succeed();
+        }
+    }
+
     private static ServerPlayer player(GameTestHelper helper, UUID id) {
         return new FakePlayer(helper.getLevel(), new GameProfile(id, "Settings" + id.getLeastSignificantBits()));
     }

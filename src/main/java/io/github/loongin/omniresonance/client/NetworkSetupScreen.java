@@ -1145,7 +1145,8 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
             return;
         }
         if (inventoryView != null) {
-            nameField = inventoryView.build(font, content, this::addRenderableWidget, this::removeWidget);
+            nameField =
+                    inventoryView.build(font, content, this::addRenderableWidget, this::removeWidget, this::setFocused);
             return;
         }
         switch (topologyState) {

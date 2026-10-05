@@ -847,7 +847,6 @@ public final class NetworkTerminalService {
         if (nodeDirectory != null) nodeDirectory.closePlayer(player);
         Session session = sessions.get(Objects.requireNonNull(player, "player").getUUID());
         if (session != null && session.player == player) {
-            if (exchangeWire != null) exchangeWire.close(player, session.id);
             cancelSessionEdit(player, session);
             sessions.remove(player.getUUID());
         }
@@ -857,7 +856,6 @@ public final class NetworkTerminalService {
     public void close() {
         requireServerThread();
         for (Session session : sessions.values()) {
-            if (exchangeWire != null) exchangeWire.close(session.player, session.id);
             cancelSessionEdit(session.player, session);
         }
         sessions.clear();
@@ -1050,6 +1048,8 @@ public final class NetworkTerminalService {
     }
 
     private void cancelSessionEdit(ServerPlayer player, Session session) {
+        if (exchangeWire != null) exchangeWire.close(player, session.id);
+        session.exchange = null;
         clearStatus(session);
         session.chunkActive = false;
         if (inventorySync != null) inventorySync.cancel(player.getUUID());

@@ -230,6 +230,8 @@ public final class NetworkSettingsService implements AutoCloseable {
         try {
             NetworkSavedData data = requireDeletion(actor, edit);
             requireDeletable(data);
+            if (TopologyDeletionLocks.networkConflict(data, locks, edit.token(), currentTick))
+                throw rejected(Reason.LOCKED);
             if (data.administratorCount() != edit.administratorCount()
                     || data.tunnelCount() != edit.tunnelCount()
                     || data.channelCount() != edit.channelCount()) {

@@ -677,6 +677,8 @@ public final class NetworkTopologyService implements AutoCloseable {
         NetworkTunnelRecord current = currentTunnel(network, edit);
         requireDeletionCurrent(actor, network, deletion);
         requireAffectedNodesUnlocked(deletion);
+        if (TopologyDeletionLocks.tunnelConflict(network, current.tunnelId(), locks(), edit.token(), currentTick))
+            throw rejected(Reason.LOCKED);
         requireAffectedNodesAvailable(network, deletion);
         List<NetworkNodeRecord> changed = network.deleteTunnel(
                 current.tunnelId(), current.revision(), deletion.impact().topologyRevision());

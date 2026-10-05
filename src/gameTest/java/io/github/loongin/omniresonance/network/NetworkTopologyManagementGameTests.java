@@ -514,6 +514,43 @@ public final class NetworkTopologyManagementGameTests {
         }
     }
 
+    @GameTest(template = "bootstrap")
+    public static void tunnelDeletionHonorsChildAndCollectionEditsWithoutBlockingOtherTunnels(GameTestHelper helper)
+            throws IOException {
+        try (Fixture f = new Fixture(helper, ServerSettings.defaults())) {
+            f.seedTunnelAndChannel();
+            var owner = player(helper, OWNER);
+            var admin = player(helper, ADMIN);
+            UUID otherTunnel = new UUID(994, 1), otherChannel = new UUID(994, 2);
+            f.data.createTunnel(
+                    otherTunnel, new ManagedName("Other"), otherChannel, new ManagedName("Other channel"), -1);
+            var unrelated = f.service.acquireChannel(admin, NETWORK, otherChannel);
+            var deletion = f.service.beginTunnelDeletion(owner, NETWORK, TUNNEL);
+            var child = f.service.acquireChannel(admin, NETWORK, CHANNEL);
+            f.data.setDirty(false);
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.LOCKED,
+                    () -> f.service.confirmTunnelDeletion(owner, deletion));
+            helper.assertTrue(
+                    !f.data.isDirty() && f.data.findChannel(CHANNEL).isPresent(), "Locked cascade mutated data");
+            f.service.cancel(admin, child);
+            var collection = f.service.acquireChannelCollection(admin, NETWORK, TUNNEL);
+            rejected(
+                    helper,
+                    NetworkTopologyService.Reason.LOCKED,
+                    () -> f.service.confirmTunnelDeletion(owner, deletion));
+            f.service.cancel(admin, collection);
+            f.service.confirmTunnelDeletion(owner, deletion);
+            helper.assertTrue(f.data.findTunnel(TUNNEL).isEmpty(), "Released children still blocked deletion");
+            helper.assertTrue(
+                    f.data.findTunnel(otherTunnel).isPresent() && f.locks.isHeld(unrelated.token(), ADMIN, 0),
+                    "Deletion touched an unrelated tunnel edit");
+            f.service.cancel(admin, unrelated);
+            helper.succeed();
+        }
+    }
+
     /** A healthy tunnel cascade still publishes every changed node after preflight and releases the edit. */
     @GameTest(template = "bootstrap")
     public static void healthyTunnelDeletionPublishesEveryAffectedNode(GameTestHelper helper) throws IOException {

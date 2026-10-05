@@ -29,6 +29,21 @@ public final class FluidVariant implements ResourceVariant {
     /** Restores one trusted stored key on the server thread, without mutation or native calls. Unknown IDs,
      * malformed structure, or any lossy component decoding reject; callers must retain the opaque original key. */
     public static FluidVariant restore(ResourceVariantKey key, HolderLookup.Provider provider) {
+        return restoreValue(key, provider).variant();
+    }
+
+    /**
+     * Returns an independently reconstructed one-unit stack after the same strict identity checks as restore.
+     * Call on the registry-owning game thread (including client presentation); no world access, simulation,
+     * mutation of authority or caching occurs. The caller owns the returned stack. Malformed or lossy keys throw.
+     */
+    public static FluidStack restoreStack(ResourceVariantKey key, HolderLookup.Provider provider) {
+        return restoreValue(key, provider).stack();
+    }
+
+    private record Restored(FluidVariant variant, FluidStack stack) {}
+
+    private static Restored restoreValue(ResourceVariantKey key, HolderLookup.Provider provider) {
         Objects.requireNonNull(key);
         Objects.requireNonNull(provider);
         if (!key.typeId().equals(TYPE_ID)) throw new IllegalArgumentException("Wrong resource type");
@@ -42,9 +57,10 @@ public final class FluidVariant implements ResourceVariant {
         if (!id.toString().equals(identity.getString("id")) || !BuiltInRegistries.FLUID.containsKey(id))
             throw new IllegalArgumentException("Missing stored fluid");
         FluidVariant restored = new FluidVariant(key, provider, BuiltInRegistries.FLUID.get(id));
-        FluidVariant roundTrip = from(restored.stack(1), provider);
+        FluidStack stack = restored.stack(1, identity);
+        FluidVariant roundTrip = from(stack, provider);
         if (!roundTrip.key().equals(key)) throw new IllegalArgumentException("Stored fluid identity cannot round trip");
-        return restored;
+        return new Restored(restored, stack);
     }
 
     /** Captures full effective components without amount or patch history; rejects lossy codecs before mutation. */
@@ -99,6 +115,10 @@ public final class FluidVariant implements ResourceVariant {
             throw new IllegalArgumentException("Fluid amount must be positive");
         }
         CompoundTag identity = (CompoundTag) CanonicalResourceNbt.decode(key.canonicalBytes());
+        return stack(amount, identity);
+    }
+
+    private FluidStack stack(int amount, CompoundTag identity) {
         DataComponentMap components = DataComponentMap.CODEC
                 .parse(
                         provider.createSerializationContext(NbtOps.INSTANCE),

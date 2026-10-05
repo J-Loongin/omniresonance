@@ -3,8 +3,6 @@ package io.github.loongin.omniresonance.client;
 
 import io.github.loongin.omniresonance.networking.DomainInventoryFrame;
 import io.github.loongin.omniresonance.storage.DomainLedger;
-import io.github.loongin.omniresonance.transfer.FluidVariant;
-import io.github.loongin.omniresonance.transfer.ItemVariant;
 import io.github.loongin.omniresonance.transfer.ResourceAdapterDirectory;
 import io.github.loongin.omniresonance.transfer.ResourceTypes;
 import java.util.ArrayList;
@@ -32,11 +30,14 @@ import org.jetbrains.annotations.Nullable;
 
 /**
  * One client-owned inventory surface with server-confirmed mutations and no item prediction. Metadata is cached only for live IDs in this view; removals and
- * close evict it. Query construction is bounded to 128 units and a soft 2 ms per client tick, with immutable
- * result replacement. Only visible grid buttons exist; quantities are always read from the authoritative mirror.
+ * close evict it. Ordinary queries use 128 work units and a soft 2 ms per client tick. The first complete result
+ * for at most 128 variants may use 258 units and 4 ms to avoid another tick solely to finish a small list.
+ * Results still publish atomically; only visible buttons exist and quantities come from the authoritative mirror.
  */
 final class DomainInventoryView implements AutoCloseable {
     private static final int CELL = DomainInventoryLayout.CELL;
+    private static final int SMALL_INITIAL_VARIANTS = 128;
+    private static final int SMALL_INITIAL_WORK = SMALL_INITIAL_VARIANTS * 2 + 2;
     private final DomainInventoryReceiver receiver = new DomainInventoryReceiver();
     private final ResourceAdapterDirectory adapters =
             io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create();
@@ -44,10 +45,12 @@ final class DomainInventoryView implements AutoCloseable {
     private final List<AbstractWidget> cells = new ArrayList<>();
     private final DomainInventorySearch search;
     private final Runnable retry;
+    private final @Nullable InventoryOpenTiming openTiming = InventoryOpenTiming.development();
     private @Nullable Font font;
     private TerminalLayout.Rect body = new TerminalLayout.Rect(0, 0, 0, 0);
     private @Nullable Consumer<AbstractWidget> add;
     private @Nullable Consumer<GuiEventListener> remove;
+    private @Nullable Consumer<GuiEventListener> focus;
     private @Nullable TerminalSearchBox field;
     private @Nullable TerminalSymbolButton sortButton;
     private @Nullable TerminalButton retryButton;
@@ -62,6 +65,7 @@ final class DomainInventoryView implements AutoCloseable {
     private List<net.minecraft.util.FormattedCharSequence> tooltipRows = List.of();
     private long shownVersion = -1;
     private boolean cellsDirty = true;
+    private boolean firstResultsPending = true;
     private @Nullable Cell hovered;
 
     private @Nullable UUID viewId, sessionId;
@@ -80,11 +84,19 @@ final class DomainInventoryView implements AutoCloseable {
             if (!(widget instanceof Cell cell) || !cell.isMouseOver(x, y)) continue;
             var row = receiver.mirror().entries().get(cell.id);
             if (row == null || row.amount() <= 0) return null;
-            var decoded = adapters.decode(row.key(), provider).orElse(null);
-            Object value = decoded instanceof ItemVariant item
-                    ? item.stack(1)
-                    : decoded instanceof FluidVariant fluid
-                            ? fluid.stack(1000)
+            Object decoded = cell.info.opaque
+                    ? ResourceDisplayValue.decode(row.key(), adapters, provider)
+                    : row.key().typeId().equals(ResourceTypes.ITEM)
+                            ? cell.info.icon
+                            : row.key().typeId().equals(ResourceTypes.FLUID)
+                                    ? cell.info.fluid
+                                    : row.key().typeId().equals(ResourceTypes.ENERGY)
+                                            ? io.github.loongin.omniresonance.transfer.EnergyVariant.INSTANCE
+                                            : cell.info.registeredVariant;
+            Object value = decoded instanceof ItemStack item
+                    ? item.copyWithCount(1)
+                    : decoded instanceof net.neoforged.neoforge.fluids.FluidStack fluid
+                            ? fluid.copyWithAmount(1000)
                             : decoded == io.github.loongin.omniresonance.transfer.EnergyVariant.INSTANCE
                                     ? decoded
                                     : decoded
@@ -306,6 +318,8 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     void request(UUID session, long generation) {
+        firstResultsPending = true;
+        if (openTiming != null) openTiming.begin();
         receiver.request(session, generation);
         menuRevision.clear();
         quickMove.clear();
@@ -324,6 +338,11 @@ final class DomainInventoryView implements AutoCloseable {
 
     void accept(DomainInventoryFrame frame) {
         boolean accepted = receiver.accept(frame);
+        if (accepted && openTiming != null)
+            openTiming.frame(
+                    frame.wireSize(),
+                    frame instanceof DomainInventoryFrame.End
+                            && receiver.mirror().ready());
         if (accepted && receiver.lastChange() != null && receiver.lastChange().amount() == 0) {
             metadata.remove(receiver.lastChange().sequence());
             cellsDirty = true;
@@ -338,12 +357,17 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     TerminalSearchBox build(
-            Font font, TerminalLayout.Rect body, Consumer<AbstractWidget> add, Consumer<GuiEventListener> remove) {
+            Font font,
+            TerminalLayout.Rect body,
+            Consumer<AbstractWidget> add,
+            Consumer<GuiEventListener> remove,
+            Consumer<GuiEventListener> focus) {
         this.font = font;
         this.body = body;
         tagPopup = null;
         this.add = add;
         this.remove = remove;
+        this.focus = focus;
         cells.clear();
         retryButton = null;
         var geometry = geometry();
@@ -407,8 +431,14 @@ final class DomainInventoryView implements AutoCloseable {
         field.setEditable(ready);
         sortButton.active = field.active;
         if (ready) {
+            boolean smallInitial =
+                    firstResultsPending && receiver.mirror().entries().size() <= SMALL_INITIAL_VARIANTS;
+            long allowedNanos = smallInitial ? 4_000_000L : 2_000_000L;
             long started = clock.getAsLong();
-            search.tick(128, () -> clock.getAsLong() - started < 2_000_000L, frozen);
+            search.tick(
+                    smallInitial ? SMALL_INITIAL_WORK : 128, () -> clock.getAsLong() - started < allowedNanos, frozen);
+            if (!search.searching()) firstResultsPending = false;
+            if (openTiming != null) openTiming.preparation(clock.getAsLong() - started);
             if (shownVersion != search.displayVersion()) {
                 shownVersion = search.displayVersion();
                 cellsDirty = true;
@@ -429,6 +459,8 @@ final class DomainInventoryView implements AutoCloseable {
             retryButton = null;
         }
         if (cellsDirty) refreshCells();
+        if (openTiming != null && receiver.mirror().ready() && !search.searching())
+            openTiming.ready(receiver.mirror().entries().size());
     }
 
     private int columns() {
@@ -458,9 +490,8 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     private void refreshCells() {
-        if (add == null || remove == null) return;
-        for (var widget : cells) remove.accept(widget);
-        cells.clear();
+        if (add == null || remove == null || focus == null) return;
+        TerminalResultRows.clearWidgets(cells, remove::accept, focus, null);
         cellsDirty = false;
         hovered = null;
         if (!receiver.mirror().ready()) return;
@@ -580,7 +611,7 @@ final class DomainInventoryView implements AutoCloseable {
                 ? localNotice
                 : search.invalid()
                         ? text("invalid_query")
-                        : search.working()
+                        : search.searching()
                                 ? text("searching")
                                 : operationStatus != null
                                                 && operationStatus
@@ -662,7 +693,9 @@ final class DomainInventoryView implements AutoCloseable {
     private Metadata describe(DomainLedger.Cursor entry) {
         var cached = metadata.get(entry.sequence());
         if (cached != null) return cached;
+        long startedNanos = openTiming != null && openTiming.active() ? System.nanoTime() : 0;
         var value = new Metadata(entry);
+        if (openTiming != null && openTiming.active()) openTiming.metadata(System.nanoTime() - startedNanos);
         metadata.put(entry.sequence(), value);
         return value;
     }
@@ -705,23 +738,22 @@ final class DomainInventoryView implements AutoCloseable {
             var tags = new ArrayList<String>();
             try {
                 if (minecraft != null && minecraft.level != null) {
-                    var decoded = adapters.decode(entry.key(), minecraft.level.registryAccess())
-                            .orElse(null);
-                    if (decoded instanceof ItemVariant item) {
-                        icon = item.stack(1);
+                    Object decoded =
+                            ResourceDisplayValue.decode(entry.key(), adapters, minecraft.level.registryAccess());
+                    if (decoded instanceof ItemStack item) {
+                        icon = item;
                         name = icon.getHoverName().getString();
-                        id = item.itemId().toString();
+                        id = BuiltInRegistries.ITEM.getKey(item.getItem()).toString();
                         unit = NodeResourcePolicyView.text("unit.item").getString();
                         var iterator = icon.getTags().iterator();
                         while (iterator.hasNext())
                             tags.add(iterator.next().location().toString());
                         components = icon.getComponents();
                         opaque = false;
-                    } else if (decoded instanceof FluidVariant fluid) {
-                        var stack = fluid.stack(1);
+                    } else if (decoded instanceof net.neoforged.neoforge.fluids.FluidStack stack) {
                         fluidIcon = stack;
                         name = stack.getHoverName().getString();
-                        id = fluid.fluidId().toString();
+                        id = BuiltInRegistries.FLUID.getKey(stack.getFluid()).toString();
                         unit = "B";
                         var iterator = stack.getTags().iterator();
                         while (iterator.hasNext())
@@ -955,6 +987,7 @@ final class DomainInventoryView implements AutoCloseable {
 
     @Override
     public void close() {
+        if (openTiming != null) openTiming.cancel();
         receiver.close();
         tagPopup = null;
         localNotice = null;
@@ -964,6 +997,7 @@ final class DomainInventoryView implements AutoCloseable {
         storageSender = null;
         writable = showInventory = false;
         pendingOperation = 0;
+        firstResultsPending = true;
         metadata.clear();
         search.close();
         cells.clear();
@@ -973,6 +1007,7 @@ final class DomainInventoryView implements AutoCloseable {
         retryButton = null;
         add = null;
         remove = null;
+        focus = null;
         font = null;
     }
 }

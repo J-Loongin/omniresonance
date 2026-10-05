@@ -43,8 +43,29 @@ final class ItemVariantTest {
         assertEquals(
                 captured.key(),
                 ItemVariant.from(original.copyWithCount(2), PROVIDER).key());
+        assertTrue(ItemStack.isSameItemSameComponents(original, ItemVariant.restoreStack(captured.key(), PROVIDER)));
         assertEquals(2, restored.stack(2).getCount());
         assertEquals(1, original.getCount());
+    }
+
+    @Test
+    void validatedDisplaySnapshotIsDetachedAndRejectsInvalidIdentity() {
+        ItemStack original = new ItemStack(Items.DIAMOND_SWORD);
+        original.set(DataComponents.CUSTOM_NAME, Component.literal("Display"));
+        original.remove(DataComponents.DAMAGE);
+        var key = ItemVariant.from(original, PROVIDER).key();
+        ItemStack displayed = ItemVariant.restoreStack(key, PROVIDER);
+        assertTrue(ItemStack.isSameItemSameComponents(original, displayed));
+        displayed.set(DataComponents.CUSTOM_NAME, Component.literal("Changed"));
+        displayed.setCount(9);
+        ItemStack another = ItemVariant.restoreStack(key, PROVIDER);
+        assertEquals(1, another.getCount());
+        assertTrue(ItemStack.isSameItemSameComponents(original, another));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ItemVariant.restoreStack(new ResourceVariantKey(ResourceTypes.ITEM, new byte[] {0}), PROVIDER));
+        assertThrows(
+                IllegalArgumentException.class, () -> ItemVariant.restoreStack(EnergyVariant.INSTANCE.key(), PROVIDER));
     }
 
     @Test

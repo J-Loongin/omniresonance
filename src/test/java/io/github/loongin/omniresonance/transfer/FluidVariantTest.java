@@ -51,6 +51,27 @@ final class FluidVariantTest {
     }
 
     @Test
+    void validatedDisplaySnapshotKeepsComponentsAndOwnsItsQuantity() {
+        FluidStack original = new FluidStack(Fluids.WATER, 1000);
+        original.set(DataComponents.CUSTOM_NAME, Component.literal("Display water"));
+        var key = FluidVariant.from(original, PROVIDER).key();
+        FluidStack displayed = FluidVariant.restoreStack(key, PROVIDER);
+        assertEquals(1, displayed.getAmount());
+        assertTrue(FluidStack.isSameFluidSameComponents(original, displayed));
+        displayed.setAmount(9000);
+        displayed.set(DataComponents.CUSTOM_NAME, Component.literal("Changed"));
+        FluidStack another = FluidVariant.restoreStack(key, PROVIDER);
+        assertEquals(1, another.getAmount());
+        assertTrue(FluidStack.isSameFluidSameComponents(original, another));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> FluidVariant.restoreStack(new ResourceVariantKey(ResourceTypes.FLUID, new byte[] {0}), PROVIDER));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> FluidVariant.restoreStack(EnergyVariant.INSTANCE.key(), PROVIDER));
+    }
+
+    @Test
     void canonicalComponentsIgnoreInsertionAndPatchHistory() {
         CompoundTag a = new CompoundTag();
         a.putInt("z", 2);
