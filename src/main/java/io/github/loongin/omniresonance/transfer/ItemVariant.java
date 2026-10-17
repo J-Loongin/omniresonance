@@ -60,7 +60,8 @@ public final class ItemVariant implements ResourceVariant {
         ItemVariant restored = new ItemVariant(key, provider, BuiltInRegistries.ITEM.get(id));
         ItemStack stack = restored.stack(1, identity);
         ItemVariant roundTrip = from(stack, provider);
-        if (!roundTrip.key().equals(key)) throw new IllegalArgumentException("Stored item identity cannot round trip");
+        if (!roundTrip.key().equals(key.normalized()))
+            throw new IllegalArgumentException("Stored item identity cannot round trip");
         return new Restored(restored, stack);
     }
 
@@ -84,19 +85,34 @@ public final class ItemVariant implements ResourceVariant {
         try {
             CompoundTag identity = new CompoundTag();
             identity.putString("id", itemId.toString());
-            identity.put(
-                    "components",
-                    DataComponentMap.CODEC
-                            .encodeStart(provider.createSerializationContext(NbtOps.INSTANCE), stack.getComponents())
-                            .getOrThrow());
+            identity.put("components", PersistentComponentOrder.encode(stack.getComponents(), provider));
             ItemVariant result = new ItemVariant(
                     new ResourceVariantKey(TYPE_ID, CanonicalResourceNbt.encode(identity)), provider, item);
-            if (!ItemStack.isSameItemSameComponents(stack, result.stack(1))) {
+            var rebuilt = result.stack(1);
+            if (!PersistentComponentOrder.validRoundTrip(
+                    stack.getComponents(), rebuilt.getComponents(), identity.getCompound("components"), provider)) {
                 throw new IllegalArgumentException("Item component codec loses identity");
             }
             return result;
         } catch (RuntimeException ex) {
             throw new IllegalArgumentException("Item variant cannot be persisted", ex);
+        }
+    }
+
+    /** Registry-owning game-thread identity comparison, excluding count. Native equality is the fast path;
+     * known Supplier-bearing component values additionally require equal full persistent content. Unknown/lossy
+     * codecs reject rather than weakening comparison. No native objects, quantities or external state are changed. */
+    public static boolean sameIdentity(ItemStack first, ItemStack second, HolderLookup.Provider provider) {
+        if (ItemStack.isSameItemSameComponents(first, second)
+                && !PersistentComponentOrder.needsPersistentComparison(first.getComponents(), second.getComponents()))
+            return true;
+        if (first.isEmpty() || second.isEmpty() || first.getItem() != second.getItem()) return false;
+        try {
+            return PersistentComponentOrder.sameComponents(first.getComponents(), second.getComponents(), provider)
+                    && PersistentComponentOrder.encode(first.getComponents(), provider)
+                            .equals(PersistentComponentOrder.encode(second.getComponents(), provider));
+        } catch (RuntimeException unsupported) {
+            return false;
         }
     }
 
@@ -141,10 +157,12 @@ public final class ItemVariant implements ResourceVariant {
                 TypedDataComponent<?> defaultComponent =
                         TypedDataComponent.createUnchecked(component.type(), defaultValue);
                 var ops = provider.createSerializationContext(NbtOps.INSTANCE);
-                if (defaultComponent
-                        .encodeValue(ops)
-                        .getOrThrow()
-                        .equals(component.encodeValue(ops).getOrThrow())) continue;
+                if (PersistentComponentOrder.equivalentComponent(
+                        BuiltInRegistries.DATA_COMPONENT_TYPE
+                                .getKey(component.type())
+                                .toString(),
+                        defaultComponent.encodeValue(ops).getOrThrow(),
+                        component.encodeValue(ops).getOrThrow())) continue;
             }
             patch.set(component);
         }

@@ -23,6 +23,28 @@ final class ItemVariantTest {
     private static final HolderLookup.Provider PROVIDER =
             net.minecraft.data.registries.VanillaRegistries.createLookup();
 
+    @Test
+    void legacyFoodCureOrderRestoresWithoutChangingStoredKey() {
+        ItemStack original = new ItemStack(Items.ENCHANTED_GOLDEN_APPLE);
+        var current = ItemVariant.from(original, PROVIDER).key();
+        var stored = (net.minecraft.nbt.CompoundTag) CanonicalResourceNbt.decode(current.canonicalBytes());
+        var effect = stored.getCompound("components")
+                .getCompound("minecraft:food")
+                .getList("effects", net.minecraft.nbt.Tag.TAG_COMPOUND)
+                .getCompound(0)
+                .getCompound("effect");
+        var cures = effect.getList("neoforge:cures", net.minecraft.nbt.Tag.TAG_STRING);
+        var reverse = new net.minecraft.nbt.ListTag();
+        for (int i = cures.size() - 1; i >= 0; i--) reverse.add(cures.get(i).copy());
+        effect.put("neoforge:cures", reverse);
+        var legacy = new ResourceVariantKey(ResourceTypes.ITEM, CanonicalResourceNbt.encode(stored));
+        assertNotEquals(current, legacy);
+        var restored = ItemVariant.restore(legacy, PROVIDER);
+        assertEquals(legacy, restored.key(), "Restoration must not rewrite the caller's stored identity");
+        assertTrue(ItemStack.isSameItemSameComponents(original, restored.stack(64)));
+        assertEquals(current, ItemVariant.from(restored.stack(64), PROVIDER).key());
+    }
+
     static Stream<Item> vanillaItems() {
         return BuiltInRegistries.ITEM.stream()
                 .filter(item -> item != Items.AIR)

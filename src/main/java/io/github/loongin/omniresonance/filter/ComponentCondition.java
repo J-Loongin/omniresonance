@@ -19,12 +19,28 @@ public final class ComponentCondition {
     private final @Nullable ResourceLocation typeId;
     private final @Nullable FilterComponentBytes full;
     private final List<Entry> selected;
+    // Derived once per immutable condition; stored snapshots and exchange consent remain byte-exact.
+    private final @Nullable FilterComponentBytes matchingFull;
+    private final List<Entry> matchingSelected;
 
     private ComponentCondition(
             @Nullable ResourceLocation typeId, @Nullable FilterComponentBytes full, List<Entry> selected) {
         this.typeId = typeId;
         this.full = full;
         this.selected = List.copyOf(selected);
+        matchingFull = full == null ? null : matchingBytes(null, full);
+        List<Entry> matching = new ArrayList<>(selected.size());
+        for (Entry entry : selected) matching.add(new Entry(entry.key(), matchingBytes(entry.key(), entry.bytes())));
+        matchingSelected = List.copyOf(matching);
+    }
+
+    private static FilterComponentBytes matchingBytes(@Nullable String name, FilterComponentBytes bytes) {
+        Tag value = CanonicalResourceNbt.decode(bytes.copy());
+        boolean changed = name == null
+                ? io.github.loongin.omniresonance.transfer.PersistentComponentOrder.normalizeComponents(
+                        (CompoundTag) value)
+                : io.github.loongin.omniresonance.transfer.PersistentComponentOrder.normalizeComponent(name, value);
+        return changed ? new FilterComponentBytes(CanonicalResourceNbt.encode(value)) : bytes;
     }
 
     public static ComponentCondition idOnly() {
@@ -282,14 +298,14 @@ public final class ComponentCondition {
                         done = true;
                         return;
                     }
-                    expected = full;
+                    expected = matchingFull;
                     actual = candidate.fullBytes();
                 } else {
                     if (entry == selected.size()) {
                         done = true;
                         return;
                     }
-                    Entry selectedEntry = selected.get(entry);
+                    Entry selectedEntry = matchingSelected.get(entry);
                     expected = selectedEntry.bytes();
                     actual = candidate.componentBytes(selectedEntry.key());
                 }

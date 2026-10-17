@@ -83,7 +83,7 @@ public final class FluidResourcePort implements ResourcePort {
             budget.afterCall();
         }
         if (extracted.isEmpty()) return 0;
-        if (extracted.getAmount() > amount || !FluidStack.isSameFluidSameComponents(extracted, identity)) {
+        if (extracted.getAmount() > amount || !FluidVariant.sameIdentity(extracted, identity, provider)) {
             throw new IllegalArgumentException("Invalid native fluid extraction");
         }
         return extracted.getAmount();

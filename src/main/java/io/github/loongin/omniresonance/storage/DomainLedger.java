@@ -14,7 +14,9 @@ import java.util.function.IntFunction;
 /**
  * One activated domain, owned by its constructing server thread. Complete bucket validation precedes construction.
  * Bucket objects remain native SavedData-owned; this ledger retains references, immutable keys and in-memory
- * quantities/sequence indexes until domain disposal. Admission limits occupied keys including reservations;
+ * quantities/sequence indexes until domain disposal. Known unordered component sets share a normalized runtime
+ * identity while original bucket keys remain unchanged. Legacy equivalents retain their physical backing records;
+ * activation rejects an overflowing aggregate without dirtying any shard. Admission limits occupied keys including reservations;
  * there is no secondary management-collection quota or cross-domain cache.
  * Reads and capacity simulations never mutate. All transactions are synchronous and must close in their starting
  * tick; this class performs no external calls, permission checks, disk writes or automatic adapter interpretation.
@@ -173,7 +175,7 @@ public final class DomainLedger {
     /** Runtime sequence for a currently visible key, or zero; no mutation or simulation side effects. */
     public long sequence(ResourceVariantKey key) {
         checkThread();
-        Entry entry = entries.get(Objects.requireNonNull(key));
+        Entry entry = entries.get(Objects.requireNonNull(key).normalized());
         return entry == null || entry.amount == 0 ? 0 : entry.sequence;
     }
 
@@ -195,11 +197,17 @@ public final class DomainLedger {
             buckets[index] = bucket;
             for (Map.Entry<ResourceVariantKey, Long> resource :
                     bucket.snapshot().entrySet()) {
-                Entry entry = new Entry(resource.getKey(), bucket, nextSequence());
-                entry.amount = resource.getValue();
-                if (entries.putIfAbsent(entry.key, entry) != null)
-                    throw new IllegalArgumentException("Duplicate domain resource");
-                visible.put(entry.sequence, entry);
+                ResourceVariantKey normalized = resource.getKey().normalized();
+                Entry entry = entries.get(normalized);
+                if (entry == null) {
+                    entry = new Entry(normalized, bucket, resource.getKey(), nextSequence());
+                    entries.put(normalized, entry);
+                    visible.put(entry.sequence, entry);
+                    entry.amount = resource.getValue();
+                    entry.primary.amount = resource.getValue();
+                } else {
+                    entry.addLegacy(bucket, resource.getKey(), resource.getValue());
+                }
             }
         }
     }
@@ -219,7 +227,7 @@ public final class DomainLedger {
     /** O(1) nonmutating quantity query on the owner thread; reservations are never exposed as inventory. */
     public long amount(ResourceVariantKey key) {
         checkThread();
-        Entry entry = entries.get(Objects.requireNonNull(key));
+        Entry entry = entries.get(Objects.requireNonNull(key).normalized());
         return entry == null ? 0 : entry.amount;
     }
 
@@ -244,7 +252,7 @@ public final class DomainLedger {
         checkThread();
         Objects.requireNonNull(key);
         if (variantLimit < -1) throw new IllegalArgumentException("Invalid domain variant limit");
-        Entry entry = entries.get(key);
+        Entry entry = entries.get(key.normalized());
         if (entry == null) return variantLimit >= 0 && entries.size() >= variantLimit ? 0 : Long.MAX_VALUE;
         return Long.MAX_VALUE - entry.amount - entry.incoming - entry.returnable;
     }
@@ -260,9 +268,10 @@ public final class DomainLedger {
         if (insertCapacity(key, variantLimit) < amount
                 || reservations == Integer.MAX_VALUE
                 || revision > Long.MAX_VALUE - reservedRevisions - 1) return Optional.empty();
-        Entry entry = entries.get(key);
+        Entry entry = entries.get(key.normalized());
         if (entry == null) {
             if (lastSequence == Long.MAX_VALUE) throw new IllegalStateException("Domain runtime sequence exhausted");
+            key = key.normalized();
             int index = StorageBucketHash.bucket(key);
             StorageBucketData bucket = buckets[index];
             if (bucket == null) {
@@ -271,7 +280,7 @@ public final class DomainLedger {
                 if (bucket.variantCount() != 0) throw new IllegalStateException("New storage bucket is not empty");
                 buckets[index] = bucket;
             }
-            entry = new Entry(key, bucket, nextSequence());
+            entry = new Entry(key, bucket, key, nextSequence());
             entries.put(key, entry);
         }
         reservedRevisions++;
@@ -290,7 +299,7 @@ public final class DomainLedger {
         checkThread();
         Objects.requireNonNull(key);
         if (amount <= 0) throw new IllegalArgumentException("Nonpositive domain withdrawal");
-        Entry entry = entries.get(key);
+        Entry entry = entries.get(key.normalized());
         if (entry == null
                 || entry.amount < amount
                 || reservations == Integer.MAX_VALUE
@@ -412,7 +421,7 @@ public final class DomainLedger {
     private void setAmount(Entry entry, long amount) {
         if (entry.amount == amount) return;
         long nextRevision = Math.incrementExact(revision);
-        entry.bucket.setAmount(entry.key, amount);
+        entry.persistAmount(amount);
         if (entry.amount == 0 && amount > 0) visible.put(entry.sequence, entry);
         else if (entry.amount > 0 && amount == 0) visible.remove(entry.sequence);
         entry.amount = amount;
@@ -476,17 +485,61 @@ public final class DomainLedger {
 
     private static final class Entry {
         private final ResourceVariantKey key;
-        private final StorageBucketData bucket;
+        private final Backing primary;
+        private java.util.ArrayList<Backing> legacy;
         private final long sequence;
         private long amount;
         private long incoming;
         private long returnable;
         private int reservations;
 
-        private Entry(ResourceVariantKey key, StorageBucketData bucket, long sequence) {
+        private Entry(ResourceVariantKey key, StorageBucketData bucket, ResourceVariantKey storedKey, long sequence) {
             this.key = key;
-            this.bucket = bucket;
+            this.primary = new Backing(bucket, storedKey, 0);
             this.sequence = sequence;
+        }
+
+        private void addLegacy(StorageBucketData bucket, ResourceVariantKey storedKey, long amount) {
+            long total = Math.addExact(this.amount, amount);
+            if (legacy == null) legacy = new java.util.ArrayList<>();
+            legacy.add(new Backing(bucket, storedKey, amount));
+            this.amount = total;
+        }
+
+        private void persistAmount(long next) {
+            if (next > amount) {
+                primary.store(Math.addExact(primary.amount, next - amount));
+                return;
+            }
+            long remaining = amount - next;
+            while (remaining > 0 && legacy != null && !legacy.isEmpty()) {
+                Backing last = legacy.getLast();
+                long used = Math.min(remaining, last.amount);
+                last.store(last.amount - used);
+                remaining -= used;
+                if (last.amount == 0) legacy.removeLast();
+            }
+            if (remaining > 0) primary.store(primary.amount - remaining);
+        }
+    }
+
+    /** Original on-disk identity/partition of a logical resource. Normalizing a view never dirties a shard;
+     * execution updates the original record. Multiple legacy orders cost O(touched records), not O(quantity).
+     * Empty secondary records retire immediately; the primary remains until all resource ownership is released. */
+    private static final class Backing {
+        private final StorageBucketData bucket;
+        private final ResourceVariantKey storedKey;
+        private long amount;
+
+        private Backing(StorageBucketData bucket, ResourceVariantKey storedKey, long amount) {
+            this.bucket = bucket;
+            this.storedKey = storedKey;
+            this.amount = amount;
+        }
+
+        private void store(long next) {
+            bucket.setAmount(storedKey, next);
+            amount = next;
         }
     }
 

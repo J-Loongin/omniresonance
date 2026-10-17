@@ -2399,6 +2399,18 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     }
 
     @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (inventoryView != null && inventoryView.mouseDragged(mouseX, mouseY, button)) return true;
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (inventoryView != null && inventoryView.mouseReleased(button)) return true;
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (statusView != null) return statusView.wheel(mouseX, mouseY, scrollY);
         if (nodesView != null) return nodesView.wheel(mouseX, mouseY, scrollY);

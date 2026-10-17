@@ -468,7 +468,7 @@
   "omniresonance.inventory.access_refused": "未接收资源，请检查容量",
   "omniresonance.inventory.access_denied": "存取权限不可用",
   "omniresonance.inventory.access_stale": "库存已变化，请重新点击",
-  "omniresonance.inventory.access_busy": "已有操作正在等待",
+  "omniresonance.inventory.access_busy": "操作过快，请稍候再试",
   "omniresonance.inventory.access_failed": "操作已停止，请重新打开库存",
   "omniresonance.inventory.access_unknown": "载体结果不确定，操作已停止",
   "omniresonance.inventory.sort_icon": "↕",

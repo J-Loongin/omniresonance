@@ -62,6 +62,32 @@ final class ComponentConditionTest {
     }
 
     @Test
+    void legacyFoodComponentFiltersMatchAfterSetReorderingWithoutRewritingTheirSnapshot() {
+        var fresh = ItemVariant.from(new ItemStack(Items.ENCHANTED_GOLDEN_APPLE), PROVIDER);
+        var key = io.github.loongin.omniresonance.transfer.fixtures.LegacyEffectKeys.reverse(fresh.key());
+        var raw = (net.minecraft.nbt.CompoundTag)
+                io.github.loongin.omniresonance.transfer.CanonicalResourceNbt.decode(key.canonicalBytes());
+        var components = raw.getCompound("components");
+        for (boolean full : new boolean[] {true, false}) {
+            var snapshot = new ComponentCondition.PersistenceSnapshot(
+                    full ? ComponentCondition.Mode.FULL : ComponentCondition.Mode.SELECTED,
+                    ResourceTypes.ITEM,
+                    full ? io.github.loongin.omniresonance.transfer.CanonicalResourceNbt.encode(components) : null,
+                    full
+                            ? List.of()
+                            : List.of(new ComponentCondition.SelectedComponent(
+                                    id("minecraft:food"),
+                                    io.github.loongin.omniresonance.transfer.CanonicalResourceNbt.encode(
+                                            components.get("minecraft:food")))));
+            var condition = ComponentCondition.fromPersistenceSnapshot(snapshot);
+            var comparison = condition.compare(FilterResourceSample.capture(fresh));
+            for (int i = 0; i < 100000 && !comparison.done(); i++) comparison.step();
+            assertTrue(comparison.done() && comparison.matches());
+            assertEquals(snapshot, condition.persistenceSnapshot(), "Comparison changed stored consent/filter data");
+        }
+    }
+
+    @Test
     void exactAndGlobSupportItemAndFluidAndNeverMatchUnconfiguredTypes() {
         var stone = ItemVariant.from(new ItemStack(Items.STONE), PROVIDER);
         var water = FluidVariant.from(new FluidStack(Fluids.WATER, 1), PROVIDER);

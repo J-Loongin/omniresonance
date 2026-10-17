@@ -14,7 +14,7 @@ import org.jetbrains.annotations.Nullable;
 
 /**
  * One server-thread terminal click. Only discovery indices, immutable resource/carrier identities, and confirmed movement totals survive suspension;
- * no native handler, uncommitted quantity, or simulation promise survives. The caller serializes player inventory, verifies menu revisions,
+ * no native handler, uncommitted quantity, or simulation promise survives. The caller serializes player inventory, verifies owned cursor/source snapshots across suspension,
  * rechecks session permissions, and stops after every terminal outcome (including unknown mutations).
  */
 public final class TerminalStorageOperation {
@@ -141,7 +141,7 @@ public final class TerminalStorageOperation {
                 if (carrierKey != null) return outcome(Status.COMPLETE);
             }
             var entry = resourceId == 0 ? null : ledger.findSequence(resourceId).orElse(null);
-            if (resourceId > 0 && entry == null) return outcome(Status.STALE);
+            if (resourceId > 0 && entry == null) return outcome(Status.COMPLETE);
             ResourceVariant variant = entry == null
                     ? null
                     : ADAPTERS.decode(entry.key(), player.registryAccess()).orElse(null);
@@ -250,7 +250,7 @@ public final class TerminalStorageOperation {
             firstUnit = false;
             int slotIndex = bulkSlot++;
             var stack = player.getInventory().getItem(slotIndex);
-            if (stack.isEmpty() || !ItemStack.isSameItemSameComponents(stack, probe)) continue;
+            if (stack.isEmpty() || !ItemVariant.sameIdentity(stack, probe, player.registryAccess())) continue;
             var source = new TerminalItemSlotPort(
                     slot(player, slotIndex), Integer.MAX_VALUE, player.registryAccess(), authorized);
             var transferred = engine.depositGreedy(
@@ -288,7 +288,7 @@ public final class TerminalStorageOperation {
                 ItemStack target = player.getInventory().getItem(index);
                 if (pass == 0
                         && (target.isEmpty()
-                                || !ItemStack.isSameItemSameComponents(target, probe)
+                                || !ItemVariant.sameIdentity(target, probe, player.registryAccess())
                                 || target.getCount() >= probe.getMaxStackSize())) continue;
                 if (pass == 1 && !target.isEmpty()) continue;
                 var port = new TerminalItemSlotPort(

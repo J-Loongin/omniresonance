@@ -46,10 +46,11 @@ final class ItemHandlerCalls {
         }
     }
 
-    static boolean validAmount(ItemStack stack, ItemStack identity, int maximum) {
+    static boolean validAmount(
+            ItemStack stack, ItemStack identity, int maximum, net.minecraft.core.HolderLookup.Provider provider) {
         return stack.isEmpty()
                 || stack.getCount() > 0
                         && stack.getCount() <= maximum
-                        && ItemStack.isSameItemSameComponents(stack, identity);
+                        && ItemVariant.sameIdentity(stack, identity, provider);
     }
 }

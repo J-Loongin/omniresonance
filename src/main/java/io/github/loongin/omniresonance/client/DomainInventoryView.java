@@ -45,6 +45,7 @@ final class DomainInventoryView implements AutoCloseable {
     private final List<AbstractWidget> cells = new ArrayList<>();
     private final DomainInventorySearch search;
     private final Runnable retry;
+    private final DomainInventoryInput input;
     private final @Nullable InventoryOpenTiming openTiming = InventoryOpenTiming.development();
     private @Nullable Font font;
     private TerminalLayout.Rect body = new TerminalLayout.Rect(0, 0, 0, 0);
@@ -64,16 +65,17 @@ final class DomainInventoryView implements AutoCloseable {
     private int tooltipWidth;
     private List<net.minecraft.util.FormattedCharSequence> tooltipRows = List.of();
     private long shownVersion = -1;
+    private long metadataGeneration;
     private boolean cellsDirty = true;
     private boolean firstResultsPending = true;
     private @Nullable Cell hovered;
 
     private @Nullable UUID viewId, sessionId;
-    private long generation, operationSequence, pendingOperation;
+    private long generation, operationSequence;
     private boolean writable, showInventory;
     private final TerminalQuickMoveGesture quickMove = new TerminalQuickMoveGesture();
+    private final TerminalQuickMoveDrag quickMoveDrag = new TerminalQuickMoveDrag();
     private final TerminalClickQueue clicks = new TerminalClickQueue();
-    private final TerminalMenuRevision menuRevision = new TerminalMenuRevision();
     private @Nullable Consumer<io.github.loongin.omniresonance.networking.TerminalStorageRequest> storageSender;
     private @Nullable io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status operationStatus;
 
@@ -145,6 +147,7 @@ final class DomainInventoryView implements AutoCloseable {
         }
         var minecraft = Minecraft.getInstance();
         popupResourceType = info.type;
+        quickMoveDrag.clear();
         tagPopup = new TerminalTagPopup(
                 info.type,
                 info.tags,
@@ -167,9 +170,7 @@ final class DomainInventoryView implements AutoCloseable {
 
     void accept(io.github.loongin.omniresonance.networking.TerminalStorageResponse response) {
         if (!response.session().equals(sessionId) || response.generation() != generation) return;
-        if (response.sequence() != 0 && response.sequence() != pendingOperation) return;
-        var player = Minecraft.getInstance().player;
-        if (player != null) menuRevision.acknowledge(response.menuState(), player.inventoryMenu.getStateId());
+        if (response.sequence() != 0 && !clicks.contains(response.sequence())) return;
         writable = response.writable();
         if (writable && !showInventory) {
             showInventory = true;
@@ -182,16 +183,22 @@ final class DomainInventoryView implements AutoCloseable {
                             != io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.WAITING_BUDGET
                     && response.status()
                             != io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.PROGRESS) {
-                pendingOperation = 0;
+                clicks.finish(response.sequence());
                 if (response.status()
-                        != io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.COMPLETE)
+                                == io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.UNKNOWN
+                        || response.status()
+                                == io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.FAILED) {
+                    clicks.clear();
                     quickMove.clear();
-                clicks.finish(response.status()
-                        == io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.COMPLETE);
+                    quickMoveDrag.clear();
+                }
             }
         }
-        if (!writable) clicks.clear();
-        dispatchClick();
+        if (!writable) {
+            clicks.clear();
+            quickMove.clear();
+            quickMoveDrag.clear();
+        }
     }
 
     private DomainInventoryLayout geometry() {
@@ -201,37 +208,48 @@ final class DomainInventoryView implements AutoCloseable {
     private void click(long id, int slot, int button) {
         if (!writable || !receiver.mirror().ready()) return;
         if (id > 0 && !receiver.mirror().entries().containsKey(id)) return;
-        boolean shift = Screen.hasShiftDown();
-        boolean bulk = quickMove.click(slot, button, shift, net.minecraft.Util.getMillis());
-        if (!clicks.offer(new TerminalClickQueue.Click(id, slot, button, shift, bulk))) return;
-        Minecraft.getInstance()
-                .getSoundManager()
-                .play(TerminalClickButton.clickFeedback().createSound());
-        dispatchClick();
+        boolean shift = input.shiftDown();
+        boolean bulk = quickMove.click(slot, button, shift, input.millis());
+        // While a prior click is in flight, its cursor/slot updates may not have arrived yet.
+        if (!bulk && !clicks.busy() && input.carried().isEmpty()) {
+            var inventory = input.inventory();
+            if (slot >= 0 && inventory != null && inventory.getItem(slot).isEmpty()) {
+                quickMove.clear();
+                return;
+            }
+            if (slot < 0 && id == 0) return;
+        }
+        // A non-Shift pickup may fill the cursor after its server acknowledgement.
+        if (!shift) quickMoveDrag.clear();
+        enqueueClick(new TerminalClickQueue.Click(id, slot, button, shift, bulk));
     }
 
-    private void dispatchClick() {
-        var player = Minecraft.getInstance().player;
+    private void enqueueClick(TerminalClickQueue.Click click) {
         if (!writable
                 || !receiver.mirror().ready()
-                || pendingOperation != 0
-                || player == null
+                || input.inventory() == null
                 || storageSender == null
                 || sessionId == null
                 || viewId == null) return;
-        var click = clicks.start();
-        if (click == null) return;
-        pendingOperation = Math.incrementExact(operationSequence);
-        operationSequence = pendingOperation;
+        long sequence = Math.incrementExact(operationSequence);
+        boolean wasBusy = clicks.busy();
+        if (!clicks.offer(sequence)) {
+            quickMove.clear();
+            quickMoveDrag.clear();
+            notice(text("access_busy"));
+            return;
+        }
+        operationSequence = sequence;
+        if (!wasBusy) pendingTicks = 0;
         operationStatus = null;
-        pendingTicks = 0;
+        input.clickFeedback();
         storageSender.accept(new io.github.loongin.omniresonance.networking.TerminalStorageRequest(
                 viewId,
                 sessionId,
                 generation,
-                pendingOperation,
+                sequence,
                 click.resourceId(),
-                menuRevision.current(player.inventoryMenu.getStateId()),
+                input.menuState(),
                 click.slot(),
                 click.button(),
                 click.shift(),
@@ -247,6 +265,7 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     boolean mouseClicked(double x, double y, int button) {
+        quickMoveDrag.clear();
         if (tagPopup != null) {
             var choice = tagPopup.click(x, y, button);
             if (choice.tag() != null) {
@@ -260,22 +279,88 @@ final class DomainInventoryView implements AutoCloseable {
             return true;
         }
         if (button < 0 || button > 1) return false;
+        beginQuickMoveDrag(x, y, button);
         int slot = geometry().inventorySlot(x, y);
         if (slot >= 0) {
             click(0, slot, button);
             return true;
         }
         quickMove.clear();
-        if (!geometry().inGrid(x, y)) return false;
+        if (!geometry().inGrid(x, y)) return quickMoveDrag.active();
         // Consume read-only grid clicks so the screen cannot focus a resource button.
         if (!writable) return true;
         for (var widget : cells)
             if (widget instanceof Cell cell && cell.isMouseOver(x, y)) {
-                if (!cell.info.opaque) click(cell.id, -1, button);
+                if (!cell.info.opaque) {
+                    if (button == 0
+                            && input.shiftDown()
+                            && input.carried().isEmpty()
+                            && !cell.info.supportsEmptyCursorQuickMove()) return true;
+                    click(cell.id, -1, button);
+                }
                 return true;
             }
         click(0, -1, button);
         return true;
+    }
+
+    private long dragPosition(double x, double y) {
+        var geometry = geometry();
+        int slot = geometry.inventorySlot(x, y);
+        if (slot >= 0) return slot;
+        if (!geometry.inGrid(x, y)) return TerminalQuickMoveDrag.OUTSIDE;
+        return -1L - ((int) (y - geometry.gridY()) / CELL) * geometry.columns() - (int) (x - geometry.gridX()) / CELL;
+    }
+
+    private void beginQuickMoveDrag(double x, double y, int button) {
+        if (!writable || !receiver.mirror().ready()) return;
+        var geometry = geometry();
+        int bottom = showInventory ? geometry.inventoryY() + 76 : geometry.gridBottom();
+        if (x < geometry.gridX() || x >= geometry.gridRight() || y < geometry.gridY() || y >= bottom) return;
+        if (input.inventory() != null)
+            quickMoveDrag.begin(dragPosition(x, y), button, input.carried().isEmpty());
+    }
+
+    boolean mouseDragged(double x, double y, int button) {
+        if (!quickMoveDrag.active()) return false;
+        if (tagPopup != null || !writable || !receiver.mirror().ready()) {
+            quickMoveDrag.clear();
+            return true;
+        }
+        var inventory = input.inventory();
+        if (inventory == null) {
+            quickMoveDrag.clear();
+            return true;
+        }
+        if (!quickMoveDrag.enter(
+                dragPosition(x, y), button, input.shiftDown(), input.carried().isEmpty())) return true;
+        quickMove.clear();
+        var click = dragClick(x, y, inventory);
+        if (click != null) enqueueClick(click);
+        return true;
+    }
+
+    @Nullable
+    TerminalClickQueue.Click dragClick(double x, double y, net.minecraft.world.entity.player.Inventory inventory) {
+        int slot = geometry().inventorySlot(x, y);
+        if (slot >= 0) {
+            return inventory.getItem(slot).isEmpty() ? null : new TerminalClickQueue.Click(0, slot, 0, true);
+        }
+        for (var widget : cells) {
+            if (!(widget instanceof Cell cell) || !cell.isMouseOver(x, y)) continue;
+            var entry = receiver.mirror().entries().get(cell.id);
+            if (entry != null && entry.amount() > 0 && cell.info.supportsEmptyCursorQuickMove())
+                return new TerminalClickQueue.Click(cell.id, -1, 0, true);
+            break;
+        }
+        return null;
+    }
+
+    boolean mouseReleased(int button) {
+        if (button != 0) return false;
+        boolean handled = quickMoveDrag.active();
+        quickMoveDrag.clear();
+        return handled;
     }
 
     void renderCarried(GuiGraphics graphics, Font font, int mouseX, int mouseY) {
@@ -292,7 +377,12 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     DomainInventoryView(Runnable retry) {
+        this(retry, DomainInventoryInput.MINECRAFT);
+    }
+
+    DomainInventoryView(Runnable retry, DomainInventoryInput input) {
         this.retry = retry;
+        this.input = input;
         search = new DomainInventorySearch(
                 new DomainInventorySearch.Source() {
                     public DomainLedger.Cursor after(long cursor, long ceiling) {
@@ -311,6 +401,8 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     void invalidateMetadata() {
+        metadataGeneration = Math.incrementExact(metadataGeneration);
+        quickMoveDrag.clear();
         metadata.clear();
         tooltipId = -1;
         search.refresh();
@@ -321,15 +413,15 @@ final class DomainInventoryView implements AutoCloseable {
         firstResultsPending = true;
         if (openTiming != null) openTiming.begin();
         receiver.request(session, generation);
-        menuRevision.clear();
         quickMove.clear();
+        quickMoveDrag.clear();
         clicks.clear();
         sessionId = session;
         this.generation = generation;
         writable = false;
         showInventory = true;
         loadingTicks = 0;
-        operationSequence = pendingOperation = 0;
+        operationSequence = 0;
         operationStatus = null;
         metadata.clear();
         search.close();
@@ -343,13 +435,15 @@ final class DomainInventoryView implements AutoCloseable {
                     frame.wireSize(),
                     frame instanceof DomainInventoryFrame.End
                             && receiver.mirror().ready());
+        if (accepted && receiver.lastChange() != null && receiver.mirror().ready())
+            search.changed(receiver.lastChange());
         if (accepted && receiver.lastChange() != null && receiver.lastChange().amount() == 0) {
             metadata.remove(receiver.lastChange().sequence());
             cellsDirty = true;
         }
         if (receiver.mirror().failed()) {
+            quickMoveDrag.clear();
             clicks.clear();
-            pendingOperation = 0;
             metadata.clear();
             search.close();
             cellsDirty = true;
@@ -363,6 +457,7 @@ final class DomainInventoryView implements AutoCloseable {
             Consumer<GuiEventListener> remove,
             Consumer<GuiEventListener> focus) {
         this.font = font;
+        quickMoveDrag.clear();
         this.body = body;
         tagPopup = null;
         this.add = add;
@@ -376,6 +471,7 @@ final class DomainInventoryView implements AutoCloseable {
         field.setHint(TerminalText.body(text("search")));
         field.setValue(query);
         field.setResponder(value -> {
+            quickMoveDrag.clear();
             query = value;
             search.query(value);
             scroll = 0;
@@ -396,6 +492,7 @@ final class DomainInventoryView implements AutoCloseable {
                 text("sort_icon"),
                 TerminalGlyph.SORT,
                 ignored -> {
+                    quickMoveDrag.clear();
                     search.sort(
                             DomainInventorySearch.Sort.values()[
                                     (search.sort().ordinal() + 1) % DomainInventorySearch.Sort.values().length]);
@@ -413,18 +510,18 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     void tick() {
-        tick(Screen.hasShiftDown(), System::nanoTime);
+        tick(input.shiftDown(), System::nanoTime);
     }
 
     void tick(boolean frozen, java.util.function.LongSupplier clock) {
         if (!receiver.mirror().ready() && !TerminalInteractionPolicy.loadingVisible(loadingTicks)) loadingTicks++;
         if (noticeTicks > 0 && --noticeTicks == 0) localNotice = null;
-        if (pendingOperation == 0
+        if (!clicks.busy()
                 && operationStatus != null
                 && operationStatus != io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.UNKNOWN
                 && operationStatus != io.github.loongin.omniresonance.networking.TerminalStorageResponse.Status.FAILED
                 && ++statusAgeTicks >= 60) operationStatus = null;
-        if (pendingOperation != 0 && pendingTicks < 6) pendingTicks++;
+        if (clicks.busy() && pendingTicks < 6) pendingTicks++;
         if (font == null || add == null) return;
         boolean ready = receiver.mirror().ready();
         field.active = !receiver.mirror().failed();
@@ -477,6 +574,7 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     boolean wheel(double x, double y, double amount) {
+        quickMoveDrag.clear();
         if (tagPopup != null) {
             if (tagPopup.contains(x, y)) tagPopup.scroll(amount);
             return true;
@@ -491,28 +589,56 @@ final class DomainInventoryView implements AutoCloseable {
 
     private void refreshCells() {
         if (add == null || remove == null || focus == null) return;
-        TerminalResultRows.clearWidgets(cells, remove::accept, focus, null);
         cellsDirty = false;
         hovered = null;
-        if (!receiver.mirror().ready()) return;
+        if (!receiver.mirror().ready()) {
+            TerminalResultRows.clearWidgets(cells, remove::accept, focus, null);
+            return;
+        }
+        // This temporary map is bounded by the viewport, never by the network inventory.
+        var previous = new HashMap<Long, Cell>();
+        for (var widget : cells) {
+            var cell = (Cell) widget;
+            previous.put(cell.id, cell);
+        }
+        var next = new ArrayList<AbstractWidget>();
         scroll = Math.clamp(scroll, 0, Math.max(0, totalRows() - visibleRows()));
         int first = scroll * columns();
         int count = Math.min(columns() * visibleRows(), search.ids().size() - first);
+        var geometry = geometry();
         for (int i = 0; i < count; i++) {
             long id = search.ids().get(first + i);
+            var old = previous.get(id);
             var entry = receiver.mirror().entries().get(id);
             var info = metadata.get(id);
             if (entry == null) {
                 var key = search.key(id);
                 if (key == null) continue;
-                info = new Metadata(new DomainLedger.Cursor(id, key, 0));
+                info = old != null && old.metadataGeneration == metadataGeneration
+                        ? old.info
+                        : new Metadata(new DomainLedger.Cursor(id, key, 0));
             }
             if (info == null) continue;
-            var cell = new Cell(
-                    geometry().gridX() + (i % columns()) * CELL, geometry().gridY() + (i / columns()) * CELL, id, info);
-            cells.add(cell);
-            add.accept(cell);
+            int x = geometry.gridX() + (i % columns()) * CELL;
+            int y = geometry.gridY() + (i / columns()) * CELL;
+            Cell cell;
+            if (old != null && old.info == info && old.metadataGeneration == metadataGeneration) {
+                cell = old;
+                cell.setX(x);
+                cell.setY(y);
+                previous.remove(id);
+            } else {
+                cell = new Cell(x, y, id, info);
+                add.accept(cell);
+            }
+            next.add(cell);
         }
+        for (var old : previous.values()) {
+            if (old.isFocused()) focus.accept(null);
+            remove.accept(old);
+        }
+        cells.clear();
+        cells.addAll(next);
     }
 
     interface SlotFill {
@@ -601,7 +727,9 @@ final class DomainInventoryView implements AutoCloseable {
     }
 
     Component emptyMessage() {
-        return receiver.mirror().ready() && search.settled() && search.ids().isEmpty()
+        return receiver.mirror().ready()
+                        && search.hasCompletedQuery()
+                        && search.ids().isEmpty()
                 ? text("empty")
                 : Component.empty();
     }
@@ -619,7 +747,7 @@ final class DomainInventoryView implements AutoCloseable {
                                                                 .TerminalStorageResponse.Status.COMPLETE
                                         ? text("access_"
                                                 + operationStatus.name().toLowerCase(Locale.ROOT))
-                                        : pendingOperation != 0 && pendingTicks >= 6
+                                        : clicks.busy() && pendingTicks >= 6
                                                 ? text("access_pending")
                                                 : writable ? Component.empty() : text("read_only");
     }
@@ -726,7 +854,6 @@ final class DomainInventoryView implements AutoCloseable {
         private final DomainInventoryQuery.Document document;
 
         Metadata(DomainLedger.Cursor entry) {
-            var minecraft = Minecraft.getInstance();
             String type = entry.key().typeId().toString(), id = type, name = type, unit = "";
             ItemStack icon = new ItemStack(Items.BARRIER);
             var fluidIcon = net.neoforged.neoforge.fluids.FluidStack.EMPTY;
@@ -737,9 +864,9 @@ final class DomainInventoryView implements AutoCloseable {
             DataComponentMap components = DataComponentMap.EMPTY;
             var tags = new ArrayList<String>();
             try {
-                if (minecraft != null && minecraft.level != null) {
-                    Object decoded =
-                            ResourceDisplayValue.decode(entry.key(), adapters, minecraft.level.registryAccess());
+                var registries = input.registries();
+                if (registries != null) {
+                    Object decoded = ResourceDisplayValue.decode(entry.key(), adapters, registries);
                     if (decoded instanceof ItemStack item) {
                         icon = item;
                         name = icon.getHoverName().getString();
@@ -839,6 +966,11 @@ final class DomainInventoryView implements AutoCloseable {
             return document;
         }
 
+        boolean supportsEmptyCursorQuickMove() {
+            return !opaque
+                    && (type.equals(ResourceTypes.ITEM.toString()) || type.equals(ResourceTypes.FLUID.toString()));
+        }
+
         List<Component> briefTooltipLines() {
             if (briefTooltip == null) {
                 var normal = new ArrayList<Component>();
@@ -920,6 +1052,7 @@ final class DomainInventoryView implements AutoCloseable {
     private final class Cell extends TerminalClickButton {
         final long id;
         final Metadata info;
+        final long metadataGeneration = DomainInventoryView.this.metadataGeneration;
         long previousAmount = -1;
         Component count = Component.empty();
         int countWidth;
@@ -992,11 +1125,11 @@ final class DomainInventoryView implements AutoCloseable {
         tagPopup = null;
         localNotice = null;
         quickMove.clear();
+        quickMoveDrag.clear();
         tooltipRows = List.of();
         clicks.clear();
         storageSender = null;
         writable = showInventory = false;
-        pendingOperation = 0;
         firstResultsPending = true;
         metadata.clear();
         search.close();

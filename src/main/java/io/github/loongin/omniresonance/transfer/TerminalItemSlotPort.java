@@ -47,7 +47,7 @@ public final class TerminalItemSlotPort implements ResourceTransferEngine.Handle
                     public ItemStack insertItem(int index, ItemStack offered, boolean simulate) {
                         require(index);
                         if (offered.isEmpty()) return ItemStack.EMPTY;
-                        if (!expected.isEmpty() && !ItemStack.isSameItemSameComponents(expected, offered))
+                        if (!expected.isEmpty() && !ItemVariant.sameIdentity(expected, offered, provider))
                             return offered.copy();
                         int accepted = Math.min(
                                 offered.getCount(),

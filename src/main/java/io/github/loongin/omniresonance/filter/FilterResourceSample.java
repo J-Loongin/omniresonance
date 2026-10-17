@@ -42,7 +42,8 @@ public final class FilterResourceSample {
                     key.typeId(), registered.resourceId().toString(), new byte[0], Map.of());
         if (!key.typeId().equals(ResourceTypes.ITEM) && !key.typeId().equals(ResourceTypes.FLUID))
             return new FilterResourceSample(key.typeId(), "", new byte[0], Map.of());
-        CompoundTag identity = (CompoundTag) CanonicalResourceNbt.decode(key.canonicalBytes());
+        CompoundTag identity =
+                (CompoundTag) CanonicalResourceNbt.decode(key.normalized().canonicalBytes());
         CompoundTag values = identity.getCompound("components");
         Map<String, FilterComponentBytes> entries = new HashMap<>();
         for (String name : values.getAllKeys())

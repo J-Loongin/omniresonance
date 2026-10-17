@@ -21,8 +21,8 @@ import net.minecraft.world.item.ItemStack;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Server-thread terminal mutation coordinator. Each subscribed online player owns one state and at most one
- * pending click. IDs are consumed on admission (including rejected clicks), never replayed. Round-robin work
+ * Server-thread terminal mutation coordinator. Each subscribed online player owns one state and one
+ * executing click plus a bounded FIFO. IDs are consumed on admission (including rejected clicks), never replayed. Round-robin work
  * shares the scheduler budget. Close/replacement releases pending hints; unknown mutations lock this view.
  */
 public final class TerminalStorageService implements AutoCloseable {
@@ -65,7 +65,7 @@ public final class TerminalStorageService implements AutoCloseable {
         mode(state);
     }
 
-    /** Captures intent and real inventory snapshots without invoking capabilities or changing resources. */
+    /** Admits a bounded, ordered intent without trusting client quantities or menu-wide revision hints. */
     public void request(ServerPlayer player, TerminalStorageRequest request) {
         check();
         View view = views.get(player.getUUID());
@@ -77,120 +77,140 @@ public final class TerminalStorageService implements AutoCloseable {
                 || request.sequence() <= view.sequence) return;
         view.sequence = request.sequence();
         if (!allowed(view)) {
+            cancelWork(view);
+            view.mode = false;
             send(view, request.sequence(), Status.DENIED, 0);
             return;
         }
-        if (view.request != null) {
+        if (view.queued.size() + (view.request == null ? 0 : 1) >= TerminalStorageRequest.MAX_PENDING) {
             send(view, request.sequence(), Status.BUSY, 0);
             return;
         }
-        if (request.menuState() != player.inventoryMenu.getStateId()) {
-            player.inventoryMenu.broadcastFullState();
-            send(view, request.sequence(), Status.STALE, 0);
-            return;
-        }
-        io.github.loongin.omniresonance.transfer.ResourceVariantKey bulkKey = null;
-        if (request.bulk()) {
-            if (view.quickSlot != request.inventorySlot() || view.quickKey == null) {
-                send(
-                        view,
-                        request.sequence(),
-                        view.quickSlot == request.inventorySlot() ? Status.COMPLETE : Status.DENIED,
-                        0);
-                return;
-            }
-            bulkKey = view.quickKey;
-        } else if (request.shift() && request.button() == 0 && request.inventorySlot() >= 0) {
-            view.quickSlot = request.inventorySlot();
-            view.quickKey = null;
-        } else {
-            view.quickSlot = -1;
-            view.quickKey = null;
-        }
-        view.menuState = request.menuState();
-        view.request = request;
-        view.operation = new TerminalStorageOperation(
-                request.inventorySlot(), request.resourceId(), request.button(), request.shift(), bulkKey);
-        view.cursor = player.inventoryMenu.getCarried().copy();
-        view.slot = request.inventorySlot() < 0
-                ? ItemStack.EMPTY
-                : player.getInventory().getItem(request.inventorySlot()).copy();
-        pending.addLast(player.getUUID());
+        if (view.request == null) activate(view, request);
+        else view.queued.addLast(request);
+        schedule(view);
     }
 
-    /** Runs at most one step per queued player, preserving the next player when the shared budget expires. */
+    private void activate(View view, TerminalStorageRequest request) {
+        view.request = request;
+        view.operation = null;
+        view.waitingSent = false;
+        view.cursor = view.slot = ItemStack.EMPTY;
+    }
+
+    private void snapshot(View view) {
+        view.cursor = view.player.inventoryMenu.getCarried().copy();
+        view.slot = view.request.inventorySlot() < 0
+                ? ItemStack.EMPTY
+                : view.player
+                        .getInventory()
+                        .getItem(view.request.inventorySlot())
+                        .copy();
+    }
+
+    private void schedule(View view) {
+        if (view.request != null && !view.scheduled) {
+            view.scheduled = true;
+            pending.addLast(view.player.getUUID());
+        }
+    }
+
+    /** Fair bounded rounds share the existing CPU/native-call budget; suspended work yields for this tick. */
     public void tick(TransferWorkBudget budget) {
         check();
-        for (View view : views.values()) mode(view);
-        int count = pending.size();
-        for (int i = 0; i < count && budget.canStart(); i++) {
-            UUID player = pending.removeFirst();
-            View view = views.get(player);
-            var request = view.request;
-            Status status;
-            long moved = view.operation.movedSoFar();
-            if (!allowed(view)) status = Status.DENIED;
-            else if (view.player.inventoryMenu.getStateId() != view.menuState
-                    || !ItemStack.matches(view.cursor, view.player.inventoryMenu.getCarried())
-                    || request.inventorySlot() >= 0
-                            && !ItemStack.matches(
-                                    view.slot, view.player.getInventory().getItem(request.inventorySlot())))
-                status = Status.STALE;
-            else {
-                try {
-                    var ledger = ledgers.apply(view.network);
-                    if (ledger == null || !ledger.isAvailable()) status = Status.DENIED;
-                    else {
-                        var result = view.operation.step(
-                                view.player,
-                                ledger,
-                                recovery.apply(view.network),
-                                settings.get(),
-                                () -> allowed(view),
-                                budget);
-                        status = result.status();
-                        moved = result.moved();
-                        view.touched = true;
+        for (View view : views.values()) {
+            view.yielded = false;
+            mode(view);
+        }
+        for (int round = 0; round < TerminalStorageRequest.MAX_PENDING && budget.canStart(); round++) {
+            int count = pending.size();
+            boolean advanced = false;
+            for (int i = 0; i < count && budget.canStart(); i++) {
+                View view = views.get(pending.removeFirst());
+                if (view == null) continue;
+                view.scheduled = false;
+                if (view.yielded) {
+                    schedule(view);
+                    continue;
+                }
+                var request = view.request;
+                var result = execute(view, budget);
+                Status status = result.status();
+                long moved = result.moved();
+                if (status == Status.PROGRESS || status == Status.WAITING_BUDGET) {
+                    view.yielded = true;
+                    if (status == Status.PROGRESS) {
+                        view.player.inventoryMenu.broadcastChanges();
+                        snapshot(view);
                     }
-                } catch (RuntimeException failure) {
-                    org.slf4j.LoggerFactory.getLogger(TerminalStorageService.class)
-                            .error("Terminal storage work failed; view stopped without retry", failure);
-                    status = Status.FAILED;
-                }
-            }
-            if (status == Status.PROGRESS) {
-                view.player.inventoryMenu.broadcastChanges();
-                view.menuState = view.player.inventoryMenu.getStateId();
-                view.cursor = view.player.inventoryMenu.getCarried().copy();
-                view.slot = request.inventorySlot() < 0
-                        ? ItemStack.EMPTY
-                        : view.player
-                                .getInventory()
-                                .getItem(request.inventorySlot())
-                                .copy();
-                pending.addLast(player);
-                send(view, request.sequence(), status, moved);
-                continue;
-            }
-            if (status == Status.WAITING_BUDGET) {
-                pending.addLast(player);
-                if (!view.waitingSent) {
+                    if (status == Status.PROGRESS || !view.waitingSent) {
+                        send(view, request.sequence(), status, moved);
+                        view.waitingSent = true;
+                    }
+                } else {
+                    advanced = true;
+                    if (!request.bulk() && request.shift() && request.button() == 0 && request.inventorySlot() >= 0)
+                        view.quickKey = status == Status.COMPLETE && view.operation != null
+                                ? view.operation.quickMoveKey()
+                                : null;
+                    view.blocked |= status == Status.UNKNOWN || status == Status.FAILED;
+                    recordConfirmed(view, moved);
+                    view.request = null;
+                    view.operation = null;
+                    view.cursor = view.slot = ItemStack.EMPTY;
+                    view.waitingSent = false;
+                    if (status == Status.STALE) view.player.inventoryMenu.broadcastFullState();
+                    else view.player.inventoryMenu.broadcastChanges();
                     send(view, request.sequence(), status, moved);
-                    view.waitingSent = true;
+                    if (!allowed(view)) view.queued.clear();
+                    else if (!view.queued.isEmpty()) activate(view, view.queued.removeFirst());
                 }
-                continue;
+                schedule(view);
             }
-            if (!request.bulk() && request.shift() && request.button() == 0 && request.inventorySlot() >= 0)
-                view.quickKey = status == Status.COMPLETE ? view.operation.quickMoveKey() : null;
-            view.blocked |= status == Status.UNKNOWN || status == Status.FAILED;
-            recordConfirmed(view, moved);
-            view.request = null;
-            view.operation = null;
-            view.cursor = view.slot = ItemStack.EMPTY;
-            view.waitingSent = false;
-            if (status == Status.STALE) view.player.inventoryMenu.broadcastFullState();
-            else view.player.inventoryMenu.broadcastChanges();
-            send(view, request.sequence(), status, moved);
+            if (!advanced) break;
+        }
+    }
+
+    private TerminalStorageOperation.Outcome execute(View view, TransferWorkBudget budget) {
+        long moved = view.operation == null ? 0 : view.operation.movedSoFar();
+        if (!allowed(view)) return new TerminalStorageOperation.Outcome(Status.DENIED, moved);
+        var request = view.request;
+        if (view.operation != null
+                && (!ItemStack.matches(view.cursor, view.player.inventoryMenu.getCarried())
+                        || request.inventorySlot() >= 0
+                                && !ItemStack.matches(
+                                        view.slot, view.player.getInventory().getItem(request.inventorySlot()))))
+            return new TerminalStorageOperation.Outcome(Status.STALE, moved);
+        try {
+            if (view.operation == null) {
+                snapshot(view);
+                io.github.loongin.omniresonance.transfer.ResourceVariantKey bulkKey = null;
+                if (request.bulk()) {
+                    if (view.quickSlot != request.inventorySlot() || view.quickKey == null)
+                        return new TerminalStorageOperation.Outcome(
+                                view.quickSlot == request.inventorySlot() ? Status.COMPLETE : Status.DENIED, 0);
+                    bulkKey = view.quickKey;
+                } else if (request.shift() && request.button() == 0 && request.inventorySlot() >= 0) {
+                    view.quickSlot = request.inventorySlot();
+                    view.quickKey = null;
+                } else {
+                    view.quickSlot = -1;
+                    view.quickKey = null;
+                }
+                view.operation = new TerminalStorageOperation(
+                        request.inventorySlot(), request.resourceId(), request.button(), request.shift(), bulkKey);
+            }
+            var ledger = ledgers.apply(view.network);
+            if (ledger == null || !ledger.isAvailable())
+                return new TerminalStorageOperation.Outcome(Status.DENIED, moved);
+            var result = view.operation.step(
+                    view.player, ledger, recovery.apply(view.network), settings.get(), () -> allowed(view), budget);
+            view.touched = true;
+            return result;
+        } catch (RuntimeException failure) {
+            org.slf4j.LoggerFactory.getLogger(TerminalStorageService.class)
+                    .error("Terminal storage work failed; view stopped without retry", failure);
+            return new TerminalStorageOperation.Outcome(Status.FAILED, moved);
         }
     }
 
@@ -216,7 +236,7 @@ public final class TerminalStorageService implements AutoCloseable {
     }
 
     private void mode(View view) {
-        boolean writable = writable() && !view.blocked;
+        boolean writable = allowed(view);
         if (view.mode != null && view.mode == writable) return;
         view.mode = writable;
         send(view, 0, Status.MODE, 0);
@@ -231,7 +251,7 @@ public final class TerminalStorageService implements AutoCloseable {
                         sequence,
                         status,
                         moved,
-                        writable() && !view.blocked,
+                        allowed(view),
                         view.player.inventoryMenu.getStateId()));
     }
 
@@ -240,12 +260,24 @@ public final class TerminalStorageService implements AutoCloseable {
         check();
         View view = views.remove(player);
         if (view == null) return;
-        pending.remove(player);
-        if (view.operation != null) recordConfirmed(view, view.operation.movedSoFar());
+        cancelWork(view);
         if (view.touched && view.player.containerMenu == view.player.inventoryMenu) {
             view.player.inventoryMenu.removed(view.player);
             view.player.inventoryMenu.broadcastChanges();
         }
+    }
+
+    private void cancelWork(View view) {
+        pending.remove(view.player.getUUID());
+        view.scheduled = false;
+        if (view.operation != null) recordConfirmed(view, view.operation.movedSoFar());
+        view.queued.clear();
+        view.quickSlot = -1;
+        view.quickKey = null;
+        view.request = null;
+        view.operation = null;
+        view.cursor = view.slot = ItemStack.EMPTY;
+        view.waitingSent = false;
     }
 
     public void close() {
@@ -263,12 +295,13 @@ public final class TerminalStorageService implements AutoCloseable {
         final UUID view, session, network;
         final long generation;
         long sequence;
-        int menuState, quickSlot = -1;
+        int quickSlot = -1;
+        final ArrayDeque<TerminalStorageRequest> queued = new ArrayDeque<>();
 
         @Nullable
         io.github.loongin.omniresonance.transfer.ResourceVariantKey quickKey;
 
-        boolean blocked, touched, waitingSent;
+        boolean blocked, touched, waitingSent, scheduled, yielded;
 
         @Nullable
         Boolean mode;

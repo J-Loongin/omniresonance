@@ -21,6 +21,9 @@ public record TerminalStorageRequest(
         boolean shift,
         boolean bulk)
         implements CustomPacketPayload {
+    /** Maximum admitted operations per player/view, including the executing operation. */
+    public static final int MAX_PENDING = 64;
+
     public static final Type<TerminalStorageRequest> TYPE =
             new Type<>(ResourceLocation.fromNamespaceAndPath("omniresonance", "terminal_storage_request"));
     public static final StreamCodec<FriendlyByteBuf, TerminalStorageRequest> STREAM_CODEC = new StreamCodec<>() {

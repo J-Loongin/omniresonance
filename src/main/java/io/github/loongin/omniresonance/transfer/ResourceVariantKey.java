@@ -12,6 +12,8 @@ public final class ResourceVariantKey {
     private final byte[] canonicalBytes;
     private final int encodedSizeBytes;
     private final int hash;
+    // Per-key pure derived form, bounded by this immutable key's lifetime; no registry or world references.
+    private volatile ResourceVariantKey normalized;
 
     public ResourceVariantKey(ResourceLocation typeId, byte[] canonicalBytes) {
         this.typeId = Objects.requireNonNull(typeId);
@@ -23,6 +25,18 @@ public final class ResourceVariantKey {
         this.canonicalBytes = canonicalBytes.clone();
         encodedSizeBytes = typeBytes + canonicalBytes.length;
         hash = 31 * typeId.hashCode() + Arrays.hashCode(this.canonicalBytes);
+    }
+
+    /** Pure bounded component normalization for lookup/capture on any thread. Original bytes and persistent
+     * bucket hashes never change. Unknown or malformed identities remain opaque and byte-exact. */
+    public ResourceVariantKey normalized() {
+        ResourceVariantKey result = normalized;
+        if (result == null) {
+            result = PersistentComponentOrder.normalize(this);
+            result.normalized = result;
+            normalized = result;
+        }
+        return result;
     }
 
     public ResourceLocation typeId() {

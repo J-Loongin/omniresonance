@@ -47,6 +47,49 @@ public final class Ae2InterfaceGameTests {
         DrivePath.run(h);
     }
 
+    @GameTest(template = "bootstrap")
+    public static void legacyFoodIdentityCanBeListedExtractedAndInsertedThroughAe(GameTestHelper helper) {
+        if (net.neoforged.fml.ModList.get().isLoaded("ae2")) LegacyFood.run(helper);
+        helper.succeed();
+    }
+
+    private static final class LegacyFood {
+        static void run(GameTestHelper helper) {
+            var provider = helper.getLevel().registryAccess();
+            var original =
+                    new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.ENCHANTED_GOLDEN_APPLE);
+            var key = io.github.loongin.omniresonance.transfer.ItemVariant.from(original, provider)
+                    .key();
+            var old = io.github.loongin.omniresonance.transfer.fixtures.LegacyEffectKeys.reverse(key);
+            var network = new java.util.UUID(121, 1);
+            var bucket = io.github.loongin.omniresonance.persistence.StorageBucketData.create(
+                    network, io.github.loongin.omniresonance.storage.StorageBucketHash.bucket(old));
+            bucket.setAmount(old, 64);
+            var ledger = new io.github.loongin.omniresonance.storage.DomainLedger(
+                    network,
+                    java.util.Map.of(bucket.bucketIndex(), bucket),
+                    i -> io.github.loongin.omniresonance.persistence.StorageBucketData.create(network, i));
+            var storage = new Ae2DomainStorage(new Ae2DomainAccess(() -> ledger, () -> -1), () -> provider);
+            var aeKey = appeng.api.stacks.AEItemKey.of(original);
+            var counter = new appeng.api.stacks.KeyCounter();
+            storage.getAvailableStacks(counter);
+            helper.assertTrue(counter.get(aeKey) == 64, "AE hid a legacy item with equivalent component ordering");
+            var source = appeng.api.networking.security.IActionSource.empty();
+            helper.assertTrue(
+                    storage.extract(aeKey, 64, appeng.api.config.Actionable.SIMULATE, source) == 64
+                            && ledger.amount(key) == 64,
+                    "AE legacy simulation changed quantity");
+            helper.assertTrue(
+                    storage.extract(aeKey, 64, appeng.api.config.Actionable.MODULATE, source) == 64
+                            && ledger.amount(key) == 0,
+                    "AE could list but not extract a legacy item");
+            helper.assertTrue(
+                    storage.insert(aeKey, 64, appeng.api.config.Actionable.MODULATE, source) == 64
+                            && ledger.amount(old) == 64,
+                    "AE redeposit failed or duplicated legacy quantity");
+        }
+    }
+
     private static final class DrivePath {
         static void run(GameTestHelper h) {
             var controller = new net.minecraft.core.BlockPos(1, 2, 1);

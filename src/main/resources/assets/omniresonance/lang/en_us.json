@@ -468,7 +468,7 @@
   "omniresonance.inventory.access_refused": "No resources accepted; check capacity",
   "omniresonance.inventory.access_denied": "Storage access is unavailable",
   "omniresonance.inventory.access_stale": "Inventory changed; click again",
-  "omniresonance.inventory.access_busy": "An operation is already pending",
+  "omniresonance.inventory.access_busy": "Too many pending actions; please wait and try again",
   "omniresonance.inventory.access_failed": "Operation stopped; reopen the inventory",
   "omniresonance.inventory.access_unknown": "Uncertain carrier result; operation stopped",
   "omniresonance.inventory.sort_icon": "↕",

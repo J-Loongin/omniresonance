@@ -57,7 +57,7 @@ public final class ItemResourcePort implements ResourcePort {
             cachedVariant = null;
             return Optional.empty();
         }
-        if (cachedVariant == null || !ItemStack.isSameItemSameComponents(identitySnapshot, stack)) {
+        if (cachedVariant == null || !ItemVariant.sameIdentity(identitySnapshot, stack, provider)) {
             var snapshot = stack.copyWithCount(1);
             var variant = ItemVariant.from(snapshot, provider);
             identitySnapshot = snapshot;
@@ -91,8 +91,8 @@ public final class ItemResourcePort implements ResourcePort {
         return item.stack(amount);
     }
 
-    private static int validateResult(ItemStack result, ItemStack identity, int amount) {
-        if (!ItemHandlerCalls.validAmount(result, identity, amount))
+    private int validateResult(ItemStack result, ItemStack identity, int amount) {
+        if (!ItemHandlerCalls.validAmount(result, identity, amount, provider))
             throw new IllegalArgumentException("Invalid native item result");
         return result.getCount();
     }

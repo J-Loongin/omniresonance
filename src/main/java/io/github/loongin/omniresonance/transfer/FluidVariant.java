@@ -59,7 +59,8 @@ public final class FluidVariant implements ResourceVariant {
         FluidVariant restored = new FluidVariant(key, provider, BuiltInRegistries.FLUID.get(id));
         FluidStack stack = restored.stack(1, identity);
         FluidVariant roundTrip = from(stack, provider);
-        if (!roundTrip.key().equals(key)) throw new IllegalArgumentException("Stored fluid identity cannot round trip");
+        if (!roundTrip.key().equals(key.normalized()))
+            throw new IllegalArgumentException("Stored fluid identity cannot round trip");
         return new Restored(restored, stack);
     }
 
@@ -83,19 +84,33 @@ public final class FluidVariant implements ResourceVariant {
         try {
             CompoundTag identity = new CompoundTag();
             identity.putString("id", fluidId.toString());
-            identity.put(
-                    "components",
-                    DataComponentMap.CODEC
-                            .encodeStart(provider.createSerializationContext(NbtOps.INSTANCE), stack.getComponents())
-                            .getOrThrow());
+            identity.put("components", PersistentComponentOrder.encode(stack.getComponents(), provider));
             FluidVariant result = new FluidVariant(
                     new ResourceVariantKey(TYPE_ID, CanonicalResourceNbt.encode(identity)), provider, fluid);
-            if (!FluidStack.isSameFluidSameComponents(stack, result.stack(1))) {
+            var rebuilt = result.stack(1);
+            if (!PersistentComponentOrder.validRoundTrip(
+                    stack.getComponents(), rebuilt.getComponents(), identity.getCompound("components"), provider)) {
                 throw new IllegalArgumentException("Fluid component codec loses identity");
             }
             return result;
         } catch (RuntimeException ex) {
             throw new IllegalArgumentException("Fluid variant cannot be persisted", ex);
+        }
+    }
+
+    /** Registry-owning game-thread component comparison, excluding amount; known effect-bearing values are
+     * compared by complete persistent content. Native objects and authority remain unchanged; invalid codecs reject. */
+    public static boolean sameIdentity(FluidStack first, FluidStack second, HolderLookup.Provider provider) {
+        if (FluidStack.isSameFluidSameComponents(first, second)
+                && !PersistentComponentOrder.needsPersistentComparison(first.getComponents(), second.getComponents()))
+            return true;
+        if (first.isEmpty() || second.isEmpty() || first.getFluid() != second.getFluid()) return false;
+        try {
+            return PersistentComponentOrder.sameComponents(first.getComponents(), second.getComponents(), provider)
+                    && PersistentComponentOrder.encode(first.getComponents(), provider)
+                            .equals(PersistentComponentOrder.encode(second.getComponents(), provider));
+        } catch (RuntimeException unsupported) {
+            return false;
         }
     }
 

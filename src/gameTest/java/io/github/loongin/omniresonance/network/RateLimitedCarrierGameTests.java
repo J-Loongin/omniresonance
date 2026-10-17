@@ -49,6 +49,64 @@ public final class RateLimitedCarrierGameTests {
     }
 
     @GameTest(template = "bootstrap")
+    public static void resumedCarrierStillRejectsAnExternalChangeToItsOwnedCursor(GameTestHelper h) {
+        var player = new net.neoforged.neoforge.common.util.FakePlayer(
+                h.getLevel(), new com.mojang.authlib.GameProfile(new UUID(172, 1), "ChangedCarrier"));
+        player.initInventoryMenu();
+        var stack = new ItemStack(Items.PAPER);
+        var tag = new net.minecraft.nbt.CompoundTag();
+        tag.putBoolean(MARKER, true);
+        stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
+        player.inventoryMenu.setCarried(stack);
+        UUID network = new UUID(172, 2), view = new UUID(172, 3), session = new UUID(172, 4);
+        var ledger = new DomainLedger(network, Map.of(), i -> StorageBucketData.create(network, i));
+        var water = FluidVariant.from(new FluidStack(Fluids.WATER, 1), player.registryAccess());
+        try (var deposit = ledger.reserveDeposit(water.key(), 10000, -1).orElseThrow()) {
+            deposit.commit(10000);
+        }
+        var replies = new ArrayList<TerminalStorageResponse>();
+        var audit = new ArrayList<io.github.loongin.omniresonance.persistence.AuditEntry>();
+        try (var service = new TerminalStorageService(
+                TerminalStorageServiceGameTests::writable,
+                (p, s, g, n) -> true,
+                n -> ledger,
+                n -> new RecoveryBuffer(() -> {}),
+                (p, reply) -> replies.add(reply),
+                (n, entry) -> audit.add(entry))) {
+            service.open(player, view, session, 1, network);
+            service.request(
+                    player,
+                    new TerminalStorageRequest(
+                            view,
+                            session,
+                            1,
+                            1,
+                            ledger.sequence(water.key()),
+                            player.inventoryMenu.getStateId(),
+                            -1,
+                            0,
+                            true));
+            service.tick(new TransferWorkBudget(1, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0));
+            h.assertTrue(
+                    replies.getLast().status() == TerminalStorageResponse.Status.PROGRESS,
+                    "Test did not suspend after confirmed partial work");
+            long remaining = ledger.amount(water.key());
+            player.inventoryMenu
+                    .getCarried()
+                    .set(
+                            DataComponents.CUSTOM_NAME,
+                            net.minecraft.network.chat.Component.literal("Externally changed"));
+            service.tick(new TransferWorkBudget(100, Long.MAX_VALUE, Long.MAX_VALUE, () -> 0));
+            h.assertTrue(
+                    replies.getLast().status() == TerminalStorageResponse.Status.STALE
+                            && ledger.amount(water.key()) == remaining
+                            && audit.size() == 1,
+                    "Paused work ignored an external cursor change or lost confirmed progress");
+        }
+        h.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void shiftCarrierFillAndDrainResumeSafelyUntilCapacityAcrossSmallBudgets(GameTestHelper h) {
         var player = new net.neoforged.neoforge.common.util.FakePlayer(
                 h.getLevel(), new com.mojang.authlib.GameProfile(new UUID(171, 1), "CarrierBulk"));

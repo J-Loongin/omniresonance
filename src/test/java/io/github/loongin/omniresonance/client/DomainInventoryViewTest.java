@@ -15,6 +15,95 @@ import org.junit.jupiter.api.Test;
 
 class DomainInventoryViewTest {
     @Test
+    void metadataReloadRestoresScrolledCellsEvenWhenResultIdsDoNotChange() {
+        UUID session = new UUID(19, 12);
+        try (var view = new DomainInventoryView(() -> {})) {
+            view.request(session, 1);
+            var widgets = new ArrayList<AbstractWidget>();
+            var body = DomainInventoryLayout.window(427, 240).content();
+            var geometry = new DomainInventoryLayout(body, true);
+            view.build(font(), body, widgets::add, widget -> widgets.remove(widget), ignored -> {});
+            seed(view, session, 300);
+            for (int tick = 0; tick < 8; tick++) view.tick(false, () -> 0);
+            for (int row = 0; row < 40; row++) view.wheel(geometry.gridX() + 1, geometry.gridY() + 1, -1);
+            int count = widgets.size();
+            assertTrue(count > 3);
+            view.invalidateMetadata();
+            for (int tick = 0; tick < 8; tick++) view.tick(false, () -> 0);
+            assertEquals(count, widgets.size(), "Same-ID metadata reload left the scrolled viewport empty");
+        }
+    }
+
+    @Test
+    void actualDragHitTestingUsesPlayerSlotIndicesAtEverySupportedWindowSize() {
+        var inventory = new net.minecraft.world.entity.player.Inventory(null);
+        for (int slot = 0; slot < 36; slot++)
+            inventory.setItem(slot, new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT));
+        for (int[] size : new int[][] {{320, 240}, {427, 240}, {960, 540}}) {
+            try (var view = new DomainInventoryView(() -> {})) {
+                view.request(new UUID(19, 11), 1);
+                var widgets = new ArrayList<AbstractWidget>();
+                var body = DomainInventoryLayout.window(size[0], size[1]).content();
+                var geometry = new DomainInventoryLayout(body, true);
+                view.build(font(), body, widgets::add, widget -> widgets.remove(widget), ignored -> {});
+                for (int slot = 0; slot < 36; slot++) {
+                    var click = view.dragClick(geometry.slotX(slot) + 1, geometry.slotY(slot) + 1, inventory);
+                    assertEquals(new TerminalClickQueue.Click(0, slot, 0, true, false), click);
+                }
+                org.junit.jupiter.api.Assertions.assertNull(view.dragClick(-1, -1, inventory));
+                org.junit.jupiter.api.Assertions.assertNull(
+                        view.dragClick(geometry.gridX() + 1, geometry.gridY() + 1, inventory));
+            }
+        }
+    }
+
+    @Test
+    void completedEmptyQueryRemainsVisibleThroughoutPassiveUpdates() {
+        UUID session = new UUID(19, 10);
+        try (var view = new DomainInventoryView(() -> {})) {
+            view.request(session, 1);
+            var widgets = new ArrayList<AbstractWidget>();
+            var field = view.build(
+                    font(),
+                    DomainInventoryLayout.window(427, 240).content(),
+                    widgets::add,
+                    widget -> widgets.remove(widget),
+                    ignored -> {});
+            seed(view, session, 300);
+            field.setValue("@minecf");
+            for (int i = 0; i < 8; i++) view.tick(false, () -> 0);
+            assertEquals(DomainInventoryView.text("empty"), view.emptyMessage());
+            for (int revision = 1; revision <= 6; revision++) {
+                byte[] data = inventoryRecord(1, 64 + revision, revision);
+                view.accept(new DomainInventoryFrame.Data(session, 1, 301 + revision, false, data.length, 0, data));
+                assertEquals(
+                        DomainInventoryView.text("empty"),
+                        view.emptyMessage(),
+                        "An unrelated inventory delta hid an already completed empty result");
+                for (int tick = 0; tick < 4; tick++) {
+                    view.tick(revision % 2 == 0, () -> 0);
+                    assertEquals(DomainInventoryView.text("empty"), view.emptyMessage());
+                }
+            }
+            var matching = new io.github.loongin.omniresonance.storage.DomainLedger.Change(
+                    301,
+                    new io.github.loongin.omniresonance.transfer.ResourceVariantKey(
+                            net.minecraft.resources.ResourceLocation.parse("minecf:opaque"), new byte[] {1}),
+                    1,
+                    7);
+            byte[] added = io.github.loongin.omniresonance.networking.DomainInventoryRecordCodec.encode(matching);
+            view.accept(new DomainInventoryFrame.Data(session, 1, 308, false, added.length, 0, added));
+            for (int tick = 0; tick < 4; tick++) view.tick(false, () -> 0);
+            assertTrue(view.emptyMessage().getString().isEmpty(), "New matching resources must remove the empty hint");
+            field.setValue("@missing");
+            for (int tick = 0; tick < 4; tick++) view.tick(false, () -> 0);
+            assertEquals(DomainInventoryView.text("empty"), view.emptyMessage());
+            field.setValue("@different");
+            assertTrue(view.emptyMessage().getString().isEmpty(), "A new query must not reuse the old empty state");
+        }
+    }
+
+    @Test
     void noMatchExplanationWaitsForACompletedValidResultAndKeepsStatusSeparate() {
         UUID session = new UUID(19, 1);
         try (var view = new DomainInventoryView(() -> {})) {
@@ -334,6 +423,8 @@ class DomainInventoryViewTest {
                     view.mouseClicked(cell.getX() + 1, cell.getY() + 1, 0),
                     "Read-only clicks must be consumed before the screen focuses a resource button");
             assertTrue(view.mouseClicked(cell.getX() + 1, cell.getY() + 1, 1));
+            assertFalse(view.mouseDragged(cell.getX() + 19, cell.getY() + 1, 0));
+            assertFalse(view.mouseReleased(0));
             assertFalse(cell.isFocused());
         }
     }
