@@ -198,23 +198,31 @@ public final class ItemFilterService {
         if (offset < 0 || offset > sorted.size()) throw rejected(Reason.STALE_REVISION);
         List<String> result = new ArrayList<>();
         List<UUID> identities = new ArrayList<>();
+        List<io.github.loongin.omniresonance.networking.FilterRulePreview> previews = new ArrayList<>();
         int bytes = 0;
         for (int i = offset; i < sorted.size() && result.size() < FilterRulePage.MAXIMUM_ENTRIES; i++) {
             String label = ruleLabel(sorted.get(i));
-            if (bytes + label.length() + 19 > FilterRulePage.MAXIMUM_ENCODED_RULE_BYTES) break;
+            var preview = io.github.loongin.omniresonance.networking.FilterRulePreview.from(sorted.get(i));
+            int size = FilterRulePage.maximumEntryBytes(label, true, preview);
+            if (bytes + size > FilterRulePage.MAXIMUM_ENCODED_RULE_BYTES) break;
             result.add(label);
             identities.add(sorted.get(i).id());
-            bytes += label.length() + 19;
+            previews.add(preview);
+            bytes += size;
         }
         int previousOffset = offset;
         int previousBytes = 0;
         while (previousOffset > 0 && offset - previousOffset < FilterRulePage.MAXIMUM_ENTRIES) {
-            int size = ruleLabel(sorted.get(previousOffset - 1)).length() + 19;
+            var previous = sorted.get(previousOffset - 1);
+            int size = FilterRulePage.maximumEntryBytes(
+                    ruleLabel(previous),
+                    true,
+                    io.github.loongin.omniresonance.networking.FilterRulePreview.from(previous));
             if (previousBytes + size > FilterRulePage.MAXIMUM_ENCODED_RULE_BYTES) break;
             previousBytes += size;
             previousOffset--;
         }
-        return new FilterRulePage(result, offset, sorted.size(), previousOffset, identities);
+        return new FilterRulePage(result, offset, sorted.size(), previousOffset, identities, true, previews);
     }
 
     public Edit begin(ServerPlayer actor, UUID networkId, PresetEditOperation operation, @Nullable UUID presetId) {

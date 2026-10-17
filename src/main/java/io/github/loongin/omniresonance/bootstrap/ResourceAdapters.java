@@ -30,6 +30,22 @@ public final class ResourceAdapters {
         return io.github.loongin.omniresonance.transfer.ResourceTypes.scalar(type);
     }
 
+    /** Optional registry-only display sample on the owning game thread; never opens a resource capability.
+     * The returned immutable variant is a visual example, not a filter decision or an inventory entry. */
+    public static @org.jetbrains.annotations.Nullable io.github.loongin.omniresonance.transfer.ResourceVariant preview(
+            net.minecraft.resources.ResourceLocation type, net.minecraft.resources.ResourceLocation id) {
+        var mods = ModList.get();
+        if (mods == null) return null;
+        if (type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.CHEMICAL) && mods.isLoaded("mekanism"))
+            return io.github.loongin.omniresonance.compat.mekanism.MekanismResources.preview(id);
+        if (type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.SOURCE) && mods.isLoaded("ars_nouveau"))
+            return io.github.loongin.omniresonance.compat.ars.SourceVariant.INSTANCE;
+        if (type.equals(io.github.loongin.omniresonance.transfer.ResourceTypes.SOUL)
+                && mods.isLoaded("industrialforegoingsouls"))
+            return io.github.loongin.omniresonance.compat.souls.SoulVariant.INSTANCE;
+        return null;
+    }
+
     public static ResourceAdapterDirectory create() {
         var result = new ResourceAdapterDirectory(ResourceScope.MAXIMUM_RESOURCE_TYPE_IDS);
         ResourceAdapterDirectory.registerNative(result);

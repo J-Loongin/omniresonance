@@ -14,7 +14,8 @@ public record FilterRulePage(
         int totalCount,
         int previousOffset,
         List<java.util.UUID> ruleIds,
-        boolean fullDomain) {
+        boolean fullDomain,
+        List<FilterRulePreview> previews) {
     public static final int MAXIMUM_ENTRIES = 128;
     public static final int MAXIMUM_ENCODED_RULE_BYTES = 200000;
 
@@ -27,10 +28,31 @@ public record FilterRulePage(
         this(entries, offset, totalCount, previousOffset, ruleIds, true);
     }
 
+    public FilterRulePage(
+            List<String> entries,
+            int offset,
+            int totalCount,
+            int previousOffset,
+            List<java.util.UUID> ruleIds,
+            boolean fullDomain) {
+        this(
+                entries,
+                offset,
+                totalCount,
+                previousOffset,
+                ruleIds,
+                fullDomain,
+                fullDomain
+                        ? java.util.Collections.nCopies(entries.size(), FilterRulePreview.NONE)
+                        : entries.stream().map(FilterRulePreview::exactItem).toList());
+    }
+
     public FilterRulePage {
         if (fullDomain && ruleIds.size() != entries.size() || !fullDomain && !ruleIds.isEmpty())
             throw new IllegalArgumentException("Rule identity mismatch");
         ruleIds = List.copyOf(ruleIds);
+        previews = List.copyOf(previews);
+        if (previews.size() != entries.size()) throw new IllegalArgumentException("Rule preview mismatch");
         if (previousOffset < 0 || previousOffset > offset || (offset > 0 && previousOffset == offset))
             throw new IllegalArgumentException("Invalid previous rule page offset");
         if (entries.size() > MAXIMUM_ENTRIES
@@ -39,15 +61,23 @@ public record FilterRulePage(
                 || totalCount > 262144
                 || entries.size() > totalCount - offset) throw new IllegalArgumentException("Invalid rule page");
         int bytes = 0;
-        for (String entry : entries) {
+        for (int index = 0; index < entries.size(); index++) {
+            String entry = entries.get(index);
             ResourceLocation id = ResourceLocation.tryParse(entry);
             if (entry.length() > 65535
                     || !fullDomain && (id == null || !id.toString().equals(entry)))
                 throw new IllegalArgumentException("Invalid exact item ID");
-            bytes = Math.addExact(bytes, entry.length() + 3 + (fullDomain ? 16 : 0));
+            bytes = Math.addExact(bytes, maximumEntryBytes(entry, fullDomain, previews.get(index)));
         }
         if (bytes > MAXIMUM_ENCODED_RULE_BYTES) throw new IllegalArgumentException("Rule page too large");
         entries = List.copyOf(entries);
+    }
+
+    public static int maximumEntryBytes(String label, boolean typed, FilterRulePreview preview) {
+        return label.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                + 3
+                + (typed ? 16 : 0)
+                + preview.maximumEncodedBytes();
     }
 
     public boolean hasNext() {
@@ -63,16 +93,18 @@ public record FilterRulePage(
         if (count < 0 || count > MAXIMUM_ENTRIES) throw new DecoderException("Invalid rule count");
         List<String> entries = new ArrayList<>(count);
         List<java.util.UUID> identities = new ArrayList<>();
+        List<FilterRulePreview> previews = new ArrayList<>();
         int bytes = 0;
         for (int i = 0; i < count; i++) {
             int before = buffer.readerIndex();
             if (typed) identities.add(buffer.readUUID());
             String entry = FilterMenuCodec.readText(buffer);
+            previews.add(FilterRulePreview.read(buffer));
             bytes = Math.addExact(bytes, buffer.readerIndex() - before);
             if (bytes > MAXIMUM_ENCODED_RULE_BYTES) throw new DecoderException("Rule page too large");
             entries.add(entry);
         }
-        return new FilterRulePage(entries, offset, total, previous, identities, typed);
+        return new FilterRulePage(entries, offset, total, previous, identities, typed, previews);
     }
 
     public void write(FriendlyByteBuf buffer) {
@@ -84,6 +116,7 @@ public record FilterRulePage(
         for (int i = 0; i < entries.size(); i++) {
             if (fullDomain) buffer.writeUUID(ruleIds.get(i));
             FilterMenuCodec.writeText(buffer, entries.get(i));
+            previews.get(i).write(buffer);
         }
     }
 }

@@ -519,6 +519,53 @@ public final class ItemFilterServiceGameTests {
     }
 
     @GameTest(template = "bootstrap")
+    public static void rulePreviewMetadataIsTypedAndOnlyReturnedToAuthorizedReaders(GameTestHelper helper)
+            throws IOException {
+        try (Fixture f = new Fixture(helper, false)) {
+            var rules = List.<ResourceFilterRule>of(
+                    new ResourceFilterRule.Match(
+                            new UUID(951, 1),
+                            io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM,
+                            ResourceFilterRule.Selector.tag(ResourceLocation.parse("c:ingots")),
+                            ComponentCondition.idOnly()),
+                    new ResourceFilterRule.Match(
+                            new UUID(951, 2),
+                            io.github.loongin.omniresonance.transfer.ResourceTypes.FLUID,
+                            ResourceFilterRule.Selector.exact(ResourceLocation.parse("minecraft:water")),
+                            ComponentCondition.idOnly()),
+                    new ResourceFilterRule.Match(
+                            new UUID(951, 3),
+                            io.github.loongin.omniresonance.transfer.ResourceTypes.ENERGY,
+                            ResourceFilterRule.Selector.wholeType(),
+                            ComponentCondition.idOnly()));
+            f.library.putPreset(
+                    new ResourceFilterPreset(PRESET, new ManagedName("Preview"), 1, rules),
+                    f.library.presetLibraryRevision(),
+                    -1,
+                    -1);
+            f.library.setDirty(false);
+            var page = f.service.rules(f.owner, NETWORK, PRESET, 1, 0);
+            for (var rule : rules) {
+                int index = page.ruleIds().indexOf(rule.id());
+                helper.assertTrue(
+                        index >= 0 && page.entries().get(index).equals(ItemFilterService.ruleLabel(rule)),
+                        "Preview changed existing rule text");
+                helper.assertTrue(
+                        page.previews()
+                                .get(index)
+                                .equals(io.github.loongin.omniresonance.networking.FilterRulePreview.from(rule)),
+                        "Typed preview did not follow its rule identity");
+            }
+            helper.assertTrue(!f.library.isDirty(), "Preview read changed persisted rules");
+            reject(
+                    helper,
+                    ItemFilterService.Reason.NO_ACCESS,
+                    () -> f.service.rules(f.stranger, NETWORK, PRESET, 1, 0));
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void variableBytePagesHaveExactBackwardAnchorsAndDoNotTruncateRules(GameTestHelper helper)
             throws IOException {
         try (Fixture f = new Fixture(helper, false)) {

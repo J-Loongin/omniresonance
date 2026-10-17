@@ -49,6 +49,22 @@ final class TerminalFilterView {
 
     private final java.util.List<net.minecraft.resources.ResourceLocation> resourceTypes =
             io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create().types();
+    private final java.util.List<TerminalRowButton> previewRows = new java.util.ArrayList<>();
+    private final RulePreviewHover previewHover = new RulePreviewHover();
+    private final RulePreviewCache previews = new RulePreviewCache(RulePreviewSource.client());
+
+    void invalidatePreviews() {
+        previewHover.clear();
+        previews.clear();
+        if (supports(state)) rebuild.run();
+    }
+
+    void clearPreviews() {
+        previewHover.clear();
+        previewRows.clear();
+        previews.clear();
+    }
+
     private @Nullable PendingRule pendingRule;
     private int pasteNoticeTicks;
     private @Nullable TerminalClickButton selectorButton;
@@ -157,6 +173,7 @@ final class TerminalFilterView {
     }
 
     void tick(long tick, boolean busy) {
+        previews.tick();
         searchTick = tick;
         if (pasteNoticeTicks > 0) pasteNoticeTicks--;
         if (!supports(state) || busy || queryPending || catalog.failed()) return;
@@ -423,6 +440,7 @@ final class TerminalFilterView {
             detailScroll = 0;
         }
         if (!supports(next)) {
+            clearPreviews();
             samplePicker.close();
             choosingReference = false;
             pendingRule = null;
@@ -500,6 +518,9 @@ final class TerminalFilterView {
         this.state = state;
         this.pending = pending;
         this.actions = actions;
+        previews.beginRows();
+        previewHover.clear();
+        previewRows.clear();
         listRows = libraryRows = detailRows = null;
         TerminalLayout.Rect body = layout.content();
         if (fullMode
@@ -621,6 +642,7 @@ final class TerminalFilterView {
                             rebuild.run();
                         });
                 widget.active = !pending;
+                preview(widget, preset.rules().previews().get(index));
                 widget.setSelected(rule.equals(selectedRule));
                 add.accept(widget);
             }
@@ -1160,6 +1182,7 @@ final class TerminalFilterView {
                                     fullPreset.preset().revision(),
                                     id));
                         });
+                preview(widget, page.previews().get(index));
                 widget.active = !pending;
                 add.accept(widget);
             }
@@ -1199,6 +1222,11 @@ final class TerminalFilterView {
         for (int row = 0; row < rows.visibleRows() && row + detailScroll < lines.size(); row++) {
             var widget = new TerminalRowButton(
                     rows.row(row), Component.literal(displayRule(lines.get(row + detailScroll))), ignored -> {});
+            if (row + detailScroll == 1)
+                preview(
+                        widget,
+                        io.github.loongin.omniresonance.networking.FilterRulePreview.from(
+                                detail.rules().getFirst()));
             widget.setReadOnly();
             add.accept(widget);
         }
@@ -1245,6 +1273,25 @@ final class TerminalFilterView {
             return result.append('}').toString();
         }
         return displayRule(tag.getAsString());
+    }
+
+    private void preview(TerminalRowButton row, io.github.loongin.omniresonance.networking.FilterRulePreview metadata) {
+        row.icon(previews.get(metadata));
+        previewRows.add(row);
+    }
+
+    RulePreviewHover updatePreviewHover(int screenWidth, int screenHeight, int mouseX, int mouseY) {
+        if (supports(state)) previewHover.update(previewRows, screenWidth, screenHeight, mouseX, mouseY);
+        else previewHover.clear();
+        return previewHover;
+    }
+
+    void hidePreview() {
+        previewHover.clear();
+    }
+
+    void renderPreview(GuiGraphics graphics, Font font, int screenWidth, int screenHeight, int mouseX, int mouseY) {
+        updatePreviewHover(screenWidth, screenHeight, mouseX, mouseY).render(graphics, font, mouseX, mouseY);
     }
 
     void renderPasteNotice(GuiGraphics graphics, Font font, int mouseX, int mouseY) {

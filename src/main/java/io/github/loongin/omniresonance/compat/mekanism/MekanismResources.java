@@ -110,6 +110,14 @@ public final class MekanismResources {
         return MekanismAPI.CHEMICAL_REGISTRY.containsKey(id) ? MekanismAPI.CHEMICAL_REGISTRY.get(id) : null;
     }
 
+    /** Registry-owned display sample only, with no inventory, capabilities or quantities retained. */
+    public static @org.jetbrains.annotations.Nullable ChemicalVariant preview(ResourceLocation id) {
+        var chemical = MekanismAPI.CHEMICAL_REGISTRY.getHolder(id).orElse(null);
+        if (chemical == null) return null;
+        var stack = new mekanism.api.chemical.ChemicalStack(chemical, 1);
+        return stack.isEmpty() ? null : ChemicalVariant.from(stack);
+    }
+
     public static void register(ResourceAdapterDirectory directory) {
         directory.register(
                 new ResourceAdapterDirectory.Descriptor(ChemicalVariant.TYPE, "mB", 1000),

@@ -76,6 +76,92 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
+    void previewAddsAnIconWithoutChangingRuleTextClickOrDetailOperations() {
+        var metadata = new io.github.loongin.omniresonance.networking.FilterRulePreview(
+                io.github.loongin.omniresonance.networking.FilterRulePreview.Kind.TAG, ResourceTypes.ITEM, "c:ingots");
+        var state = new NetworkTerminalState.Preset(
+                NETWORK,
+                SUMMARY,
+                new FilterRulePage(List.of("#c:ingots"), 0, 1, 0, List.of(RULE), true, List.of(metadata)));
+        for (int[] size : new int[][] {{320, 240}, {640, 360}, {960, 540}}) {
+            var view = new TerminalFilterView(() -> {});
+            view.apply(state);
+            var actions = new ArrayList<TerminalFilterView.Action>();
+            var layout = TerminalLayout.terminal(size[0], size[1]);
+            var widgets = build(view, layout, state, actions);
+            var row = (TerminalRowButton) widgets.stream()
+                    .filter(TerminalRowButton.class::isInstance)
+                    .findFirst()
+                    .orElseThrow();
+            assertEquals("#c:ingots", row.getMessage().getString());
+            org.junit.jupiter.api.Assertions.assertNotNull(row.icon());
+            assertEquals(20, row.getHeight());
+            assertEquals(7, row.textLeftInset());
+            assertEquals(row.getRight() - 7 - 16 - 6, row.textRightEdge());
+            org.junit.jupiter.api.Assertions.assertNull(
+                    row.getTooltip(), "Preview rows must not repeat their text in a tooltip");
+            row.onPress();
+            assertEquals(new TerminalFilterView.Action.Read(PRESET, 0, RULE), actions.getLast());
+            var rule = new ResourceFilterRule.Match(
+                    RULE,
+                    ResourceTypes.ITEM,
+                    ResourceFilterRule.Selector.tag(ResourceLocation.parse("c:ingots")),
+                    ComponentCondition.idOnly());
+            view.acceptFull(new NetworkTerminalResponse.FullRule(
+                    PRESET,
+                    RULE,
+                    1,
+                    null,
+                    0,
+                    0,
+                    "",
+                    FullFilterCodec.snapshot(
+                            new ResourceFilterPreset(PRESET, new ManagedName("Preset"), 0, List.of(rule)))));
+            widgets = build(view, layout, state, actions);
+            var details = widgets.stream()
+                    .filter(TerminalRowButton.class::isInstance)
+                    .map(TerminalRowButton.class::cast)
+                    .toList();
+            assertEquals(3, details.size());
+            assertEquals("minecraft:item", details.get(0).getMessage().getString());
+            assertEquals("#c:ingots", details.get(1).getMessage().getString());
+            assertTrue(details.get(1).icon() == row.icon(), "List and detail should reuse the same preview");
+            assertFalse(details.get(1).active);
+            assertEquals(
+                    3, widgets.stream().filter(TerminalButton.class::isInstance).count());
+        }
+    }
+
+    @Test
+    void actualRuleViewRoutesOnlyInlineIconHoverToItsResourceName() {
+        var metadata = io.github.loongin.omniresonance.networking.FilterRulePreview.exactItem("minecraft:iron_ingot");
+        var state = new NetworkTerminalState.Preset(
+                NETWORK,
+                SUMMARY,
+                new FilterRulePage(List.of("minecraft:iron_ingot"), 0, 1, 0, List.of(RULE), true, List.of(metadata)));
+        var view = new TerminalFilterView(() -> {});
+        view.apply(state);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var widgets = build(view, TerminalLayout.terminal(640, 360), state, actions);
+        var row = (TerminalRowButton) widgets.stream()
+                .filter(TerminalRowButton.class::isInstance)
+                .findFirst()
+                .orElseThrow();
+        var preview = (RuleIconPreview) row.icon();
+        preview.prepare(64);
+        var hover = view.updatePreviewHover(640, 360, row.iconRight() - 8, row.getY() + 10);
+        org.junit.jupiter.api.Assertions.assertSame(preview.inlineImage(0).name(), hover.name());
+        org.junit.jupiter.api.Assertions.assertNotNull(hover.name());
+        view.updatePreviewHover(640, 360, row.getX() + 8, row.getY() + 10);
+        org.junit.jupiter.api.Assertions.assertNull(hover.name());
+        org.junit.jupiter.api.Assertions.assertNull(hover.grid());
+        row.onPress();
+        assertEquals(new TerminalFilterView.Action.Read(PRESET, 0, RULE), actions.getLast());
+        view.hidePreview();
+        org.junit.jupiter.api.Assertions.assertNull(hover.name());
+    }
+
+    @Test
     void compactPresetDirectoryUsesSixRowsAndTheFinalPresetRemainsReachable() {
         var view = new TerminalFilterView(() -> {});
         var entries = new ArrayList<FilterPresetSummary>();

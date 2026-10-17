@@ -9,6 +9,39 @@ import org.jetbrains.annotations.Nullable;
 
 /** Left-aligned management row with a quiet surface and a scoped focus/selection marker. */
 final class TerminalRowButton extends TerminalClickButton {
+    interface Icon {
+        int width();
+
+        void render(GuiGraphics graphics, int right, int y, boolean hovered);
+    }
+
+    private @Nullable Icon icon;
+
+    void icon(Icon icon) {
+        this.icon = icon;
+        setTooltip(null);
+    }
+
+    @Nullable
+    Icon icon() {
+        return icon;
+    }
+
+    int textLeftInset() {
+        return textInset;
+    }
+
+    int textRightEdge() {
+        return getRight()
+                - textInset
+                - (selectionMarked() || navigationIndicator && getWidth() >= 26 ? 12 : 0)
+                - (icon == null ? 0 : icon.width() + 6);
+    }
+
+    int iconRight() {
+        return getRight() - textInset - (selectionMarked() || navigationIndicator && getWidth() >= 26 ? 12 : 0);
+    }
+
     private boolean selected;
     private boolean retainedSelection;
     private boolean readOnly;
@@ -79,20 +112,22 @@ final class TerminalRowButton extends TerminalClickButton {
         if (mark)
             TerminalTheme.renderSelectionMark(graphics, getRight() - 13, getY() + (getHeight() - 6) / 2, style.text());
         if (arrow) TerminalGlyph.NEXT.render(graphics, getRight() - 12, getY() + (getHeight() - 7) / 2, style.text());
-        int right = getRight() - textInset - (mark || arrow ? 12 : 0);
+        int right = iconRight();
+        if (icon != null) {
+            icon.render(graphics, right, getY() + (getHeight() - 16) / 2, isHovered);
+        }
+        right = textRightEdge();
+        int left = getX() + textLeftInset();
         Font font = TerminalText.font(Minecraft.getInstance());
         if (statusPrefix != null && statusSuffix != null) {
             var shown = TerminalText.statusText(
-                    statusPrefix.getString(),
-                    statusSuffix.getString(),
-                    Math.max(0, right - getX() - textInset),
-                    font::width);
+                    statusPrefix.getString(), statusSuffix.getString(), Math.max(0, right - left), font::width);
             int y = getY() + (getHeight() - 8) / 2;
-            graphics.drawString(font, shown.prefix(), getX() + textInset, y, textColor(), false);
+            graphics.drawString(font, shown.prefix(), left, y, textColor(), false);
             graphics.drawString(font, shown.status(), right - font.width(shown.status()), y, textColor(), false);
             return;
         }
-        String text = TerminalText.ellipsize(font, getMessage().getString(), Math.max(0, right - getX() - textInset));
-        graphics.drawString(font, text, getX() + textInset, getY() + (getHeight() - 8) / 2, textColor(), false);
+        String text = TerminalText.ellipsize(font, getMessage().getString(), Math.max(0, right - left));
+        graphics.drawString(font, text, left, getY() + (getHeight() - 8) / 2, textColor(), false);
     }
 }

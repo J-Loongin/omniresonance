@@ -49,6 +49,10 @@ public final class ResourceAdapterDirectory {
             tagReaders = new LinkedHashMap<>();
     private final Map<
                     ResourceLocation,
+                    java.util.function.Function<HolderLookup.Provider, java.util.Iterator<ResourceLocation>>>
+            registryReaders = new LinkedHashMap<>();
+    private final Map<
+                    ResourceLocation,
                     BiFunction<net.minecraft.world.item.ItemStack, HolderLookup.Provider, ResourcePort>>
             carriers = new LinkedHashMap<>();
     private @Nullable List<ResourceLocation> types;
@@ -112,6 +116,12 @@ public final class ResourceAdapterDirectory {
             ResourceLocation type, net.minecraft.resources.ResourceKey<net.minecraft.core.Registry<T>> registry) {
         if (types != null || !descriptors.containsKey(type) || tagReaders.containsKey(type))
             throw new IllegalStateException("Invalid tag reader registration");
+        registryReaders.put(
+                type,
+                provider -> provider.lookupOrThrow(registry)
+                        .listElementIds()
+                        .map(net.minecraft.resources.ResourceKey::location)
+                        .iterator());
         tagReaders.put(type, (provider, id) -> {
             var values = provider.lookupOrThrow(registry)
                     .get(net.minecraft.tags.TagKey.create(registry, id))
@@ -136,6 +146,15 @@ public final class ResourceAdapterDirectory {
         types();
         var reader = tagReaders.get(type);
         return reader == null ? null : reader.apply(provider, id);
+    }
+
+    /** Opens lazy registry identities on the registry-owning game thread. Caller owns iteration and its budget;
+     * no capability access, mutation or retained cache. Null means this adapter has no registered identity catalog. */
+    public @Nullable java.util.Iterator<ResourceLocation> registeredIds(
+            ResourceLocation type, HolderLookup.Provider provider) {
+        types();
+        var reader = registryReaders.get(type);
+        return reader == null ? null : reader.apply(provider);
     }
 
     /** Registers a stack-backed carrier whose capability mutates the borrowed stack's own data components. */

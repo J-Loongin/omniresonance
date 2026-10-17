@@ -117,7 +117,10 @@ class FilterMenuCodecTest {
                     .writeInt(4)
                     .writeBoolean(true);
             wire.writeInt(0).writeInt(4).writeInt(0).writeBoolean(false).writeVarInt(3);
-            for (int i = 0; i < 3; i++) wire.writeUtf("a:" + (char) ('b' + i) + "d".repeat(65532), 65535);
+            for (int i = 0; i < 3; i++) {
+                wire.writeUtf("a:" + (char) ('b' + i) + "d".repeat(65532), 65535);
+                FilterRulePreview.NONE.write(wire);
+            }
             byte[] expected = new byte[wire.readableBytes()];
             wire.getBytes(0, expected);
             NetworkTerminalState decoded = NetworkTerminalState.read(wire);

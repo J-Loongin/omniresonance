@@ -245,6 +245,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget, Term
     }
 
     void invalidateInventoryMetadata() {
+        filterView.invalidatePreviews();
         if (inventoryView != null) inventoryView.invalidateMetadata();
     }
 
@@ -2292,6 +2293,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget, Term
     }
 
     private void disposeSession() {
+        filterView.clearPreviews();
         if (suspendedForConfiguration) return;
         domainShortcut.clear();
         closeChunkOverview();
@@ -2570,6 +2572,9 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget, Term
                 && contains(selectorBounds, mouseX, mouseY)) {
             graphics.renderTooltip(font, TerminalText.body(networkContext.label()), mouseX, mouseY);
         }
+        if (!confirmation && !topologyDiscardConfirmation && inventoryView == null && !dropdown && !renderingBackdrop)
+            filterView.renderPreview(graphics, font, width, height, mouseX, mouseY);
+        else filterView.hidePreview();
         if (!confirmation && !topologyDiscardConfirmation && inventoryView == null)
             filterView.renderPasteNotice(graphics, font, mouseX, mouseY);
         if (confirmation || topologyDiscardConfirmation)

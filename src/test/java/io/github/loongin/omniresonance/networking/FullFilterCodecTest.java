@@ -98,6 +98,63 @@ class FullFilterCodecTest {
     }
 
     @Test
+    void previewMetadataRoundTripsWithoutChangingRuleLabelsOrIdentities() {
+        var previews = List.of(
+                new FilterRulePreview(FilterRulePreview.Kind.EXACT, ResourceTypes.ITEM, "minecraft:iron_ingot"),
+                new FilterRulePreview(FilterRulePreview.Kind.TAG, ResourceTypes.FLUID, "c:water"),
+                new FilterRulePreview(FilterRulePreview.Kind.GLOB, ResourceTypes.CHEMICAL, "mekanism:*"),
+                new FilterRulePreview(FilterRulePreview.Kind.WHOLE_TYPE, ResourceTypes.ENERGY, ""),
+                FilterRulePreview.REFERENCE);
+        var labels = List.of("minecraft:iron_ingot", "#c:water", "mekanism:*", "neoforge:energy", "@" + PRESET);
+        var ids = java.util.stream.IntStream.range(0, labels.size())
+                .mapToObj(i -> new UUID(10, i))
+                .toList();
+        var page = new FilterRulePage(labels, 0, labels.size(), 0, ids, true, previews);
+        var state = new NetworkTerminalState.Preset(
+                new NetworkSummary(new UUID(2, 3), PRESET, "Network"),
+                new FilterPresetSummary(PRESET, "Preset", 0, labels.size(), true),
+                page);
+        var response = new NetworkTerminalResponse.ViewState(new UUID(4, 5), RULE, 1, state);
+        var buffer = new FriendlyByteBuf(Unpooled.buffer());
+        try {
+            NetworkTerminalResponse.STREAM_CODEC.encode(buffer, response);
+            assertEquals(response, NetworkTerminalResponse.STREAM_CODEC.decode(buffer));
+            assertEquals(0, buffer.readableBytes());
+        } finally {
+            buffer.release();
+        }
+        assertThrows(IllegalArgumentException.class, () -> new FilterRulePage(labels, 0, 5, 0, ids, true, List.of()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FilterRulePreview(FilterRulePreview.Kind.EXACT, ResourceTypes.ITEM, "not an id"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FilterRulePreview(FilterRulePreview.Kind.REFERENCE, ResourceTypes.ITEM, ""));
+        var oversized = new ResourceFilterRule.Match(
+                RULE,
+                ResourceTypes.ITEM,
+                ResourceFilterRule.Selector.tag(ResourceLocation.parse("test:" + "a".repeat(65530))),
+                ComponentCondition.idOnly());
+        assertEquals(FilterRulePreview.NONE, FilterRulePreview.from(oversized));
+    }
+
+    @Test
+    void malformedPreviewKindAndOversizedSelectorAreRejectedAtDecode() {
+        var wire = new FriendlyByteBuf(Unpooled.buffer());
+        try {
+            wire.writeVarInt(65535);
+            assertThrows(io.netty.handler.codec.DecoderException.class, () -> FilterRulePreview.read(wire));
+            wire.clear();
+            wire.writeEnum(FilterRulePreview.Kind.EXACT)
+                    .writeUtf("minecraft:item")
+                    .writeUtf("a:" + "x".repeat(255));
+            assertThrows(io.netty.handler.codec.DecoderException.class, () -> FilterRulePreview.read(wire));
+        } finally {
+            wire.release();
+        }
+    }
+
+    @Test
     void malformedIntentCountAndTrailingFieldsCannotInventSelectedValues() {
         byte[] bytes = FullFilterCodec.intent(new ResourceRuleIntent.Match(
                 ResourceTypes.ITEM,
