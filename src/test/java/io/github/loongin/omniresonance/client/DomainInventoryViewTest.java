@@ -14,6 +14,34 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import org.junit.jupiter.api.Test;
 
 class DomainInventoryViewTest {
+    private static void resourceReload(Runnable invalidate) {
+        var registered = new java.util.concurrent.atomic.AtomicReference<
+                net.minecraft.server.packs.resources.PreparableReloadListener>();
+        try (var manager =
+                new net.minecraft.server.packs.resources.ReloadableResourceManager(
+                        net.minecraft.server.packs.PackType.CLIENT_RESOURCES) {
+                    @Override
+                    public void registerReloadListener(
+                            net.minecraft.server.packs.resources.PreparableReloadListener listener) {
+                        registered.set(listener);
+                    }
+                }) {
+            var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+            var reload = new InventoryMetadataReload(() -> {
+                callbacks.incrementAndGet();
+                invalidate.run();
+            });
+            reload.register(new net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent(manager));
+            ((net.minecraft.server.packs.resources.ResourceManagerReloadListener) registered.get())
+                    .onResourceManagerReload(net.minecraft.server.packs.resources.ResourceManager.Empty.INSTANCE);
+            reload.tick(true);
+            assertEquals(0, callbacks.get(), "Do not rebuild metadata while language listeners are still loading");
+            reload.tick(false);
+            reload.tick(false);
+            assertEquals(1, callbacks.get());
+        }
+    }
+
     @Test
     void metadataReloadRestoresScrolledCellsEvenWhenResultIdsDoNotChange() {
         UUID session = new UUID(19, 12);
@@ -28,7 +56,7 @@ class DomainInventoryViewTest {
             for (int row = 0; row < 40; row++) view.wheel(geometry.gridX() + 1, geometry.gridY() + 1, -1);
             int count = widgets.size();
             assertTrue(count > 3);
-            view.invalidateMetadata();
+            resourceReload(view::invalidateMetadata);
             for (int tick = 0; tick < 8; tick++) view.tick(false, () -> 0);
             assertEquals(count, widgets.size(), "Same-ID metadata reload left the scrolled viewport empty");
         }

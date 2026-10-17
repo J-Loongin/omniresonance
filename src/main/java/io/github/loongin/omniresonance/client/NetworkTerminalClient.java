@@ -51,6 +51,8 @@ public final class NetworkTerminalClient {
     private boolean suppressShortcutClicks;
     private boolean firstPromptDismissed;
     private final ResonanceNodeClient nodeClient;
+    private final InventoryMetadataReload inventoryReload =
+            new InventoryMetadataReload(NetworkTerminalClient::invalidateInventoryMetadata);
 
     /** Installs client events and the immutable protocol response consumer without accessing a world. */
     public NetworkTerminalClient(IEventBus modBus) {
@@ -69,7 +71,7 @@ public final class NetworkTerminalClient {
                         net.neoforged.neoforge.network.PacketDistributor.sendToServer(
                                 new io.github.loongin.omniresonance.compat.ae2.Ae2InterfacePayloads.Request(
                                         frame.session(), 1, 3, null, ""));
-                } else if (mc.screen instanceof Ae2InterfaceScreen screen) screen.accept(frame);
+                } else if (TerminalScreenSessions.current() instanceof Ae2InterfaceScreen screen) screen.accept(frame);
             });
             modBus.addListener(
                     (net.neoforged.neoforge.client.event.RegisterColorHandlersEvent.Block event) -> event.register(
@@ -92,27 +94,38 @@ public final class NetworkTerminalClient {
         NeoForge.EVENT_BUS.addListener(this::onLoggingIn);
         NeoForge.EVENT_BUS.addListener(this::onLoggingOut);
         NeoForge.EVENT_BUS.addListener(this::onTagsUpdated);
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.client.event.ScreenEvent.Opening event) -> {
+            var next = event.getNewScreen();
+            if (next instanceof TerminalScreenSessions.Participant participant && !participant.sessionValid()) {
+                event.setNewScreen(null);
+                return;
+            }
+            TerminalScreenSessions.INSTANCE.opening(event.getCurrentScreen(), next);
+        });
+        modBus.addListener(inventoryReload::register);
         NetworkPayloads.installClientReceiver(this::receive);
         NetworkPayloads.installExchangeReceiver(frame -> {
-            if (Minecraft.getInstance().screen instanceof ExchangeScreen screen) screen.accept(frame);
+            if (TerminalScreenSessions.current() instanceof ExchangeScreen screen) screen.accept(frame);
         });
         NetworkPayloads.installStatusReceiver(frame -> {
-            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveStatus(frame);
+            if (TerminalScreenSessions.current() instanceof NetworkSetupScreen screen) screen.receiveStatus(frame);
         });
         NetworkPayloads.installNodeDirectoryReceiver(page -> {
-            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveNodeDirectory(page);
+            if (TerminalScreenSessions.current() instanceof NetworkSetupScreen screen)
+                screen.receiveNodeDirectory(page);
         });
         NetworkPayloads.installChunkOverviewReceiver(page -> {
-            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveChunkOverview(page);
+            if (TerminalScreenSessions.current() instanceof NetworkSetupScreen screen)
+                screen.receiveChunkOverview(page);
         });
         NetworkPayloads.installStorageReceiver(response -> {
-            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveStorage(response);
+            if (TerminalScreenSessions.current() instanceof NetworkSetupScreen screen) screen.receiveStorage(response);
         });
         NetworkPayloads.installInventoryReceiver(frame -> {
-            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen) screen.receiveInventory(frame);
+            if (TerminalScreenSessions.current() instanceof NetworkSetupScreen screen) screen.receiveInventory(frame);
         });
         io.github.loongin.omniresonance.networking.NodeMenuPayloads.installTerminalTransferReceiver(message -> {
-            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen)
+            if (TerminalScreenSessions.current() instanceof NetworkSetupScreen screen)
                 screen.receiveFilterTransfer(message);
         });
     }
@@ -200,6 +213,12 @@ public final class NetworkTerminalClient {
     }
 
     private void onClientTick(ClientTickEvent.Post event) {
+        var active = Minecraft.getInstance();
+        inventoryReload.tick(active.getOverlay() != null);
+        TerminalScreenSessions.INSTANCE.tick(
+                active.screen,
+                connected && active.level != null && active.player != null && active.player.isAlive(),
+                !active.isPaused());
         boolean clicked = false;
         while (TERMINAL_KEY.consumeClick()) {
             clicked = true;
@@ -223,9 +242,17 @@ public final class NetworkTerminalClient {
     private void onTagsUpdated(net.neoforged.neoforge.event.TagsUpdatedEvent event) {
         if (event.getUpdateCause() != net.neoforged.neoforge.event.TagsUpdatedEvent.UpdateCause.CLIENT_PACKET_RECEIVED)
             return;
+        invalidateInventoryMetadata();
+    }
+
+    static void invalidateInventoryMetadata() {
         Minecraft.getInstance().execute(() -> {
-            if (Minecraft.getInstance().screen instanceof NetworkSetupScreen screen)
-                screen.invalidateInventoryMetadata();
+            var active = TerminalScreenSessions.current();
+            if (active instanceof NetworkSetupScreen screen) screen.invalidateInventoryMetadata();
+            else if (active instanceof ExchangeScreen screen)
+                screen.terminalParent().invalidateInventoryMetadata();
+            else if (active instanceof ResonanceNodeScreen screen && screen.terminalParent() != null)
+                screen.terminalParent().invalidateInventoryMetadata();
         });
     }
 
@@ -240,25 +267,29 @@ public final class NetworkTerminalClient {
         TerminalTagClipboard.clear();
         firstPromptDismissed = false;
         Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft.screen instanceof ExchangeScreen exchange) exchange.disconnected();
-        if (minecraft.screen instanceof NetworkSetupScreen screen) {
+        if (TerminalScreenSessions.current() instanceof ExchangeScreen exchange) exchange.disconnected();
+        if (TerminalScreenSessions.current() instanceof NetworkSetupScreen screen) {
             screen.disconnected();
         }
+        if (TerminalScreenSessions.current() instanceof ResonanceNodeScreen screen && screen.terminalParent() != null)
+            screen.terminalParent().disconnected();
+        TerminalScreenSessions.INSTANCE.clear();
     }
 
     private void receive(NetworkTerminalResponse response) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft.screen instanceof NetworkSetupScreen screen && screen.matchesView(response.viewId())) {
+        if (TerminalScreenSessions.current() instanceof NetworkSetupScreen screen
+                && screen.matchesView(response.viewId())) {
             screen.applyResponse(response);
             return;
         }
-        if (minecraft.screen instanceof ExchangeScreen exchange
+        if (TerminalScreenSessions.current() instanceof ExchangeScreen exchange
                 && exchange.terminalParent().matchesView(response.viewId())) {
             exchange.terminalParent().applyResponse(response);
             exchange.disconnected();
             return;
         }
-        if (minecraft.screen instanceof ResonanceNodeScreen child
+        if (TerminalScreenSessions.current() instanceof ResonanceNodeScreen child
                 && child.terminalParent() != null
                 && child.terminalParent().matchesView(response.viewId())) {
             child.terminalParent().applyResponse(response);

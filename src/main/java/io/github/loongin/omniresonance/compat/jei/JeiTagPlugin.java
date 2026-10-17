@@ -25,6 +25,10 @@ public final class JeiTagPlugin implements IModPlugin {
 
     @Override
     public void registerGuiHandlers(mezz.jei.api.registration.IGuiHandlerRegistration registration) {
+        io.github.loongin.omniresonance.client.TerminalScreenSessions.recipeParent(
+                screen -> screen instanceof mezz.jei.api.runtime.IRecipesGui recipes
+                        ? recipes.getParentScreen().orElse(null)
+                        : null);
         registerGhost(registration, io.github.loongin.omniresonance.client.RecipeGhostTarget.screenType());
     }
 

@@ -25,6 +25,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.LongFunction;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
@@ -36,7 +37,8 @@ import org.jetbrains.annotations.Nullable;
 import org.lwjgl.glfw.GLFW;
 
 /** Fixed-window client view for one server-authoritative physical resonance-node Menu. */
-final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMenu> {
+final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMenu>
+        implements TerminalScreenSessions.Participant {
     private static final int CONTROL_HEIGHT = 20;
     private static final int HEADING_HEIGHT = 18;
     private static final int EDIT_BOX_MAXIMUM_UTF16_UNITS = 256;
@@ -139,7 +141,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         return response.containerId() == menu.containerId
                 && response.sessionId().equals(menu.sessionId())
                 && minecraft != null
-                && minecraft.screen == this;
+                && TerminalScreenSessions.current() == this;
     }
 
     void applyResponse(NodeMenuResponse response) {
@@ -968,7 +970,8 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         UUID id = policyDownload == null ? null : policyDownload.transfer();
         if (id != null) {
             downloads.abort(menu.sessionId(), id);
-            PacketDistributor.sendToServer(new ManagementTransferMessage.Abort(menu.sessionId(), id));
+            if (Minecraft.getInstance().getConnection() != null)
+                PacketDistributor.sendToServer(new ManagementTransferMessage.Abort(menu.sessionId(), id));
         }
         policyDownload = null;
     }
@@ -2006,6 +2009,16 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
 
     @Override
     public void removed() {
+        TerminalScreenSessions.removed(this, this::disposeSession);
+    }
+
+    @Override
+    public boolean sessionValid() {
+        var mc = Minecraft.getInstance();
+        return mc != null && mc.player != null && mc.player.containerMenu == menu;
+    }
+
+    private void disposeSession() {
         cancelPolicyTransfer();
         resourceRows.clear();
         downloads.close();
@@ -2017,7 +2030,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         var parent = terminalParent;
         if (parent != null && minecraft != null)
             minecraft.execute(() -> {
-                if (minecraft.screen == null) {
+                if (minecraft.level != null && minecraft.player != null && minecraft.screen == null) {
                     if (remoteWholeExit || closeAfterDiscard) parent.closeFromConfiguration();
                     else parent.resumeFromConfiguration();
                 }

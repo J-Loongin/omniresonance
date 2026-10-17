@@ -221,13 +221,25 @@ final class TerminalTheme {
         if (bottom > top) graphics.fill(x, top, x + 1, bottom, LINE);
     }
 
+    static void renderScrollbar(GuiGraphics graphics, RoutingListLayout layout) {
+        var track = layout.scrollbar();
+        renderScrollbar(
+                graphics,
+                track.x(),
+                track.y(),
+                track.height(),
+                layout.totalRows(),
+                layout.visibleRows(),
+                layout.scroll());
+    }
+
     static void renderScrollbar(
             GuiGraphics graphics, int x, int y, int height, int totalRows, int visibleRows, int firstRow) {
         if (height <= 0 || totalRows <= visibleRows) {
             return;
         }
         graphics.fill(x, y, x + TerminalLayout.SCROLLBAR_WIDTH, y + height, 0x7010192B);
-        int thumbHeight = Math.max(10, height * visibleRows / totalRows);
+        int thumbHeight = Math.min(height, Math.max(10, (int) ((long) height * visibleRows / totalRows)));
         int range = height - thumbHeight;
         int maximumFirst = Math.max(1, totalRows - visibleRows);
         int thumbY = y + range * Mth.clamp(firstRow, 0, maximumFirst) / maximumFirst;

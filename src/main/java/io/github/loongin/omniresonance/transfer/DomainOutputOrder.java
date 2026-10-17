@@ -96,7 +96,9 @@ public final class DomainOutputOrder {
     /**
      * Performs at most one successful/failed commit, checking all higher contenders in this same invocation.
      * Starts from the highest priority after every pause, so prior-tick capacity failures never authorize a lower
-     * output. Only proven movement advances a tie cursor; simulations and refusal do not. Existing cursors cannot
+     * output. Completed refusals advance the group's probe position so equal-priority peers cannot starve;
+     * incomplete attempts retain their position. Only proven movement advances the seed for new variants.
+     * This is execution scheduling, never a capacity simulation. Existing cursors cannot
      * be reused with another full variant or a replacement publication. Native exceptions propagate immediately,
      * without trying any lower candidate or inferring quantities; caller applies its normal failure backoff.
      */
@@ -118,8 +120,12 @@ public final class DomainOutputOrder {
                     int relative = (start + offset) % group.size();
                     Entry entry = entries.get(group.start() + relative);
                     Attempt attempt = Objects.requireNonNull(entry.output().attempt(variant, budget));
-                    if (attempt.moved() > 0 && group.size() > 1)
-                        cursor.offsets.put(index, (relative + 1) % group.size());
+                    if (group.size() > 1) {
+                        int next = attempt.moved() > 0 || attempt.state() == State.NO_CAPACITY
+                                ? (relative + 1) % group.size()
+                                : relative;
+                        cursor.offsets.put(index, next);
+                    }
                     // New live variants inherit a rotating start, without retaining retired-key history.
                     if (attempt.moved() > 0) nextSeed = nextSeed == Long.MAX_VALUE ? 0 : nextSeed + 1;
                     if (attempt.state() != State.NO_CAPACITY) return new Selection(entry.id(), attempt);

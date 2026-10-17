@@ -40,6 +40,79 @@ class AeInterfaceSelectionTest {
     }
 
     @Test
+    void networkChoicesUseCompleteSharedRowsAndScrollingReachesTheLastChoice() {
+        var choices = new ArrayList<Ae2InterfacePayloads.Choice>();
+        for (int i = 0; i < 9; i++) choices.add(new Ae2InterfacePayloads.Choice(new UUID(8, i), "Choice " + i));
+        var screen = new Ae2InterfaceScreen(
+                new Ae2InterfacePayloads.Frame(new UUID(9, 1), 0, true, null, "unbound", "", choices, 9, false),
+                (key, scan) -> false,
+                ignored -> {});
+        var font = new Font(
+                id -> {
+                    throw new AssertionError("No glyph rendering");
+                },
+                false);
+        screen.build(font, 640, 360);
+        var body = TerminalLayout.terminal(640, 360).content();
+        assertEquals(
+                6,
+                screen.children().stream()
+                        .filter(TerminalRowButton.class::isInstance)
+                        .count());
+        for (int i = 0; i < 10; i++) screen.mouseScrolled(body.right() - 8, body.y() + 40, 0, -1);
+        var rows = screen.children().stream()
+                .filter(TerminalRowButton.class::isInstance)
+                .map(TerminalRowButton.class::cast)
+                .toList();
+        assertEquals("Choice 8", rows.getLast().getMessage().getString());
+        assertTrue(rows.getLast().getBottom() <= body.bottom());
+    }
+
+    @Test
+    void temporaryConfirmationKeepsTheActualInterfacePageAndItsPendingReplyUsable() {
+        var requests = new ArrayList<Ae2InterfacePayloads.Request>();
+        var screen = readyScreen(requests);
+        var confirmation = new net.minecraft.client.gui.screens.ConfirmScreen(
+                ignored -> {},
+                net.minecraft.network.chat.Component.empty(),
+                net.minecraft.network.chat.Component.empty());
+        var sessions = TerminalScreenSessions.INSTANCE;
+        sessions.opening(screen, confirmation);
+        try {
+            screen.removed();
+            sessions.tick(confirmation, true);
+            assertEquals(screen, sessions.target(confirmation));
+            screen.children().stream()
+                    .filter(TerminalRowButton.class::isInstance)
+                    .map(TerminalRowButton.class::cast)
+                    .findFirst()
+                    .orElseThrow()
+                    .onPress();
+            var request = requests.getLast();
+            screen.accept(new Ae2InterfacePayloads.Frame(
+                    request.session(),
+                    request.sequence(),
+                    false,
+                    request.network(),
+                    "ready",
+                    "",
+                    List.of(),
+                    -1,
+                    false));
+            sessions.tick(screen, true);
+            screen.children().stream()
+                    .filter(TerminalRowButton.class::isInstance)
+                    .map(TerminalRowButton.class::cast)
+                    .findFirst()
+                    .orElseThrow()
+                    .onPress();
+            assertEquals(2, requests.getLast().action());
+        } finally {
+            sessions.clear();
+        }
+    }
+
+    @Test
     void unansweredStatusReadsStayBoundedToOneRequest() {
         var requests = new ArrayList<Ae2InterfacePayloads.Request>();
         var screen = readyScreen(requests);

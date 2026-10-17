@@ -302,6 +302,7 @@ final class TerminalFilterView {
     private int scroll;
     private int maximumScroll;
     private int visibleRows = 1;
+    private @Nullable RoutingListLayout listRows, libraryRows, detailRows;
     private boolean pending;
     private boolean pagePending;
     private int expectedOffset;
@@ -499,6 +500,7 @@ final class TerminalFilterView {
         this.state = state;
         this.pending = pending;
         this.actions = actions;
+        listRows = libraryRows = detailRows = null;
         TerminalLayout.Rect body = layout.content();
         if (fullMode
                 && !management
@@ -590,7 +592,7 @@ final class TerminalFilterView {
                 body.x() + 4,
                 body.y() + 24 + searchInset,
                 listWidth - 8,
-                Math.max(0, body.height() - 44 - searchInset));
+                Math.max(0, body.height() - 38 - searchInset));
         int count = state instanceof NetworkTerminalState.Filters filters
                 ? filters.page().entries().size()
                 : ((NetworkTerminalState.Preset) state).rules().entries().size();
@@ -598,7 +600,8 @@ final class TerminalFilterView {
         scroll = rows.scroll();
         visibleRows = rows.visibleRows();
         maximumScroll = Math.max(0, count - rows.visibleRows());
-        list = rowsBody;
+        listRows = rows;
+        list = rows.bounds();
         for (int row = 0; row < rows.visibleRows() && row + scroll < count; row++) {
             int index = row + scroll;
             if (state instanceof NetworkTerminalState.Filters filters) {
@@ -754,7 +757,8 @@ final class TerminalFilterView {
                     : ((NetworkTerminalState.Preset) state).rules().offset();
             graphics.drawString(
                     font,
-                    TerminalText.body(Component.translatable("omniresonance.terminal.filters.page", offset, total)),
+                    TerminalText.body(
+                            Component.translatable("omniresonance.terminal.filters.page", offset + scroll, total)),
                     body.x() + 8,
                     body.bottom() - 14,
                     TerminalTheme.MUTED,
@@ -768,14 +772,7 @@ final class TerminalFilterView {
                         4,
                         4 - maximumActionScroll,
                         actionScroll);
-            TerminalTheme.renderScrollbar(
-                    graphics,
-                    list.right() - TerminalLayout.SCROLLBAR_WIDTH,
-                    list.y(),
-                    list.height(),
-                    maximumScroll + 1,
-                    1,
-                    scroll);
+            if (listRows != null) TerminalTheme.renderScrollbar(graphics, listRows);
         }
     }
 
@@ -935,6 +932,8 @@ final class TerminalFilterView {
         }
         int count = fields.size();
         var details = RoutingListLayout.calculateRows(detailBounds, count, detailScroll);
+        detailRows = details;
+        detailBounds = details.bounds();
         detailScroll = details.scroll();
         maxDetailScroll = Math.max(0, count - details.visibleRows());
         selectorButton = null;
@@ -1102,6 +1101,8 @@ final class TerminalFilterView {
                 body.x() + 4, body.y() + inset, body.width() - 8, Math.max(0, body.height() - inset));
         var entries = libraryEntries();
         var rows = RoutingListLayout.calculateRows(libraryBounds, entries.size(), libraryScroll);
+        libraryRows = rows;
+        libraryBounds = rows.bounds();
         libraryScroll = rows.scroll();
         maxLibraryScroll = Math.max(0, entries.size() - rows.visibleRows());
         for (int row = 0; row < rows.visibleRows() && row + libraryScroll < entries.size(); row++) {
@@ -1138,6 +1139,8 @@ final class TerminalFilterView {
                     body.x() + 4, body.y() + 36, body.width() - 8, Math.max(0, body.height() - 40));
             var page = fullPreset.rules();
             var rows = RoutingListLayout.calculateRows(list, page.entries().size(), scroll);
+            listRows = rows;
+            list = rows.bounds();
             scroll = rows.scroll();
             visibleRows = rows.visibleRows();
             maximumScroll = Math.max(0, page.entries().size() - visibleRows);
@@ -1189,6 +1192,8 @@ final class TerminalFilterView {
                 new TerminalLayout.Rect(body.x() + 4, body.y() + 36, body.width() - 8, Math.max(0, body.height() - 40));
         var lines = detailLines(readonly);
         var rows = RoutingListLayout.calculateRows(detailBounds, lines.size(), detailScroll);
+        detailRows = rows;
+        detailBounds = rows.bounds();
         detailScroll = rows.scroll();
         maxDetailScroll = Math.max(0, lines.size() - rows.visibleRows());
         for (int row = 0; row < rows.visibleRows() && row + detailScroll < lines.size(); row++) {
@@ -1260,19 +1265,9 @@ final class TerminalFilterView {
                     libraryBounds.y() - 20,
                     TerminalTheme.TEXT,
                     false);
-        for (TerminalLayout.Rect bounds : java.util.List.of(libraryBounds, list, detailBounds)) {
-            if (bounds.width() == 0 || bounds.height() == 0) continue;
-            TerminalTheme.renderScrollbar(
-                    graphics,
-                    bounds.right() - TerminalLayout.SCROLLBAR_WIDTH,
-                    bounds.y(),
-                    bounds.height(),
-                    bounds == libraryBounds
-                            ? maxLibraryScroll + 1
-                            : bounds == detailBounds ? maxDetailScroll + 1 : maximumScroll + 1,
-                    1,
-                    bounds == libraryBounds ? libraryScroll : bounds == detailBounds ? detailScroll : scroll);
-        }
+        if (libraryRows != null) TerminalTheme.renderScrollbar(graphics, libraryRows);
+        if (listRows != null) TerminalTheme.renderScrollbar(graphics, listRows);
+        if (detailRows != null) TerminalTheme.renderScrollbar(graphics, detailRows);
         if (!sampleFailure.isEmpty())
             graphics.drawString(
                     font,

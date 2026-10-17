@@ -33,7 +33,7 @@ import org.lwjgl.glfw.GLFW;
  * automatically. Closing releases at most the matching server session and does not imply cancellation of an already
  * submitted create intent.
  */
-final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
+final class NetworkSetupScreen extends Screen implements RecipeGhostTarget, TerminalScreenSessions.Participant {
     private boolean renderingBackdrop;
 
     @Override
@@ -75,7 +75,6 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     }
 
     private static final int CONTROL_HEIGHT = 20;
-    private static final int ROW_HEIGHT = 22;
     private static final int PANEL_HEADING_HEIGHT = 14;
     private static final int MAX_VISIBLE_DROPDOWN_ROWS = 6;
     private static final int EDIT_BOX_MAXIMUM_UTF16_UNITS = 256;
@@ -911,10 +910,9 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     private void buildDirectoryWidgets() {
         if (listBounds.width() > 0) {
             List<NetworkSummary> entries = page.entries();
-            int visibleRows = visibleListRows();
-            listScroll = clampScroll(listScroll, entries.size(), visibleRows);
-            int firstY = listBounds.y() + PANEL_HEADING_HEIGHT;
-            int availableWidth = Math.max(0, listBounds.width() - TerminalLayout.SCROLLBAR_WIDTH - 4);
+            var list = directoryListLayout(entries.size());
+            int visibleRows = list.visibleRows();
+            listScroll = list.scroll();
             for (int row = 0; row < visibleRows; row++) {
                 int index = listScroll + row;
                 if (index >= entries.size()) {
@@ -922,12 +920,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                 }
                 NetworkSummary summary = entries.get(index);
                 TerminalRowButton entry = new TerminalRowButton(
-                        listBounds.x() + 2,
-                        firstY + row * ROW_HEIGHT,
-                        availableWidth,
-                        CONTROL_HEIGHT,
-                        Component.literal(summary.name()),
-                        button -> select(summary));
+                        list.row(row), Component.literal(summary.name()), button -> select(summary));
                 entry.setSelected(selected != null && selected.id().equals(summary.id()));
                 entry.setTooltip(Tooltip.create(TerminalText.body(Component.literal(summary.name()))));
                 addRenderableWidget(entry);
@@ -2289,6 +2282,17 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
     @Override
     public void removed() {
         if (suspendedForConfiguration) return;
+        if (inventoryView != null) inventoryView.suspendInput();
+        TerminalScreenSessions.removed(this, this::disposeSession);
+    }
+
+    @Override
+    public boolean sessionValid() {
+        return !disconnected && !closeSent;
+    }
+
+    private void disposeSession() {
+        if (suspendedForConfiguration) return;
         domainShortcut.clear();
         closeChunkOverview();
         closeInventory();
@@ -2903,15 +2907,8 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
                 listBounds.y() + 3,
                 TerminalTheme.TEXT,
                 false);
-        int visibleRows = visibleListRows();
         TerminalTheme.renderScrollbar(
-                graphics,
-                listBounds.right() - TerminalLayout.SCROLLBAR_WIDTH - 1,
-                listBounds.y() + PANEL_HEADING_HEIGHT,
-                Math.max(0, listBounds.height() - PANEL_HEADING_HEIGHT),
-                page.entries().size(),
-                visibleRows,
-                listScroll);
+                graphics, directoryListLayout(page.entries().size()));
     }
 
     private void renderDetails(GuiGraphics graphics) {
@@ -3063,11 +3060,17 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget {
         }
     }
 
+    private RoutingListLayout directoryListLayout(int count) {
+        int heading = Math.min(PANEL_HEADING_HEIGHT, listBounds.height());
+        return RoutingListLayout.calculateRows(
+                new TerminalLayout.Rect(
+                        listBounds.x(), listBounds.y() + heading, listBounds.width(), listBounds.height() - heading),
+                count,
+                listScroll);
+    }
+
     private int visibleListRows() {
-        if (listBounds.height() <= PANEL_HEADING_HEIGHT) {
-            return 1;
-        }
-        return Math.max(1, (listBounds.height() - PANEL_HEADING_HEIGHT) / ROW_HEIGHT);
+        return directoryListLayout(page == null ? 0 : page.entries().size()).visibleRows();
     }
 
     private RoutingListLayout topologyListLayout(int entryCount) {

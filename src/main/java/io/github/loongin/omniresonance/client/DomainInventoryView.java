@@ -356,6 +356,11 @@ final class DomainInventoryView implements AutoCloseable {
         return null;
     }
 
+    void suspendInput() {
+        quickMove.clear();
+        quickMoveDrag.clear();
+    }
+
     boolean mouseReleased(int button) {
         if (button != 0) return false;
         boolean handled = quickMoveDrag.active();

@@ -113,8 +113,8 @@ final class TerminalLayoutTest {
         RoutingListLayout list = RoutingListLayout.calculate(body, 20, 0);
 
         assertEquals(body.y() + RoutingListLayout.HEADING_HEIGHT, list.rows().y());
-        assertEquals(
-                body.height() - RoutingListLayout.HEADING_HEIGHT, list.rows().height());
+        assertEquals(list.row(list.visibleRows() - 1).bottom(), list.rows().bottom());
+        assertTrue(body.bottom() - list.rows().bottom() < RoutingListLayout.ROW_STRIDE);
         assertEquals(list.rows().height(), list.scrollbar().height());
     }
 

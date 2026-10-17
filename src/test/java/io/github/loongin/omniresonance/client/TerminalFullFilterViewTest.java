@@ -76,6 +76,30 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
+    void compactPresetDirectoryUsesSixRowsAndTheFinalPresetRemainsReachable() {
+        var view = new TerminalFilterView(() -> {});
+        var entries = new ArrayList<FilterPresetSummary>();
+        for (int i = 0; i < 7; i++) entries.add(new FilterPresetSummary(new UUID(90, i), "Preset " + i, 0, 0, true));
+        var directory = new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(entries, 0, 7, 1));
+        view.apply(directory);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var layout = TerminalLayout.terminal(640, 360);
+        var widgets = build(view, layout, directory, actions);
+        assertEquals(
+                6, widgets.stream().filter(TerminalRowButton.class::isInstance).count());
+        view.scroll(layout.content().right() - 10, layout.content().y() + 40, -1);
+        widgets = build(view, layout, directory, actions);
+        var rows = widgets.stream()
+                .filter(TerminalRowButton.class::isInstance)
+                .map(TerminalRowButton.class::cast)
+                .toList();
+        assertEquals(6, rows.size());
+        rows.getLast().onPress();
+        assertEquals(new TerminalFilterView.Action.Open(new UUID(90, 6), 0, 0), actions.getLast());
+        assertTrue(rows.getLast().getBottom() <= layout.content().bottom() - 14);
+    }
+
+    @Test
     void typedPrefixesRebuildTheRealFormWithoutLosingTextFocusAndSubmitTypedRules() {
         var layout = TerminalLayout.calculate(960, 540);
         var edit = new NetworkTerminalState.PresetEdit(

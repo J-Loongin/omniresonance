@@ -19,7 +19,9 @@ final class NodeRoutingLayoutTest {
         assertEquals(6, list.row(0).y() - search.bottom());
         assertEquals(search.x(), list.row(0).x());
         assertEquals(search.width(), list.row(0).width());
-        assertEquals(body.bottom(), list.rows().bottom());
+        assertTrue(list.rows().bottom() <= body.bottom());
+        assertTrue(body.bottom() - list.rows().bottom() < RoutingListLayout.ROW_STRIDE);
+        assertEquals(list.row(list.visibleRows() - 1).bottom(), list.rows().bottom());
         assertEquals(list.rows().y(), list.scrollbar().y());
         assertEquals(list.rows().height(), list.scrollbar().height());
         assertTrue(list.row(list.visibleRows() - 1).bottom() <= body.bottom());
@@ -32,7 +34,7 @@ final class NodeRoutingLayoutTest {
         RoutingListLayout list = NodeRoutingView.tunnelList(body, true, 100, 999);
 
         assertEquals(new TerminalLayout.Rect(14, 38, 186, 20), NodeRoutingView.tunnelSearchBounds(body));
-        assertEquals(new TerminalLayout.Rect(14, 64, 186, 106), list.rows());
+        assertEquals(new TerminalLayout.Rect(14, 64, 186, 92), list.rows());
         assertEquals(new TerminalLayout.Rect(14, 136, 186, 20), list.row(3));
         assertEquals(4, list.visibleRows());
         assertEquals(96, list.scroll());
@@ -55,10 +57,15 @@ final class NodeRoutingLayoutTest {
         RoutingListLayout collapsed = NodeRoutingView.tunnelList(body, false, 100, 999);
         RoutingListLayout expanded = NodeRoutingView.tunnelList(body, true, 100, 999);
 
-        assertEquals(new TerminalLayout.Rect(14, 46, 186, 124), collapsed.rows());
+        assertEquals(new TerminalLayout.Rect(14, 42, 186, 116), collapsed.rows());
         assertEquals(5, collapsed.visibleRows());
         assertEquals(95, collapsed.scroll());
         assertEquals(expanded.rows().width(), collapsed.rows().width());
-        assertEquals(expanded.rows().bottom(), collapsed.rows().bottom());
+        assertEquals(
+                expanded.row(expanded.visibleRows() - 1).bottom(),
+                expanded.scrollbar().bottom());
+        assertEquals(
+                collapsed.row(collapsed.visibleRows() - 1).bottom(),
+                collapsed.scrollbar().bottom());
     }
 }

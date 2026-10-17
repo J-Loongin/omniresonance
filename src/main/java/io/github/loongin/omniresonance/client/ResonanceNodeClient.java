@@ -27,11 +27,11 @@ final class ResonanceNodeClient {
                 (net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingIn event) -> SAVES.clear());
         NodeMenuPayloads.installClientReceiver(this::receive);
         NodeMenuPayloads.installChunkStatusReceiver(status -> {
-            if (Minecraft.getInstance().screen instanceof ResonanceNodeScreen screen) screen.applyChunkStatus(status);
+            if (TerminalScreenSessions.current() instanceof ResonanceNodeScreen screen) screen.applyChunkStatus(status);
         });
         NodeMenuPayloads.installTransferReceiver(message -> {
             Minecraft minecraft = Minecraft.getInstance();
-            if (minecraft.screen instanceof ResonanceNodeScreen screen) screen.applyTransfer(message);
+            if (TerminalScreenSessions.current() instanceof ResonanceNodeScreen screen) screen.applyTransfer(message);
         });
     }
 
@@ -44,7 +44,7 @@ final class ResonanceNodeClient {
             net.minecraft.world.entity.player.Inventory inventory,
             net.minecraft.network.chat.Component title) {
         var screen = new ResonanceNodeScreen(menu, inventory, title);
-        if (menu.remoteConfiguration() && Minecraft.getInstance().screen instanceof NetworkSetupScreen parent) {
+        if (menu.remoteConfiguration() && TerminalScreenSessions.current() instanceof NetworkSetupScreen parent) {
             parent.suspendForConfiguration();
             screen.terminalParent(parent);
         }
@@ -75,7 +75,9 @@ final class ResonanceNodeClient {
             NodeMenuResponse response, @org.jetbrains.annotations.Nullable NodePolicySaves.Completion completed) {
         Minecraft minecraft = Minecraft.getInstance();
         ResonanceNodeScreen target =
-                minecraft.screen instanceof ResonanceNodeScreen screen && screen.matches(response) ? screen : null;
+                TerminalScreenSessions.current() instanceof ResonanceNodeScreen screen && screen.matches(response)
+                        ? screen
+                        : null;
         if (target != null) target.applyResponse(response);
         if (completed != null && response instanceof NodeMenuResponse.Failure) {
             var message = net.minecraft.network.chat.Component.translatable(

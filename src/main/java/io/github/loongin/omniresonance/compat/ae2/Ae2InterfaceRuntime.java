@@ -12,7 +12,6 @@ import io.github.loongin.omniresonance.node.NodeManagementService;
 import io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity;
 import io.github.loongin.omniresonance.persistence.SavedNetworkRepository;
 import io.github.loongin.omniresonance.transfer.TransferWorkBudget;
-import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
@@ -42,7 +41,8 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
     final Map<UUID, Ae2InterfaceHost> byMember = new HashMap<>();
     final Set<Ae2InterfaceHost> pending = new LinkedHashSet<>();
     private final Map<ResonanceNodeBlockEntity, Ae2InterfaceHost> hosts = new IdentityHashMap<>();
-    private final ArrayDeque<Ae2InterfaceHost> rotation = new ArrayDeque<>();
+    private final LinkedHashSet<Ae2InterfaceHost> rotation = new LinkedHashSet<>();
+    private final Ae2ChunkIndex<Ae2InterfaceHost> chunks = new Ae2ChunkIndex<>();
     private final Map<UUID, Session> sessions = new HashMap<>();
     private boolean closed;
 
@@ -158,6 +158,8 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
                 || hosts.size() >= 262144) return;
         var host = new Ae2InterfaceHost(this, entity);
         hosts.put(entity, host);
+        chunks.add(
+                host, entity.getLevel().dimension(), net.minecraft.world.level.ChunkPos.asLong(entity.getBlockPos()));
         rotation.addLast(host);
         try {
             host.start();
@@ -187,6 +189,7 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
             var host = rotation.removeFirst();
             if (host.entity.isRemoved()) {
                 hosts.remove(host.entity);
+                chunks.remove(host);
                 host.stop();
                 pending.remove(host);
                 continue;
@@ -218,19 +221,11 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
             net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension,
             net.minecraft.world.level.ChunkPos chunk) {
         check();
-        var iterator = hosts.entrySet().iterator();
-        while (iterator.hasNext()) {
-            var e = iterator.next();
-            var entity = e.getKey();
-            if (entity.getLevel() != null
-                    && entity.getLevel().dimension().equals(dimension)
-                    && new net.minecraft.world.level.ChunkPos(entity.getBlockPos()).equals(chunk)) {
-                var host = e.getValue();
-                iterator.remove();
-                rotation.remove(host);
-                host.stop();
-                pending.remove(host);
-            }
+        for (var host : chunks.removeChunk(dimension, chunk.toLong())) {
+            hosts.remove(host.entity);
+            rotation.remove(host);
+            host.stop();
+            pending.remove(host);
         }
     }
 
@@ -391,6 +386,7 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
         check();
         for (var host : hosts.values()) host.stop();
         hosts.clear();
+        chunks.clear();
         byMember.clear();
         rotation.clear();
         pending.clear();

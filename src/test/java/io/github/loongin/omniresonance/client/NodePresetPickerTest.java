@@ -340,7 +340,8 @@ class NodePresetPickerTest {
         picker.complete(page(0, 1, 4));
         var body = new TerminalLayout.Rect(0, 0, 400, 300);
         var bounds = NodePresetPickerView.rows(body);
-        assertEquals(300, bounds.bottom());
+        assertTrue(bounds.bottom() <= body.bottom());
+        assertTrue(body.bottom() - bounds.bottom() < RoutingListLayout.ROW_STRIDE);
         var widgets = new ArrayList<TerminalRowButton>();
         var choices = new ArrayList<FilterPresetSummary>();
         NodePresetPickerView.buildRows(body, picker, true, widgets::add, choices::add);

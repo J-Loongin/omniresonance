@@ -46,6 +46,46 @@ class TerminalNodesViewTest {
     }
 
     @Test
+    void standardNodePaneUsesSevenFullHeightRows() {
+        var widgets = new ArrayList<AbstractWidget>();
+        var requests = new ArrayList<NodeDirectoryRequest>();
+        var view = new TerminalNodesView(new UUID(1, 1), SESSION, 1, requests::add, (node, teleport) -> {}, () -> {});
+        view.open();
+        var body = new TerminalLayout.Rect(0, 0, 364, 186);
+        view.build(font(), body, widgets::add, widgets::remove, ignored -> {});
+        var rows = new ArrayList<NodeDirectoryPage.Row>();
+        for (int i = 0; i < 9; i++) {
+            var n = new NodeMenuNodeSummary(
+                    new UUID(5, 5),
+                    "Network",
+                    new UUID(10, i),
+                    "Node " + i,
+                    0,
+                    ResourceLocation.parse("minecraft:overworld"),
+                    new BlockPos(i, 80, 2),
+                    NodeForm.BLOCK,
+                    Direction.NORTH,
+                    true,
+                    false,
+                    NodeMode.DIRECT);
+            rows.add(new NodeDirectoryPage.Row(n, i + 1, NodeDirectoryRequest.Status.ONLINE, 0, 0));
+        }
+        view.accept(new NodeDirectoryPage(
+                SESSION, 1, 1, true, false, false, rows, false, false, null, List.of(), 0, 0, List.of(), List.of()));
+        var buttons = widgets.stream()
+                .filter(w -> w.getMessage().getString().startsWith("Node "))
+                .toList();
+        assertEquals(7, buttons.size());
+        for (var button : buttons) {
+            assertEquals(20, button.getHeight());
+            assertTrue(button.getBottom() <= body.bottom());
+        }
+        var geometry = TerminalNodesView.nodeRows(
+                TerminalNodeLayout.calculate(body, false).list(), 9, 0);
+        assertEquals(buttons.getLast().getBottom(), geometry.scrollbar().bottom());
+    }
+
+    @Test
     void recheckSecondEscReturnsToRenameWithoutCancellingTheEdit() {
         var widgets = new ArrayList<AbstractWidget>();
         var requests = new ArrayList<NodeDirectoryRequest>();

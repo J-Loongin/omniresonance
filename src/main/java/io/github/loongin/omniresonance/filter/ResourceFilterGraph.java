@@ -15,20 +15,38 @@ public final class ResourceFilterGraph {
 
     /** Returns the changed preset and all transitive parents, including parents of a currently missing preset. */
     public static Set<UUID> ancestors(Collection<ResourceFilterPreset> presets, UUID changed) {
+        return reverseIndex(presets).ancestors(changed);
+    }
+
+    /** Builds one request-owned reverse graph in O(total rules), without world access or cross-request caching. */
+    public static ReverseIndex reverseIndex(Collection<ResourceFilterPreset> presets) {
         Map<UUID, Set<UUID>> reverse = new HashMap<>();
         for (ResourceFilterPreset preset : presets)
             for (ResourceFilterRule rule : preset.rules())
                 if (rule instanceof ResourceFilterRule.Reference reference)
                     reverse.computeIfAbsent(reference.presetId(), ignored -> new HashSet<>())
                             .add(preset.id());
-        Set<UUID> result = new HashSet<>();
-        ArrayDeque<UUID> pending = new ArrayDeque<>();
-        pending.add(changed);
-        while (!pending.isEmpty()) {
-            UUID id = pending.removeFirst();
-            if (result.add(id)) pending.addAll(reverse.getOrDefault(id, Set.of()));
+        return new ReverseIndex(reverse);
+    }
+
+    /** Immutable request-lifetime graph; each query owns its traversal, never changing the graph or permissions. */
+    public static final class ReverseIndex {
+        private final Map<UUID, Set<UUID>> reverse;
+
+        private ReverseIndex(Map<UUID, Set<UUID>> reverse) {
+            this.reverse = reverse;
         }
-        return Set.copyOf(result);
+
+        public Set<UUID> ancestors(UUID changed) {
+            Set<UUID> result = new HashSet<>();
+            ArrayDeque<UUID> pending = new ArrayDeque<>();
+            pending.add(changed);
+            while (!pending.isEmpty()) {
+                UUID id = pending.removeFirst();
+                if (result.add(id)) pending.addAll(reverse.getOrDefault(id, Set.of()));
+            }
+            return Set.copyOf(result);
+        }
     }
 
     /** Validates prospective affected paths before authority changes; missing saved references remain unresolved. */

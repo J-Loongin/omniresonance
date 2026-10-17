@@ -14,6 +14,29 @@ final class DomainOutputOrderTest {
     private static final ResourceVariant WATER = () -> new ResourceVariantKey(ResourceTypes.FLUID, new byte[] {2});
 
     @Test
+    void equalPriorityBudgetPausesEventuallyReachAvailableTargets() {
+        long[] stock = {100};
+        Sink a = new Sink(1, 0, 0, stock), b = new Sink(2, 0, 0, stock), c = new Sink(3, 0, 100, stock);
+        var order = new DomainOutputOrder(List.of(a, b, c));
+        var cursor = order.cursor(IRON.key());
+        for (int tick = 0; tick < 10 && stock[0] > 0; tick++) order.step(IRON, cursor, budget(2));
+        assertEquals(100, c.received, "Full peers must not permanently consume every tick's probing budget");
+    }
+
+    @Test
+    void resumedTieScanStillRechecksHigherPrioritiesAndRetainsAnIncompleteTarget() {
+        long[] stock = {100};
+        Sink high = new Sink(1, 10, 0, stock), first = new Sink(2, 0, 0, stock), last = new Sink(3, 0, 100, stock);
+        var order = new DomainOutputOrder(List.of(high, first, last));
+        var cursor = order.cursor(IRON.key());
+        order.step(IRON, cursor, budget(2));
+        high.capacity = 100;
+        order.step(IRON, cursor, budget(2));
+        assertEquals(100, high.received);
+        assertEquals(0, last.received);
+    }
+
+    @Test
     void higherPriorityReceivesSixtyBeforeLowerReceivesForty() {
         long[] stock = {100};
         Sink high = new Sink(1, 10, 60, stock), low = new Sink(2, 0, 100, stock);

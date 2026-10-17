@@ -15,7 +15,7 @@ import org.jetbrains.annotations.Nullable;
 import org.lwjgl.glfw.GLFW;
 
 /** Immediate owner-only network selector; no configuration drafts, inventory slots or redundant save footer. */
-final class Ae2InterfaceScreen extends Screen {
+final class Ae2InterfaceScreen extends Screen implements TerminalScreenSessions.Participant {
     private final UUID session;
     private final java.util.function.Consumer<Ae2InterfacePayloads.Request> sender;
     private final BiPredicate<Integer, Integer> terminalKey;
@@ -25,6 +25,7 @@ final class Ae2InterfaceScreen extends Screen {
             new TerminalResultRows(this, this::addRenderableWidget, this::removeWidget);
     private TerminalLayout layout;
     private TerminalLayout.Rect listBounds;
+    private RoutingListLayout listRows;
     private @Nullable UUID selected;
     private String status = "preparing", error = "";
     private int total = -1, scroll, visible;
@@ -172,26 +173,25 @@ final class Ae2InterfaceScreen extends Screen {
             if (focused && canInteract()) setFocused(field);
             top += 26;
         }
-        listBounds = new TerminalLayout.Rect(c.x() + 4, top, c.width() - 8, Math.max(0, c.bottom() - top));
-        visible = Math.max(1, listBounds.height() / 26);
         filtered = ClientTextSearch.filter(
                 (query, matcher, revision) -> catalog.values().stream()
                         .filter(choice -> matcher.test(ClientTextSearch.fold(choice.name()), query))
                         .toList(),
                 ClientTextSearch.fold(search.draft()));
         int count = filtered.size();
-        scroll = Math.clamp(scroll, 0, Math.max(0, count - visible));
+        listRows = RoutingListLayout.calculateRows(
+                new TerminalLayout.Rect(c.x(), top, c.width(), Math.max(0, c.bottom() - top)), count, scroll);
+        listBounds = listRows.bounds();
+        visible = listRows.visibleRows();
+        scroll = listRows.scroll();
         if (!ready) return;
         for (int i = scroll; i < Math.min(count, scroll + visible); i++) {
             var choice = filtered.get(i);
             var label = Component.literal(choice.name());
-            var row = new TerminalRowButton(
-                    listBounds.x(), top + (i - scroll) * 26, listBounds.width() - 8, 20, label, ignored -> {
-                        if (canInteract())
-                            request(
-                                    choice.id().equals(selected) ? 2 : 1,
-                                    choice.id().equals(selected) ? null : choice.id());
-                    });
+            var row = new TerminalRowButton(listRows.row(i - scroll), label, ignored -> {
+                if (canInteract())
+                    request(choice.id().equals(selected) ? 2 : 1, choice.id().equals(selected) ? null : choice.id());
+            });
             row.active = canInteract();
             row.setSelected(feedback == Feedback.ACTIVE && choice.id().equals(selected));
             row.setRetainedSelection(writing && feedback == Feedback.ACTIVE);
@@ -232,9 +232,7 @@ final class Ae2InterfaceScreen extends Screen {
                 c.y() + 19,
                 feedback != Feedback.ACTIVE || state.equals("conflict") ? TerminalTheme.ERROR : TerminalTheme.MUTED,
                 false);
-        if (listBounds != null && ready)
-            TerminalTheme.renderScrollbar(
-                    g, listBounds.right() - 6, listBounds.y(), listBounds.height(), filtered.size(), visible, scroll);
+        if (listBounds != null && ready) TerminalTheme.renderScrollbar(g, listRows);
     }
 
     @Override
@@ -334,8 +332,18 @@ final class Ae2InterfaceScreen extends Screen {
 
     @Override
     public void removed() {
+        TerminalScreenSessions.removed(this, this::disposeSession);
+    }
+
+    @Override
+    public boolean sessionValid() {
+        return !closed;
+    }
+
+    private void disposeSession() {
         if (!closed) {
-            if (net.minecraft.client.Minecraft.getInstance().getConnection() != null) request(3, null);
+            if (net.minecraft.client.Minecraft.getInstance() != null
+                    && net.minecraft.client.Minecraft.getInstance().getConnection() != null) request(3, null);
             closed = true;
         }
     }

@@ -152,9 +152,21 @@ public final class ItemFilterService {
         if ((libraryRevision >= 0 && libraryRevision != owner.presetLibraryRevision()) || offset >= presets.size())
             offset = 0;
         List<FilterPresetSummary> result = new ArrayList<>();
+        boolean ownerAccess = network.ownerId().equals(actor.getUUID());
+        // References only affect administrator permissions. Build them once for this bounded page, never per row.
+        var graph = !ownerAccess && !presets.isEmpty() ? ResourceFilterGraph.reverseIndex(owner.presets()) : null;
+        var direct = graph == null ? null : referenceGroups(network.ownerId());
         for (int i = offset; i < Math.min(presets.size(), offset + 128); i++) {
             ResourceFilterPreset preset = presets.get(i);
-            result.add(summary(preset, canEdit(actor, network.ownerId(), references(network.ownerId(), preset.id()))));
+            boolean editable = ownerAccess;
+            if (!editable) {
+                editable = !repository.hasUnreadableNetworkShards();
+                for (UUID affected : graph.ancestors(preset.id())) {
+                    if (!editable) break;
+                    editable = canEdit(actor, network.ownerId(), direct.getOrDefault(affected, Set.of()));
+                }
+            }
+            result.add(summary(preset, editable));
         }
         return new FilterPresetPage(result, offset, presets.size(), owner.presetLibraryRevision());
     }
@@ -171,7 +183,10 @@ public final class ItemFilterService {
                 owner == null ? null : owner.findPreset(presetId).orElse(null);
         return preset == null
                 ? null
-                : summary(preset, canEdit(actor, network.ownerId(), references(network.ownerId(), presetId)));
+                : summary(
+                        preset,
+                        network.ownerId().equals(actor.getUUID())
+                                || canEdit(actor, network.ownerId(), references(network.ownerId(), presetId)));
     }
 
     public FilterRulePage rules(ServerPlayer actor, UUID networkId, UUID presetId, long revision, int offset) {

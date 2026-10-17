@@ -1210,7 +1210,8 @@ public final class NetworkTerminalService {
             } catch (NetworkSettingsService.Rejected rejected) {
                 session.edits.clear();
                 session.layer = Layer.NETWORK_SETTINGS;
-                if (rejected.reason() == NetworkSettingsService.Reason.STALE_REVISION
+                if (rejected.reason() == NetworkSettingsService.Reason.LOCKED
+                        || rejected.reason() == NetworkSettingsService.Reason.STALE_REVISION
                         || rejected.reason() == NetworkSettingsService.Reason.LOCK_EXPIRED
                         || rejected.reason() == NetworkSettingsService.Reason.HAS_EXCHANGES
                         || rejected.reason() == NetworkSettingsService.Reason.HAS_NODES

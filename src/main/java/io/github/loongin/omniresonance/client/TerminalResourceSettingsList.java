@@ -55,7 +55,10 @@ final class TerminalResourceSettingsList {
 
     static Layout page(TerminalLayout.Rect body, int count, int scroll) {
         var rows = new TerminalLayout.Rect(
-                body.x() + 4, body.y() + 26, Math.max(0, body.width() - 8), Math.max(0, body.height() - 26));
+                body.x() + 4,
+                body.y() + RoutingListLayout.HEADING_HEIGHT,
+                Math.max(0, body.width() - 8),
+                Math.max(0, body.height() - RoutingListLayout.HEADING_HEIGHT));
         return new Layout(
                 new TerminalLayout.Rect(body.x() + 8, body.y() + 5, Math.max(0, body.width() - 16), 10),
                 RoutingListLayout.calculateRows(rows, count, scroll));

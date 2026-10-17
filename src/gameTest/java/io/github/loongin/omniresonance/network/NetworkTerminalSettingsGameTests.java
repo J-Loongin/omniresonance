@@ -51,6 +51,63 @@ public final class NetworkTerminalSettingsGameTests {
 
     private NetworkTerminalSettingsGameTests() {}
 
+    @GameTest(template = "bootstrap")
+    public static void blockedNetworkDeletionReturnsSettingsAndCanRetryInTheSameSession(GameTestHelper helper)
+            throws IOException {
+        for (int kind = 0; kind < 4; kind++) {
+            try (var fixture = new Fixture(helper)) {
+                UUID tunnel = new UUID(995, 1), channel = new UUID(995, 2);
+                var data = fixture.repository.findLoadedNetwork(NETWORK).orElseThrow();
+                data.createTunnel(tunnel, new ManagedName("Tunnel"), channel, new ManagedName("Channel"), -1);
+                var owner = player(helper, OWNER);
+                var administrator = player(helper, ADMINISTRATOR);
+                fixture.open(owner, OWNER_VIEW, OWNER_SESSION);
+                fixture.terminal.handle(
+                        owner, new NetworkTerminalRequest.OpenNetwork(OWNER_VIEW, OWNER_SESSION, 1, NETWORK));
+                fixture.terminal.handle(
+                        owner, new NetworkTerminalRequest.OpenNetworkSettings(OWNER_VIEW, OWNER_SESSION, 2));
+                state(
+                        helper,
+                        fixture.terminal.handle(
+                                owner, new NetworkTerminalRequest.RequestDeleteNetwork(OWNER_VIEW, OWNER_SESSION, 3)),
+                        NetworkTerminalState.NetworkDelete.class);
+                var held =
+                        switch (kind) {
+                            case 0 -> fixture.topology.acquireTunnelCollection(administrator, NETWORK);
+                            case 1 -> fixture.topology.acquireTunnel(administrator, NETWORK, tunnel);
+                            case 2 -> fixture.topology.acquireChannelCollection(administrator, NETWORK, tunnel);
+                            default -> fixture.topology.acquireChannel(administrator, NETWORK, channel);
+                        };
+                data.setDirty(false);
+                var response = fixture.terminal.handle(
+                        owner, new NetworkTerminalRequest.ConfirmDeleteNetwork(OWNER_VIEW, OWNER_SESSION, 4));
+                helper.assertTrue(
+                        response instanceof NetworkTerminalResponse.Failure failed
+                                && failed.reason() == NetworkTerminalResponse.Reason.LOCKED
+                                && failed.state() instanceof NetworkTerminalState.NetworkSettings,
+                        "Locked child left the client on a released deletion confirmation");
+                helper.assertTrue(
+                        fixture.directory.find(NETWORK).isPresent() && !data.isDirty(),
+                        "A blocked deletion changed the network");
+                fixture.topology.cancel(administrator, held);
+                state(
+                        helper,
+                        fixture.terminal.handle(
+                                owner, new NetworkTerminalRequest.RequestDeleteNetwork(OWNER_VIEW, OWNER_SESSION, 5)),
+                        NetworkTerminalState.NetworkDelete.class);
+                helper.assertTrue(
+                        fixture.terminal.handle(
+                                        owner,
+                                        new NetworkTerminalRequest.ConfirmDeleteNetwork(OWNER_VIEW, OWNER_SESSION, 6))
+                                instanceof NetworkTerminalResponse.Success,
+                        "A fresh confirmation could not succeed in the original session after the child edit ended");
+                helper.assertTrue(
+                        fixture.directory.find(NETWORK).isEmpty(), "Confirmed retry did not delete the empty network");
+            }
+        }
+        helper.succeed();
+    }
+
     @GameTest(template = "bootstrap", timeoutTicks = 80)
     public static void statusSubscriptionRefreshesAndRevocationClearsTheSnapshot(GameTestHelper helper)
             throws Exception {

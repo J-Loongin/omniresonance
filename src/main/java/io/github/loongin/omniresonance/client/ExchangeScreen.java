@@ -34,7 +34,7 @@ import org.jetbrains.annotations.Nullable;
 import org.lwjgl.glfw.GLFW;
 
 /** Client-only exchange child; the parent owns the authenticated terminal session and request sequence. */
-final class ExchangeScreen extends Screen {
+final class ExchangeScreen extends Screen implements TerminalScreenSessions.Participant {
     private record FormLabel(Component text, TerminalLayout.Rect bounds) {}
 
     private final List<FormLabel> formLabels = new ArrayList<>();
@@ -112,6 +112,7 @@ final class ExchangeScreen extends Screen {
     private String filterName = "", receiverName = "", receiverOwner = "", proposalCode = "";
     private @Nullable UUID receiver;
     private long defaultRate = ExchangeTerms.DEFAULT_RATE, libraryRevision, tick, sentTick;
+    private @Nullable RoutingListLayout ordinaryRows;
     private int interval = 1, firstRow, visibleRows;
     private boolean allTypes = true, history, owner, opened, pending, dirty, submitted, leaving, editingExisting;
     private @Nullable ExchangeRequest outstanding;
@@ -622,6 +623,7 @@ final class ExchangeScreen extends Screen {
         results.clear();
         modalBackdrop.clear();
         parameterRows = null;
+        ordinaryRows = null;
         formLabels.clear();
         clearWidgets();
         setFocused(null);
@@ -830,20 +832,18 @@ final class ExchangeScreen extends Screen {
                                 .toList(),
                         ClientTextSearch.fold(search.draft()))
                 : content;
-        visibleRows = Math.max(1, listBounds.height() / 26);
-        firstRow = Math.clamp(firstRow, 0, Math.max(0, rows.size() - visibleRows));
+        ordinaryRows = RoutingListLayout.calculateRows(
+                new TerminalLayout.Rect(c.x() + 4, y, Math.max(0, c.width() - 8), Math.max(0, bottom - y)),
+                rows.size(),
+                firstRow);
+        listBounds = ordinaryRows.bounds();
+        visibleRows = ordinaryRows.visibleRows();
+        firstRow = ordinaryRows.scroll();
         for (int i = firstRow; i < Math.min(rows.size(), firstRow + visibleRows); i++) {
             Row row = rows.get(i);
-            var button = new TerminalRowButton(
-                    listBounds.x(),
-                    listBounds.y() + (i - firstRow) * 26,
-                    listBounds.width() - 8,
-                    20,
-                    row.text(),
-                    ignored -> {
-                        if (!pending && !uncertain && row.action() != null)
-                            row.action().run();
-                    });
+            var button = new TerminalRowButton(ordinaryRows.row(i - firstRow), row.text(), ignored -> {
+                if (!pending && !uncertain && row.action() != null) row.action().run();
+            });
             if (row.action() == null) button.setReadOnly();
             else button.active = !pending && !uncertain;
             button.setSelected(row.selected());
@@ -1630,6 +1630,7 @@ final class ExchangeScreen extends Screen {
             ResourceTypeSelectionView.render(g, font, layout.content(), resourceSelection, tick);
         else if (page == Page.RATES)
             TerminalResourceSettingsList.renderPage(g, font, layout.content(), parameters.size(), firstRow);
+        else if (ordinaryRows != null) TerminalTheme.renderScrollbar(g, ordinaryRows);
         else if (listBounds != null)
             TerminalTheme.renderScrollbar(
                     g,
@@ -1867,6 +1868,15 @@ final class ExchangeScreen extends Screen {
 
     @Override
     public void removed() {
+        TerminalScreenSessions.removed(this, this::disposeSession);
+    }
+
+    @Override
+    public boolean sessionValid() {
+        return !leaving;
+    }
+
+    private void disposeSession() {
         if (!leaving) parent.closeFromConfiguration();
         upload.clear();
         downloaded = null;

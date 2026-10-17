@@ -63,7 +63,7 @@ final class TerminalNodesView {
     private long catalogStartedTick;
     private String query = "", nameDraft = "", originalName = "";
     private boolean pending, closeAfterDiscard, landAtEnd, detailAtEnd;
-    private int listScroll, detailScroll, detailMaximum, rowHeight = 26, detailOffset;
+    private int listScroll, detailScroll, detailMaximum, detailOffset;
     private long sequence, ticks, anchor;
     private boolean before;
     private NodeDirectoryRequest.Action lastAction = NodeDirectoryRequest.Action.QUERY;
@@ -318,6 +318,7 @@ final class TerminalNodesView {
     }
 
     private void buildPage(boolean focus) {
+        listRows = null;
         var bar = layout.toolbar();
         var searchToggle = new TerminalSearchButton(
                 headerSearchBounds, search.expanded(), text("search"), ignored -> toggleSearch());
@@ -350,16 +351,12 @@ final class TerminalNodesView {
             return;
         }
         if (page == null || !page.available()) return;
-        rowHeight = 26;
-        listScroll = Math.clamp(listScroll, 0, Math.max(0, visibleNodes().size() - visibleRows()));
+        listRows = nodeRows(layout.list(), visibleNodes().size(), listScroll);
+        listScroll = listRows.scroll();
         {
             for (int i = 0; i < visibleRows() && i + listScroll < visibleNodes().size(); i++) {
                 var row = visibleNodes().get(i + listScroll);
-                var r = new TerminalLayout.Rect(
-                        layout.list().x() + 4,
-                        layout.list().y() + 6 + i * rowHeight,
-                        TerminalLayout.reservedScrollContentWidth(layout.list().width(), 4),
-                        20);
+                var r = listRows.row(i);
                 var b = new TerminalButton(
                         r.x(),
                         r.y(),
@@ -377,8 +374,19 @@ final class TerminalNodesView {
         if (selected != null && page.selected() != null) buildDetail();
     }
 
+    private RoutingListLayout listRows;
+
+    static RoutingListLayout nodeRows(TerminalLayout.Rect pane, int count, int scroll) {
+        int inset = Math.min(4, pane.height());
+        return RoutingListLayout.calculateRows(
+                new TerminalLayout.Rect(
+                        pane.x(), pane.y() + inset, pane.width(), Math.max(0, pane.height() - inset - 4)),
+                count,
+                scroll);
+    }
+
     private int visibleRows() {
-        return Math.max(1, (layout.list().height() - 12) / rowHeight);
+        return listRows == null ? 1 : listRows.visibleRows();
     }
 
     private static Component status(NodeDirectoryRequest.Status status) {
@@ -909,14 +917,7 @@ final class TerminalNodesView {
                         && !catalogFailed
                         && TerminalInteractionPolicy.loadingVisible(ticks - catalogStartedTick))
                     lines(g, List.of(text("loading")), r.x() + 8, r.y() + 8, r.width() - 16);
-                TerminalTheme.renderScrollbar(
-                        g,
-                        r.right() - 7,
-                        r.y() + 6,
-                        r.height() - 12,
-                        visibleNodes().size(),
-                        visibleRows(),
-                        listScroll);
+                if (listRows != null) TerminalTheme.renderScrollbar(g, listRows);
             }
             if (selected != null && page.selected() != null) {
                 var r = layout.detail();
