@@ -43,12 +43,14 @@ class NodePresetPickerTest {
         try {
             ClientTextSearch.install((name, query) -> name.equals("测试预设") && query.equals("csys"));
             picker.edit("csys");
+            picker.tick();
             assertEquals(2, picker.count());
             assertNull(picker.nextRequest());
             assertEquals("测试预设", picker.page().entries().getFirst().name());
             ClientTextSearch.usePlain();
             picker.edit("");
             picker.edit("csys");
+            picker.tick();
             assertEquals(1, picker.count());
         } finally {
             ClientTextSearch.usePlain();
@@ -66,7 +68,7 @@ class NodePresetPickerTest {
                 false);
         for (int[] size : new int[][] {{320, 240}, {427, 240}}) {
             var body = TerminalLayout.calculate(size[0], size[1]).content();
-            assertNull(NodePresetPickerView.buildSearch(font, body, picker, () -> {}));
+            assertNull(NodePresetPickerView.buildSearch(font, body, picker));
             assertEquals(NodeRoutingView.tunnelList(body, false, 0, 0).rows(), NodePresetPickerView.rows(body));
         }
     }
@@ -98,6 +100,7 @@ class NodePresetPickerTest {
         assertTrue(picker.ready());
         assertNull(picker.nextRequest());
         field.setValue("");
+        picker.tick();
         for (int i = 0; i < 140; i++) picker.wheel(-1, 10);
         host.refresh();
         assertTrue(host.getFocused() == field);
@@ -155,7 +158,7 @@ class NodePresetPickerTest {
                     0,
                     0,
                     host.field,
-                    true,
+                    () -> true,
                     () -> events.add("close"),
                     search,
                     true,
@@ -177,8 +180,7 @@ class NodePresetPickerTest {
                             },
                             false),
                     host.body,
-                    picker,
-                    () -> {}));
+                    picker));
         }
         for (int key : new int[] {org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER, org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER}) {
             assertFalse(TerminalInteractionPolicy.routeSearchKey(
@@ -186,7 +188,7 @@ class NodePresetPickerTest {
                     0,
                     org.lwjgl.glfw.GLFW.GLFW_MOD_CONTROL,
                     null,
-                    false,
+                    () -> false,
                     () -> events.add("close"),
                     search,
                     true,
@@ -199,7 +201,7 @@ class NodePresetPickerTest {
                     0,
                     org.lwjgl.glfw.GLFW.GLFW_MOD_SHIFT,
                     null,
-                    false,
+                    () -> false,
                     () -> events.add("close"),
                     search,
                     true,
@@ -208,19 +210,19 @@ class NodePresetPickerTest {
                         events.add("toggle");
                     }));
             assertFalse(TerminalInteractionPolicy.routeSearchKey(
-                    key, 0, 0, null, false, () -> events.add("close"), search, false, () -> {
+                    key, 0, 0, null, () -> false, () -> events.add("close"), search, false, () -> {
                         search.toggle(0);
                         events.add("toggle");
                     }));
             assertTrue(TerminalInteractionPolicy.routeSearchKey(
-                    key, 0, 0, null, true, () -> events.add("close"), search, true, () -> {
+                    key, 0, 0, null, () -> true, () -> events.add("close"), search, true, () -> {
                         search.toggle(0);
                         events.add("toggle");
                     }));
             assertEquals("close", events.removeLast());
             assertFalse(search.expanded());
             assertTrue(TerminalInteractionPolicy.routeSearchKey(
-                    key, 0, 0, null, false, () -> events.add("close"), search, true, () -> {
+                    key, 0, 0, null, () -> false, () -> events.add("close"), search, true, () -> {
                         search.toggle(0);
                         events.add("toggle");
                     }));
@@ -230,9 +232,49 @@ class NodePresetPickerTest {
         }
     }
 
+    @Test
+    void realSearchFieldCoalescesChangesBeforeMatchingOrRebuildingRows() {
+        var picker = new NodePresetPicker();
+        picker.open();
+        for (int offset : new int[] {0, 128}) {
+            picker.nextRequest();
+            picker.complete(page(offset, 256, 4));
+        }
+        picker.search().open();
+        var host = new PickerHost(picker);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            ClientTextSearch.install((name, query) -> {
+                calls.incrementAndGet();
+                return name.contains(query);
+            });
+            host.field.setValue("p");
+            host.field.setValue("pr");
+            host.field.setValue("preset 255");
+            assertEquals(0, calls.get(), "Typing must defer matching until the next client tick");
+            assertEquals(0, host.refreshes, "Typing rebuilt result controls before the scheduled update");
+            assertTrue(picker.search().due(1));
+            assertTrue(picker.tick());
+            host.refresh();
+            assertEquals(256, calls.get(), "Three edits must perform only one full catalog match");
+            assertEquals(1, host.refreshes);
+            assertEquals("Preset 255", picker.page().entries().getFirst().name());
+            assertFalse(picker.tick());
+            assertEquals(256, calls.get());
+            host.field.setValue("");
+            host.field.setValue("missing");
+            picker.close();
+            assertFalse(picker.tick());
+            assertEquals(256, calls.get(), "Closed picker resumed stale search work");
+        } finally {
+            ClientTextSearch.usePlain();
+        }
+    }
+
     private static final class PickerHost extends net.minecraft.client.gui.screens.Screen {
         private final TerminalLayout.Rect body = new TerminalLayout.Rect(0, 0, 400, 300);
         private final NodePresetPicker picker;
+        private int refreshes;
         private final TerminalResultRows rows =
                 new TerminalResultRows(this, this::addRenderableWidget, this::removeWidget);
         private final TerminalSearchBox field;
@@ -262,10 +304,11 @@ class NodePresetPickerTest {
                             return tail ? text.substring(text.length() - length) : text.substring(0, length);
                         }
                     };
-            field = addRenderableWidget(NodePresetPickerView.buildSearch(metrics, body, picker, this::refresh));
+            field = addRenderableWidget(NodePresetPickerView.buildSearch(metrics, body, picker));
         }
 
         private void refresh() {
+            refreshes++;
             rows.clear();
             NodePresetPickerView.buildRows(body, picker, true, rows::add, preset -> {});
         }
@@ -285,9 +328,11 @@ class NodePresetPickerTest {
         assertTrue(picker.ready());
         assertEquals(2, picker.count());
         picker.edit("missing");
+        picker.tick();
         assertEquals(1, picker.count());
         assertNull(picker.nextRequest());
         picker.edit("");
+        picker.tick();
         assertEquals(2, picker.count());
         assertEquals(0, picker.scroll());
     }

@@ -428,6 +428,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         }
         if (resourceSelection != null && modal == Modal.NONE && resourceSelection.tick(clientTicks))
             updateResourceRows();
+        if (choosingItemPreset && modal == Modal.NONE && presetPicker.tick()) updatePresetResultRows();
         applyLocalTunnelSearch();
         requestPresetQuery();
         if (clientTicks % 20 == 0
@@ -1332,7 +1333,7 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
     }
 
     private void buildItemPresetChoices(NodeMenuState.ResourceEdit edit) {
-        searchField = NodePresetPickerView.buildSearch(font, bodyBounds, presetPicker, this::updatePresetResultRows);
+        searchField = NodePresetPickerView.buildSearch(font, bodyBounds, presetPicker);
         if (searchField != null) addRenderableWidget(searchField);
         updatePresetResultRows();
     }
@@ -2066,9 +2067,10 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
                 scanCode,
                 modifiers,
                 getFocused(),
-                minecraft != null
-                        && TerminalInteractionPolicy.inventoryShortcut(
-                                minecraft.options.keyInventory, getFocused(), keyCode, scanCode),
+                () -> NetworkTerminalClient.isTerminalKey(keyCode, scanCode)
+                        || minecraft != null
+                                && TerminalInteractionPolicy.inventoryShortcut(
+                                        minecraft.options.keyInventory, getFocused(), keyCode, scanCode),
                 this::closeFromInventory,
                 activeSearch(),
                 searchEligible(),

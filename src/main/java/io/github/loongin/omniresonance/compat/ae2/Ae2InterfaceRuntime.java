@@ -41,6 +41,8 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
     final Map<UUID, Ae2InterfaceHost> byMember = new HashMap<>();
     final Set<Ae2InterfaceHost> pending = new LinkedHashSet<>();
     private final Map<ResonanceNodeBlockEntity, Ae2InterfaceHost> hosts = new IdentityHashMap<>();
+    // One entry per loaded host (including unbound interfaces); removed on replacement, unload or server stop.
+    private final Map<GlobalPos, Ae2InterfaceHost> byPosition = new HashMap<>();
     private final LinkedHashSet<Ae2InterfaceHost> rotation = new LinkedHashSet<>();
     private final Ae2ChunkIndex<Ae2InterfaceHost> chunks = new Ae2ChunkIndex<>();
     private final Map<UUID, Session> sessions = new HashMap<>();
@@ -157,7 +159,11 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
                 || hosts.containsKey(entity)
                 || hosts.size() >= 262144) return;
         var host = new Ae2InterfaceHost(this, entity);
+        var position = GlobalPos.of(entity.getLevel().dimension(), entity.getBlockPos());
+        var previous = byPosition.get(position);
+        if (previous != null) retire(previous);
         hosts.put(entity, host);
+        byPosition.put(position, host);
         chunks.add(
                 host, entity.getLevel().dimension(), net.minecraft.world.level.ChunkPos.asLong(entity.getBlockPos()));
         rotation.addLast(host);
@@ -188,10 +194,7 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
         for (int i = 0; i < count && budget.canFit(0); i++) {
             var host = rotation.removeFirst();
             if (host.entity.isRemoved()) {
-                hosts.remove(host.entity);
-                chunks.remove(host);
-                host.stop();
-                pending.remove(host);
+                retire(host);
                 continue;
             }
             rotation.addLast(host);
@@ -222,11 +225,29 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
             net.minecraft.world.level.ChunkPos chunk) {
         check();
         for (var host : chunks.removeChunk(dimension, chunk.toLong())) {
-            hosts.remove(host.entity);
-            rotation.remove(host);
-            host.stop();
-            pending.remove(host);
+            retire(host);
         }
+    }
+
+    /** Server-thread removal notification. Retires only the exact loaded identity, without a scan or chunk load.
+     * Not a simulation: removes runtime memberships and destroys the AE node; owns no resource quantities. */
+    public void removed(io.github.loongin.omniresonance.node.NodeLifecycleEvent.Removed event) {
+        check();
+        var host = byPosition.get(GlobalPos.of(event.level().dimension(), event.position()));
+        if (host != null
+                && host.entity
+                        .state()
+                        .map(s -> s.nodeId().equals(event.nodeId()))
+                        .orElse(false)) retire(host);
+    }
+
+    private void retire(Ae2InterfaceHost host) {
+        hosts.remove(host.entity, host);
+        byPosition.remove(GlobalPos.of(host.entity.getLevel().dimension(), host.entity.getBlockPos()), host);
+        chunks.remove(host);
+        rotation.remove(host);
+        host.stop();
+        pending.remove(host);
     }
 
     public void request(ServerPlayer player, Ae2InterfacePayloads.Request request) {
@@ -386,6 +407,7 @@ public final class Ae2InterfaceRuntime implements AutoCloseable {
         check();
         for (var host : hosts.values()) host.stop();
         hosts.clear();
+        byPosition.clear();
         chunks.clear();
         byMember.clear();
         rotation.clear();

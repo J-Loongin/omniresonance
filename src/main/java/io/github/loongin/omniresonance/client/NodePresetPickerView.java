@@ -23,13 +23,10 @@ final class NodePresetPickerView {
 
     @org.jetbrains.annotations.Nullable
     static TerminalSearchBox buildSearch(
-            net.minecraft.client.gui.Font font, TerminalLayout.Rect body, NodePresetPicker picker, Runnable changed) {
+            net.minecraft.client.gui.Font font, TerminalLayout.Rect body, NodePresetPicker picker) {
         if (!picker.search().expanded()) return null;
         var bounds = search(body);
-        var field = picker.search().field(font, bounds, NodeItemPolicyView.text("search"), 256, value -> {
-            picker.edit(value);
-            changed.run();
-        });
+        var field = picker.search().field(font, bounds, NodeItemPolicyView.text("search"), 256, picker::edit);
         return field;
     }
 

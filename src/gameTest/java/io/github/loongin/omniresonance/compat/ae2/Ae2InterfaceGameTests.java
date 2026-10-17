@@ -53,6 +53,40 @@ public final class Ae2InterfaceGameTests {
         helper.succeed();
     }
 
+    @GameTest(template = "bootstrap", timeoutTicks = 200)
+    public static void removedInterfaceRetiresImmediatelyBeyondOneRotationBatch(GameTestHelper helper) {
+        if (net.neoforged.fml.ModList.get().isLoaded("ae2")) Removal.run(helper);
+        else helper.succeed();
+    }
+
+    private static final class Removal {
+        static void run(GameTestHelper h) {
+            var runtime = Ae2InterfaceRuntime.find(h.getLevel().getServer());
+            var entities = new java.util.ArrayList<io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity>();
+            for (int i = 0; i < 65; i++) {
+                var pos = new net.minecraft.core.BlockPos(i % 5, 2 + i / 25, (i / 5) % 5);
+                h.setBlock(pos, Ae2InterfaceContent.BLOCK.get());
+                var entity = Lifecycle.entity(h, pos);
+                runtime.loaded(entity);
+                entities.add(entity);
+            }
+            var removed = entities.getLast();
+            var host = runtime.host(removed);
+            h.assertTrue(host != null, "Removal fixture never registered the last host");
+            h.getLevel()
+                    .setBlockAndUpdate(
+                            removed.getBlockPos(), net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+            h.assertTrue(
+                    runtime.host(removed) == null && host.stopped,
+                    "Removed interface waited for the rotating preparation budget");
+            for (int i = 0; i < entities.size() - 1; i++)
+                h.assertTrue(runtime.host(entities.get(i)) != null, "Removal retired an unrelated interface");
+            runtime.unload(h.getLevel().dimension(), new net.minecraft.world.level.ChunkPos(removed.getBlockPos()));
+            h.assertTrue(host.stopped, "Repeated unload revived a retired host");
+            h.succeed();
+        }
+    }
+
     private static final class LegacyFood {
         static void run(GameTestHelper helper) {
             var provider = helper.getLevel().registryAccess();
@@ -449,7 +483,14 @@ public final class Ae2InterfaceGameTests {
                                         appeng.api.networking.security.IActionSource.empty())
                                 == 0,
                         "Previously mounted facade bypassed duplicate conflict");
+                var retired = runtime.host(second);
                 h.setBlock(b, net.minecraft.world.level.block.Blocks.AIR);
+                h.assertTrue(
+                        runtime.host(second) == null && retired.stopped,
+                        "Duplicate member survived physical removal until the next rotation");
+                h.assertTrue(
+                        runtime.byMember.get(retired.member) != retired,
+                        "Removed duplicate retained its mount membership");
             });
             h.runAfterDelay(165, () -> {
                 var first = (io.github.loongin.omniresonance.node.ResonanceNodeBlockEntity)

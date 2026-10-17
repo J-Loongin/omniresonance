@@ -1265,6 +1265,13 @@ public final class ResonanceNodeMenu extends AbstractContainerMenu {
     }
 
     private void refreshRoot(ServerPlayer player) {
+        if (remoteConfiguration) {
+            // A remote menu is a single authorized editor, not physical node navigation.
+            // Its lease has been released: report the original failure and retire the menu.
+            state = new NodeMenuState.Unavailable();
+            linkedNetworkId = null;
+            return;
+        }
         NodeMenuService.Initial initial = service.initial(player, nodePosition);
         if (!initial.nodeId().equals(nodeId)) {
             state = new NodeMenuState.Unavailable();

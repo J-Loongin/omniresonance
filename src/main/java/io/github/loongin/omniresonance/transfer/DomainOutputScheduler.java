@@ -338,7 +338,10 @@ public final class DomainOutputScheduler {
             for (int offset = 0; offset < 6; offset++) {
                 int face = (t.faceCursor + offset) % 6;
                 if ((environment.faces(c) & (1 << face)) == 0) continue;
-                if (!b.canStart()) return waitBudget();
+                if (!b.canStart()) {
+                    t.faceCursor = face;
+                    return waitBudget();
+                }
                 var handle = environment.resolve(c, t.type, Direction.from3DDataValue(face), b);
                 if (handle == null) continue;
                 Probe p = t.probes[face];
@@ -347,20 +350,21 @@ public final class DomainOutputScheduler {
                     t.probes[face] = p;
                 }
                 if (p.refresh) {
-                    if (!b.canStart()) return waitBudget();
+                    if (!b.canStart()) return pauseFace(t, face);
                     p.count = handle.port().targetViews(b);
                     p.refresh = false;
                     p.view = p.count == 0 ? 0 : p.view % p.count;
                     if (p.count == 0) continue;
                 }
                 if (p.count > 0) {
-                    if (!b.canStart()) return waitBudget();
+                    if (!b.canStart()) return pauseFace(t, face);
                     var attempted = commit(n, s, t, variant, token, p.handle, p.view, face, b, slowBefore);
+                    if (attempted.state() == DomainOutputOrder.State.WAITING_BUDGET) return pauseFace(t, face);
                     if (attempted.state() != DomainOutputOrder.State.NO_CAPACITY) return attempted;
                     p.view = (p.view + 1) % p.count;
                 }
                 p.refresh = true;
-                if (!b.canStart()) return waitBudget();
+                if (!b.canStart()) return pauseFace(t, face);
                 int count = handle.port().targetViews(b);
                 p.count = count;
                 p.refresh = false;
@@ -368,20 +372,21 @@ public final class DomainOutputScheduler {
                 for (int slot = 0; slot < count; slot++) {
                     if (!b.canStart()) {
                         p.refresh = true;
-                        return waitBudget();
+                        return pauseFace(t, face);
                     }
                     int at = (int) (((long) start + slot) % count);
                     var attempted = commit(n, s, t, variant, token, handle, at, face, b, slowBefore);
+                    if (attempted.state() == DomainOutputOrder.State.WAITING_BUDGET) return pauseFace(t, face);
                     if (attempted.state() != DomainOutputOrder.State.NO_CAPACITY) return attempted;
                     p.view = (at + 1) % count;
                 }
                 if (!b.canStart()) {
                     p.refresh = true;
-                    return waitBudget();
+                    return pauseFace(t, face);
                 }
                 if (handle.port().targetViews(b) != count) {
                     p.refresh = true;
-                    return waitBudget();
+                    return pauseFace(t, face);
                 }
             }
             return no();
@@ -402,6 +407,13 @@ public final class DomainOutputScheduler {
                 finish(s, t, n.tick, n.settings, true);
             }
         }
+    }
+
+    private static DomainOutputOrder.Attempt pauseFace(Type type, int face) {
+        // Each face retains its slot hint. Yield discovery to the next face, but never turn
+        // partial/previous-tick refusals into proof that a lower-priority output may receive.
+        type.faceCursor = (face + 1) % 6;
+        return waitBudget();
     }
 
     private DomainOutputOrder.Attempt commit(

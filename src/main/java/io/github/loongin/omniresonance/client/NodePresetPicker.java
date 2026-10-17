@@ -11,7 +11,7 @@ final class NodePresetPicker {
 
     private final ClientSearchState search = new ClientSearchState();
     private final PresetSearchCatalog catalog = new PresetSearchCatalog();
-    private long generation;
+    private long generation, ticks;
     private boolean open;
     private int scroll;
     private int visibleRows = 1;
@@ -65,16 +65,22 @@ final class NodePresetPicker {
     }
 
     boolean closeSearch() {
-        if (!search.close(0)) return false;
+        if (!search.close(ticks)) return false;
         updateResults(0);
         return true;
     }
 
     void edit(String value) {
         if (search.expanded() && !search.draft().equals(value)) {
-            search.edit(value, 0);
-            updateResults(0);
+            search.edit(value, ticks);
         }
+    }
+
+    boolean tick() {
+        ticks++;
+        if (!open || !catalog.ready() || !search.due(ticks)) return false;
+        updateResults(0);
+        return true;
     }
 
     private void updateResults(int offset) {
@@ -102,7 +108,6 @@ final class NodePresetPicker {
     @Nullable
     Request nextRequest() {
         if (!open || pending != null || queued == null) return null;
-        search.handled();
         pending = queued;
         queued = null;
         return pending;
@@ -128,7 +133,7 @@ final class NodePresetPicker {
 
     void wheel(double amount, int rows) {
         viewport(rows);
-        if (!ready()) return;
+        if (!ready() || search.due(ticks + 1)) return;
         var result = PagedListScroll.navigate(scroll, count(), visibleRows, page.offset() > 0, page.hasNext(), amount);
         scroll = result.scroll();
         if (result.pageRequest() != PagedListScroll.PageRequest.NONE) {

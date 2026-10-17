@@ -143,6 +143,71 @@ final class DomainOutputSchedulerTest {
                 env.targets.get(LOW).stacks[0].isEmpty(), "Lower output bypassed current higher-capacity verification");
     }
 
+    @Test
+    void fullLargePeerDoesNotStarveAnAvailableEqualPriorityOutput() {
+        Env env = new Env();
+        env.deposit(100);
+        env.targets.put(HIGH, fullTarget(32));
+        var scheduler = new DomainOutputScheduler(env);
+        scheduler.replaceNetwork(NET, List.of(config(HIGH, 0, PRESET), config(LOW, 0, PRESET)), 0);
+        for (int tick = 0; tick < 200; tick++) run(scheduler, tick, 16);
+        assertEquals(100, env.targets.get(LOW).stacks[0].getCount());
+        assertEquals(0, env.ledger.amount(IRON.key()));
+    }
+
+    @Test
+    void fullFirstFaceDoesNotStarveAnotherFaceOfTheSameOutput() {
+        Env env = new Env();
+        env.deposit(100);
+        env.targets.put(HIGH, fullTarget(32));
+        env.secondFace = new FakeItemHandler(1);
+        var scheduler = new DomainOutputScheduler(env);
+        scheduler.replaceNetwork(NET, List.of(config(HIGH, 0, PRESET)), 0);
+        for (int tick = 0; tick < 200; tick++) run(scheduler, tick, 16);
+        assertEquals(100, env.secondFace.stacks[0].getCount());
+        assertEquals(0, env.ledger.amount(IRON.key()));
+    }
+
+    @Test
+    void faceContinuationHandlesBudgetBoundariesBeforeAndAfterResolution() {
+        for (int calls = 1; calls <= 24; calls++) {
+            Env env = new Env();
+            env.deposit(100);
+            env.targets.put(HIGH, fullTarget(1));
+            env.secondFace = new FakeItemHandler(1);
+            var scheduler = new DomainOutputScheduler(env);
+            scheduler.replaceNetwork(NET, List.of(config(HIGH, 0, PRESET)), 0);
+            for (int tick = 0; tick < 200; tick++) run(scheduler, tick, calls);
+            assertEquals(100, env.secondFace.stacks[0].getCount(), "Starved second face at budget " + calls);
+            assertEquals(0, env.ledger.amount(IRON.key()));
+        }
+    }
+
+    @Test
+    void partialLargeScanNeverAuthorizesLowerPriorityAndStillFindsNewCapacity() {
+        Env env = new Env();
+        env.deposit(100);
+        var high = fullTarget(32);
+        env.targets.put(HIGH, high);
+        var scheduler = new DomainOutputScheduler(env);
+        scheduler.replaceNetwork(NET, List.of(config(HIGH, 10, PRESET), config(LOW, 0, PRESET)), 0);
+        for (int tick = 0; tick < 20; tick++) run(scheduler, tick, 16);
+        assertTrue(env.targets.get(LOW).stacks[0].isEmpty());
+        high.stacks[31] = ItemStack.EMPTY;
+        for (int tick = 20; tick < 80; tick++) run(scheduler, tick, 16);
+        assertEquals(64, high.stacks[31].getCount());
+        assertTrue(high.stacks[31].is(Items.IRON_INGOT));
+        assertTrue(env.targets.get(LOW).stacks[0].isEmpty());
+        assertEquals(36, env.ledger.amount(IRON.key()));
+    }
+
+    private static FakeItemHandler fullTarget(int slots) {
+        var target = new FakeItemHandler(slots);
+        target.capacity = 64;
+        for (int i = 0; i < slots; i++) target.stacks[i] = new ItemStack(Items.GOLD_INGOT, 64);
+        return target;
+    }
+
     private static DomainOutputScheduler.Configuration config(UUID node, int priority, UUID preset) {
         return new DomainOutputScheduler.Configuration(
                 NET,
@@ -172,7 +237,8 @@ final class DomainOutputSchedulerTest {
         final DomainLedger ledger = new DomainLedger(NET, Map.of(), index -> StorageBucketData.create(NET, index));
         final RecoveryBuffer recovery = new RecoveryBuffer(() -> {});
         final Map<UUID, FakeItemHandler> targets = new HashMap<>();
-        final Map<UUID, ResourceTransferEngine.Handle> handles = new HashMap<>();
+        final Map<Object, ResourceTransferEngine.Handle> handles = new HashMap<>();
+        FakeItemHandler secondFace;
         int resolutions;
         ResourceFilterCompiler.Compiled compiled;
 
@@ -209,7 +275,7 @@ final class DomainOutputSchedulerTest {
         }
 
         public int faces(DomainOutputScheduler.Configuration c) {
-            return 1;
+            return secondFace == null ? 1 : 3;
         }
 
         public DomainLedger ledger(UUID network) {
@@ -237,17 +303,18 @@ final class DomainOutputSchedulerTest {
                 ResourceLocation type,
                 Direction face,
                 TransferWorkBudget budget) {
-            return handles.computeIfAbsent(c.nodeId(), id -> {
+            var target = secondFace != null && face == Direction.UP ? secondFace : targets.get(c.nodeId());
+            return handles.computeIfAbsent(target, id -> {
                 resolutions++;
                 budget.beforeCall();
-                var port = new ItemResourcePort(targets.get(id), REGISTRIES);
+                var port = new ItemResourcePort(target, REGISTRIES);
                 return new ResourceTransferEngine.Handle() {
                     public ResourcePort port() {
                         return port;
                     }
 
                     public Object physicalIdentity() {
-                        return targets.get(id);
+                        return target;
                     }
 
                     public boolean valid() {

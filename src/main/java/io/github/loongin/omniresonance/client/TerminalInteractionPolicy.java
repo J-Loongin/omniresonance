@@ -123,7 +123,7 @@ final class TerminalInteractionPolicy {
             int scanCode,
             int modifiers,
             @Nullable GuiEventListener focused,
-            boolean inventoryShortcut,
+            BooleanSupplier shortcutPressed,
             Runnable close,
             ClientSearchState search,
             boolean eligible,
@@ -133,7 +133,7 @@ final class TerminalInteractionPolicy {
                 keyCode,
                 scanCode,
                 modifiers,
-                () -> inventoryShortcut,
+                shortcutPressed,
                 close,
                 () -> ClientSearchState.handleToggleKey(keyCode, modifiers, eligible, toggle),
                 search.expanded());

@@ -66,7 +66,7 @@ public final class NetworkTerminalClient {
                 var mc = Minecraft.getInstance();
                 if (frame.initial()) {
                     if (mc.screen == null && mc.player != null)
-                        mc.setScreen(new Ae2InterfaceScreen(frame, this::isTerminalKey));
+                        mc.setScreen(new Ae2InterfaceScreen(frame, NetworkTerminalClient::isTerminalKey));
                     else
                         net.neoforged.neoforge.network.PacketDistributor.sendToServer(
                                 new io.github.loongin.omniresonance.compat.ae2.Ae2InterfacePayloads.Request(
@@ -130,7 +130,7 @@ public final class NetworkTerminalClient {
         });
     }
 
-    boolean isTerminalKey(int keyCode, int scanCode) {
+    static boolean isTerminalKey(int keyCode, int scanCode) {
         return TERMINAL_KEY.matches(keyCode, scanCode) && TERMINAL_KEY.isConflictContextAndModifierActive();
     }
 
@@ -319,12 +319,16 @@ public final class NetworkTerminalClient {
         }
     }
 
+    static boolean terminalContextActive(boolean inWorld, @org.jetbrains.annotations.Nullable Class<?> screenType) {
+        return inWorld && (screenType == null || TerminalScreenSessions.Participant.class.isAssignableFrom(screenType));
+    }
+
     private static final class TerminalConflictContext implements IKeyConflictContext {
         @Override
         public boolean isActive() {
             Minecraft minecraft = Minecraft.getInstance();
-            return minecraft.level != null
-                    && (minecraft.screen == null || minecraft.screen instanceof NetworkSetupScreen);
+            return terminalContextActive(
+                    minecraft.level != null, minecraft.screen == null ? null : minecraft.screen.getClass());
         }
 
         @Override

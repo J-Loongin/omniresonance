@@ -104,6 +104,71 @@ public final class NodeRoutingMenuGameTests {
     }
 
     @GameTest(template = "bootstrap")
+    public static void expiredRemoteLeaseReturnsFailureAndReleasesEditor(GameTestHelper helper) throws Exception {
+        remoteRejection(helper, false, false);
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void expiredCrossDimensionRemoteLeaseNeverResolvesPhysicalPosition(GameTestHelper helper)
+            throws Exception {
+        remoteRejection(helper, true, false);
+    }
+
+    @GameTest(template = "bootstrap")
+    public static void disabledTunnelReturnsFailureToRemoteEditor(GameTestHelper helper) throws Exception {
+        remoteRejection(helper, false, true);
+    }
+
+    private static void remoteRejection(GameTestHelper helper, boolean otherDimension, boolean disableTunnel)
+            throws Exception {
+        try (var f = new Fixture(helper)) {
+            var pos = helper.absolutePos(new BlockPos(2, 3, 2));
+            f.authority.link(SOURCE, place(helper, pos), new ManagedName("Remote"));
+            f.seedTunnels();
+            f.setDirectMode();
+            f.bindNode(CHANNEL);
+            var level = otherDimension ? helper.getLevel().getServer().getLevel(Level.NETHER) : helper.getLevel();
+            var owner = new FakePlayer(level, new GameProfile(OWNER, "RemoteReview"));
+            owner.setPos(pos.getX() + 500, pos.getY(), pos.getZ() + 500);
+            var edit = f.topology.acquireNode(owner, SOURCE, NODE);
+            var state = f.menus.bindingEdit(owner, SOURCE, NODE, TUNNEL, CHANNEL);
+            var menu = new ResonanceNodeMenu(
+                    182, owner.getInventory(), f.menus, pos, SESSION, new NodeMenuService.Initial(NODE, SOURCE, state));
+            menu.configureRemote(edit, state);
+            owner.containerMenu = menu;
+            var before = f.source.findDirectBinding(NODE, CHANNEL).orElseThrow();
+            NodeMenuRequest request;
+            NodeMenuResponse.Reason reason;
+            if (disableTunnel) {
+                var tunnel = f.source.findTunnel(TUNNEL).orElseThrow();
+                f.source.setTunnelEnabled(TUNNEL, tunnel.revision(), false).orElseThrow();
+                request = new NodeMenuRequest.SaveResourcePolicy(
+                        182, SESSION, 1, state.policy(), state.workingFaces(), false);
+                reason = NodeMenuResponse.Reason.TUNNEL_DISABLED;
+            } else {
+                for (int tick = 0; tick < 201; tick++) f.topology.tick();
+                request = new NodeMenuRequest.Heartbeat(182, SESSION, 1);
+                reason = NodeMenuResponse.Reason.LOCK_EXPIRED;
+            }
+            var response = menu.handle(owner, request);
+            helper.assertTrue(
+                    response instanceof NodeMenuResponse.Failure failure && failure.reason() == reason,
+                    "Remote refusal failed to return its original reason");
+            helper.assertTrue(
+                    menu.state() instanceof NodeMenuState.Unavailable,
+                    "Rejected remote editor escaped into physical node navigation");
+            helper.assertTrue(!f.menus.canKeepOpen(owner, menu), "Rejected editor retained an active session");
+            helper.assertTrue(
+                    f.source.findDirectBinding(NODE, CHANNEL).orElseThrow().equals(before),
+                    "Failed save changed the binding");
+            var retry = f.topology.acquireNode(owner, SOURCE, NODE);
+            f.topology.cancel(owner, retry);
+            menu.removed(owner);
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "bootstrap")
     public static void remoteConfigurationCanStillSaveOutsidePhysicalRange(GameTestHelper helper) throws Exception {
         try (var f = new Fixture(helper)) {
             var pos = helper.absolutePos(new BlockPos(2, 3, 2));

@@ -36,6 +36,10 @@ public final class Ae2Compat {
                     if (runtime != null) runtime.loaded(entity);
                 });
         });
+        NeoForge.EVENT_BUS.addListener((io.github.loongin.omniresonance.node.NodeLifecycleEvent.Removed event) -> {
+            var runtime = Ae2InterfaceRuntime.find(event.level().getServer());
+            if (runtime != null) runtime.removed(event);
+        });
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.level.ChunkEvent.Unload event) -> {
             if (event.getLevel() instanceof ServerLevel level) {
                 var runtime = Ae2InterfaceRuntime.find(level.getServer());

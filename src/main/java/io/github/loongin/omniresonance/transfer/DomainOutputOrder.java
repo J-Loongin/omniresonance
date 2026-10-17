@@ -97,7 +97,8 @@ public final class DomainOutputOrder {
      * Performs at most one successful/failed commit, checking all higher contenders in this same invocation.
      * Starts from the highest priority after every pause, so prior-tick capacity failures never authorize a lower
      * output. Completed refusals advance the group's probe position so equal-priority peers cannot starve;
-     * incomplete attempts retain their position. Only proven movement advances the seed for new variants.
+     * incomplete attempts yield to equal-priority peers on the next invocation but never authorize a lower
+     * group. Candidate-owned discovery cursors retain unfinished work. Only proven movement advances the seed for new variants.
      * This is execution scheduling, never a capacity simulation. Existing cursors cannot
      * be reused with another full variant or a replacement publication. Native exceptions propagate immediately,
      * without trying any lower candidate or inferring quantities; caller applies its normal failure backoff.
@@ -121,7 +122,9 @@ public final class DomainOutputOrder {
                     Entry entry = entries.get(group.start() + relative);
                     Attempt attempt = Objects.requireNonNull(entry.output().attempt(variant, budget));
                     if (group.size() > 1) {
-                        int next = attempt.moved() > 0 || attempt.state() == State.NO_CAPACITY
+                        int next = attempt.moved() > 0
+                                        || attempt.state() == State.NO_CAPACITY
+                                        || attempt.state() == State.WAITING_BUDGET
                                 ? (relative + 1) % group.size()
                                 : relative;
                         cursor.offsets.put(index, next);

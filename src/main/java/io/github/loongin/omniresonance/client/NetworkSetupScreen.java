@@ -149,7 +149,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget, Term
     }
 
     boolean exchangeCloseKey(int key, int scan) {
-        return client.isTerminalKey(key, scan);
+        return NetworkTerminalClient.isTerminalKey(key, scan);
     }
 
     void suspendForConfiguration() {
@@ -2321,7 +2321,7 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget, Term
                         || (minecraft != null
                                 && TerminalInteractionPolicy.inventoryShortcut(
                                         minecraft.options.keyInventory, getFocused(), keyCode, scanCode))
-                        || client.isTerminalKey(keyCode, scanCode),
+                        || NetworkTerminalClient.isTerminalKey(keyCode, scanCode),
                 this::requestShortcutClose,
                 () -> {
                     if (networkContext.open
