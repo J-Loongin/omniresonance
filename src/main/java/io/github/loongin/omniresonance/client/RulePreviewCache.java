@@ -5,13 +5,13 @@ import io.github.loongin.omniresonance.networking.FilterRulePreview;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 
-/** Client-view-owned LRU by bounded rule metadata. At most 128 sequences of 24 icons; no global inventory cache.
+/** Client-view-owned LRU by bounded rule/preset metadata. At most 128 sequences of 24 icons; no global inventory cache.
  * Only current visible rows prepare/animate. Page exit, tag sync and resource reload clear all registry references. */
 final class RulePreviewCache {
     static final int CAPACITY = 128, TICK_BUDGET = 16384;
     private final RulePreviewSource source;
-    private final LinkedHashMap<FilterRulePreview, RuleIconPreview> entries = new LinkedHashMap<>(16, .75f, true);
-    private final LinkedHashSet<RuleIconPreview> visible = new LinkedHashSet<>();
+    private final LinkedHashMap<Object, ResourceIconPreview> entries = new LinkedHashMap<>(16, .75f, true);
+    private final LinkedHashSet<ResourceIconPreview> visible = new LinkedHashSet<>();
 
     RulePreviewCache(RulePreviewSource source) {
         this.source = source;
@@ -30,7 +30,19 @@ final class RulePreviewCache {
             entries.put(metadata, preview);
         }
         visible.add(preview);
-        return preview;
+        return (RuleIconPreview) preview;
+    }
+
+    PresetIconPreview get(io.github.loongin.omniresonance.networking.FilterPresetPreview metadata) {
+        var preview = entries.get(metadata);
+        if (preview == null) {
+            if (entries.size() == CAPACITY)
+                visible.remove(entries.remove(entries.keySet().iterator().next()));
+            preview = new PresetIconPreview(metadata, source);
+            entries.put(metadata, preview);
+        }
+        visible.add(preview);
+        return (PresetIconPreview) preview;
     }
 
     void tick() {

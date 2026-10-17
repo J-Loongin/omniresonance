@@ -116,6 +116,7 @@ class FilterMenuCodecTest {
                     .writeLong(7)
                     .writeInt(4)
                     .writeBoolean(true);
+            FilterPresetPreview.EMPTY.write(wire);
             wire.writeInt(0).writeInt(4).writeInt(0).writeBoolean(false).writeVarInt(3);
             for (int i = 0; i < 3; i++) {
                 wire.writeUtf("a:" + (char) ('b' + i) + "d".repeat(65532), 65535);

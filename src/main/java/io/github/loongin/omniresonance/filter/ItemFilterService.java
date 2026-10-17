@@ -850,7 +850,8 @@ public final class ItemFilterService {
                 preset.name().value(),
                 preset.revision(),
                 preset.rules().size(),
-                editable);
+                editable,
+                io.github.loongin.omniresonance.networking.FilterPresetPreview.from(preset.rules()));
     }
 
     private @Nullable OwnerSavedData owner(UUID ownerId) {

@@ -249,10 +249,13 @@ public final class NetworkTerminalClient {
         Minecraft.getInstance().execute(() -> {
             var active = TerminalScreenSessions.current();
             if (active instanceof NetworkSetupScreen screen) screen.invalidateInventoryMetadata();
-            else if (active instanceof ExchangeScreen screen)
+            else if (active instanceof ExchangeScreen screen) {
+                screen.invalidatePresetPreviews();
                 screen.terminalParent().invalidateInventoryMetadata();
-            else if (active instanceof ResonanceNodeScreen screen && screen.terminalParent() != null)
-                screen.terminalParent().invalidateInventoryMetadata();
+            } else if (active instanceof ResonanceNodeScreen screen) {
+                screen.invalidatePresetPreviews();
+                if (screen.terminalParent() != null) screen.terminalParent().invalidateInventoryMetadata();
+            }
         });
     }
 

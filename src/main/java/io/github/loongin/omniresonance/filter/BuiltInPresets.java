@@ -21,7 +21,13 @@ public final class BuiltInPresets {
         }
 
         public FilterPresetSummary summary() {
-            return new FilterPresetSummary(preset.id(), preset.name().value(), 0, 1, false);
+            return new FilterPresetSummary(
+                    preset.id(),
+                    preset.name().value(),
+                    0,
+                    1,
+                    false,
+                    io.github.loongin.omniresonance.networking.FilterPresetPreview.from(preset.rules()));
         }
     }
 

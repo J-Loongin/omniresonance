@@ -158,7 +158,7 @@ class RuleIconPreviewTest {
         var image = RulePreviewImage.item(new ItemStack(Items.IRON_INGOT));
         for (int count : new int[] {1, 3, 6, 7, 24}) {
             var grid = new RulePreviewGrid(java.util.Collections.nCopies(count, image), count == 24);
-            assertEquals(116, grid.width());
+            assertEquals(Math.min(6, count) * 18 + 8, grid.width());
             assertEquals(((count + 5) / 6) * 18 + 8 + (count == 24 ? 6 : 0), grid.height());
             for (int[] size : new int[][] {{320, 240}, {640, 360}, {960, 540}}) {
                 for (int[] mouse :

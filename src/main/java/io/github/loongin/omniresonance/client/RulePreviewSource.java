@@ -24,6 +24,11 @@ interface RulePreviewSource {
     @Nullable
     RulePreviewImage image(ResourceLocation type, ResourceLocation id);
 
+    /** Visual grouping only; never a resource key or a filter decision. */
+    default ResourceLocation displayId(ResourceLocation type, ResourceLocation id) {
+        return id;
+    }
+
     static RulePreviewSource client() {
         return new RegistrySource(ResourceAdapters.create(), () -> {
             var client = Minecraft.getInstance();
@@ -55,6 +60,21 @@ interface RulePreviewSource {
                 return values == null ? Collections.emptyIterator() : values;
             }
             return adapters.registeredIds(type, provider);
+        }
+
+        @Override
+        public ResourceLocation displayId(ResourceLocation type, ResourceLocation id) {
+            if (!type.equals(ResourceTypes.FLUID) || !BuiltInRegistries.FLUID.containsKey(id)) return id;
+            var fluid = BuiltInRegistries.FLUID.get(id);
+            if (!(fluid instanceof net.minecraft.world.level.material.FlowingFluid flowing)) return id;
+            var source = flowing.getSource();
+            if (source instanceof net.minecraft.world.level.material.FlowingFluid family
+                    && family.getSource() == source
+                    && (fluid == source || family.getFlowing() == fluid)) {
+                var sourceId = BuiltInRegistries.FLUID.getKey(source);
+                if (sourceId != null) return sourceId;
+            }
+            return id;
         }
 
         public @Nullable RulePreviewImage image(ResourceLocation type, ResourceLocation id) {

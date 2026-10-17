@@ -162,6 +162,36 @@ class TerminalFullFilterViewTest {
     }
 
     @Test
+    void presetLibraryRowsUseSharedPreviewsWithoutChangingTheirLabelsOrOpenAction() {
+        var preset = new FilterPresetSummary(
+                PRESET,
+                "Iron",
+                0,
+                1,
+                true,
+                new io.github.loongin.omniresonance.networking.FilterPresetPreview(
+                        List.of(io.github.loongin.omniresonance.networking.FilterRulePreview.exactItem(
+                                "minecraft:iron_ingot")),
+                        false));
+        var state = new NetworkTerminalState.Filters(NETWORK, new FilterPresetPage(List.of(preset), 0, 1, 0));
+        var view = new TerminalFilterView(() -> {});
+        view.apply(state);
+        var actions = new ArrayList<TerminalFilterView.Action>();
+        var widgets = build(view, TerminalLayout.terminal(640, 360), state, actions);
+        var row = (TerminalRowButton) widgets.stream()
+                .filter(TerminalRowButton.class::isInstance)
+                .findFirst()
+                .orElseThrow();
+        org.junit.jupiter.api.Assertions.assertNotNull(row.icon());
+        assertEquals(
+                net.minecraft.network.chat.Component.translatable("omniresonance.terminal.filters.summary", "Iron", 1)
+                        .getString(),
+                row.getMessage().getString());
+        row.onPress();
+        assertEquals(new TerminalFilterView.Action.Open(PRESET, 0, 0), actions.getLast());
+    }
+
+    @Test
     void compactPresetDirectoryUsesSixRowsAndTheFinalPresetRemainsReachable() {
         var view = new TerminalFilterView(() -> {});
         var entries = new ArrayList<FilterPresetSummary>();

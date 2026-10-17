@@ -6,30 +6,42 @@ import io.github.loongin.omniresonance.networking.FilterRulePreview;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.resources.ResourceLocation;
 import org.jetbrains.annotations.Nullable;
 
 /** One bounded visual sample sequence. Discovery runs only in client ticks; rendering never enumerates registries. */
-final class RuleIconPreview implements TerminalRowButton.Icon {
-    static final int MAXIMUM_IMAGES = 24;
-    private static final RulePreviewImage LOADING = RulePreviewImage.status("loading");
-    private static final RulePreviewImage EMPTY = RulePreviewImage.status("empty");
-    private static final RulePreviewImage UNAVAILABLE = RulePreviewImage.status("unavailable");
-    private static final RulePreviewImage REFERENCE = RulePreviewImage.status("reference");
+final class RuleIconPreview extends ResourceIconPreview {
     private final FilterRulePreview metadata;
     private final RulePreviewSource source;
-    private final List<RulePreviewImage> images = new ArrayList<>();
+
+    /** Display-only identity, including known source/flowing fluid families; never used by filtering or storage. */
+    record Identity(ResourceLocation type, ResourceLocation id) {}
+
+    private final List<Identity> identities = new ArrayList<>();
+
+    Identity identity(int index) {
+        return identities.get(index);
+    }
+
+    boolean done() {
+        return done;
+    }
+
+    boolean hasMore() {
+        return more;
+    }
+
     private final @Nullable ResourceIdGlob glob;
     private @Nullable Iterator<ResourceLocation> candidates;
     private @Nullable ResourceLocation candidate;
     private @Nullable ResourceIdGlob.Evaluation evaluation;
-    private RulePreviewImage fallback = LOADING;
-    private boolean opened, done, hovered, more;
-    private @Nullable RulePreviewGrid hoverGrid;
-    private int index, animationTicks;
+    private boolean opened, done;
 
     RuleIconPreview(FilterRulePreview metadata, RulePreviewSource source) {
+        super(metadata.kind() == FilterRulePreview.Kind.TAG
+                || metadata.kind() == FilterRulePreview.Kind.GLOB
+                || metadata.kind() == FilterRulePreview.Kind.WHOLE_TYPE
+                        && !io.github.loongin.omniresonance.transfer.ResourceTypes.scalar(metadata.type()));
         this.metadata = metadata;
         this.source = source;
         glob = metadata.kind() == FilterRulePreview.Kind.GLOB ? new ResourceIdGlob(metadata.selector()) : null;
@@ -41,9 +53,17 @@ final class RuleIconPreview implements TerminalRowButton.Icon {
 
     /** One unit per candidate lookup/render-sample preparation or glob DP cell. No whole-registry work unit. */
     int prepare(int budget) {
+        return prepare(budget, MAXIMUM_IMAGES + 1);
+    }
+
+    int prepareNext(int budget) {
+        return prepare(budget, images.size() + 1);
+    }
+
+    private int prepare(int budget, int imageLimit) {
         int used = 0;
         try {
-            while (!done && used < budget) {
+            while (!done && used < budget && images.size() < imageLimit) {
                 if (!opened) {
                     candidates = source.open(metadata);
                     opened = true;
@@ -65,10 +85,13 @@ final class RuleIconPreview implements TerminalRowButton.Icon {
                 } else {
                     used++;
                     if (evaluation == null || evaluation.matches()) {
-                        var image = source.image(metadata.type(), candidate);
+                        var identity = new Identity(metadata.type(), source.displayId(metadata.type(), candidate));
+                        var image = identities.contains(identity) ? null : source.image(metadata.type(), candidate);
                         if (image != null) {
-                            if (images.size() < MAXIMUM_IMAGES) images.add(image);
-                            else {
+                            if (images.size() < MAXIMUM_IMAGES) {
+                                images.add(image);
+                                identities.add(identity);
+                            } else {
                                 more = true;
                                 finish(EMPTY);
                             }
@@ -90,59 +113,5 @@ final class RuleIconPreview implements TerminalRowButton.Icon {
         candidates = null;
         candidate = null;
         evaluation = null;
-    }
-
-    void tickAnimation() {
-        if (!hovered) hoverGrid = null;
-        if (!hovered && images.size() > 3 && ++animationTicks >= 20) {
-            index = (index + 1) % images.size();
-            animationTicks = 0;
-        }
-        hovered = false;
-    }
-
-    RulePreviewImage current() {
-        return images.isEmpty() ? fallback : images.get(index);
-    }
-
-    int imageCount() {
-        return images.size();
-    }
-
-    void hover() {
-        hovered = true;
-    }
-
-    public int width() {
-        return inlineCount() * 18 - 2;
-    }
-
-    int inlineCount() {
-        return Math.max(1, Math.min(3, images.size()));
-    }
-
-    RulePreviewImage inlineImage(int fromRight) {
-        if (fromRight < 0 || fromRight >= inlineCount()) throw new IndexOutOfBoundsException(fromRight);
-        return images.isEmpty() ? fallback : images.get((index + fromRight) % images.size());
-    }
-
-    @Nullable
-    RulePreviewGrid grid() {
-        boolean collection = metadata.kind() == FilterRulePreview.Kind.TAG
-                || metadata.kind() == FilterRulePreview.Kind.GLOB
-                || metadata.kind() == FilterRulePreview.Kind.WHOLE_TYPE
-                        && !io.github.loongin.omniresonance.transfer.ResourceTypes.scalar(metadata.type());
-        if (!collection || images.isEmpty()) return null;
-        if (hoverGrid == null) hoverGrid = new RulePreviewGrid(images, more);
-        return hoverGrid;
-    }
-
-    void clearGrid() {
-        hoverGrid = null;
-    }
-
-    public void render(GuiGraphics graphics, int right, int y, boolean hovered) {
-        if (hovered) hover();
-        for (int i = 0; i < inlineCount(); i++) inlineImage(i).render(graphics, right - 16 - 18 * i, y);
     }
 }

@@ -14,12 +14,16 @@ record RulePreviewGrid(List<RulePreviewImage> images, boolean more) {
         images = List.copyOf(images);
     }
 
+    int columns() {
+        return Math.min(COLUMNS, images.size());
+    }
+
     int width() {
-        return COLUMNS * CELL + PADDING * 2;
+        return columns() * CELL + PADDING * 2;
     }
 
     int height() {
-        return ((images.size() + COLUMNS - 1) / COLUMNS) * CELL + PADDING * 2 + (more ? 6 : 0);
+        return ((images.size() + columns() - 1) / columns()) * CELL + PADDING * 2 + (more ? 6 : 0);
     }
 
     TerminalLayout.Rect bounds(int screenWidth, int screenHeight, int mouseX, int mouseY) {
@@ -35,8 +39,8 @@ record RulePreviewGrid(List<RulePreviewImage> images, boolean more) {
     TerminalLayout.Rect cell(TerminalLayout.Rect bounds, int index) {
         if (index < 0 || index >= images.size()) throw new IndexOutOfBoundsException(index);
         return new TerminalLayout.Rect(
-                bounds.x() + PADDING + index % COLUMNS * CELL,
-                bounds.y() + PADDING + index / COLUMNS * CELL,
+                bounds.x() + PADDING + index % columns() * CELL,
+                bounds.y() + PADDING + index / columns() * CELL,
                 CELL,
                 CELL);
     }
@@ -46,13 +50,13 @@ record RulePreviewGrid(List<RulePreviewImage> images, boolean more) {
         int x = mouseX - bounds.x() - PADDING, y = mouseY - bounds.y() - PADDING;
         if (x < 0
                 || y < 0
-                || x >= COLUMNS * CELL
-                || y >= ((images.size() + COLUMNS - 1) / COLUMNS) * CELL
+                || x >= columns() * CELL
+                || y >= ((images.size() + columns() - 1) / columns()) * CELL
                 || x % CELL < 1
                 || x % CELL >= 17
                 || y % CELL < 1
                 || y % CELL >= 17) return null;
-        int index = y / CELL * COLUMNS + x / CELL;
+        int index = y / CELL * columns() + x / CELL;
         return index < images.size() ? images.get(index) : null;
     }
 

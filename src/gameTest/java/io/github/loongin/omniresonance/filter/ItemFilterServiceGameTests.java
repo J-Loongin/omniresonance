@@ -545,6 +545,14 @@ public final class ItemFilterServiceGameTests {
                     -1);
             f.library.setDirty(false);
             var page = f.service.rules(f.owner, NETWORK, PRESET, 1, 0);
+            var summary = f.service.page(f.owner, NETWORK, 0).entries().stream()
+                    .filter(preset -> preset.id().equals(PRESET))
+                    .findFirst()
+                    .orElseThrow();
+            helper.assertTrue(
+                    summary.preview()
+                            .equals(io.github.loongin.omniresonance.networking.FilterPresetPreview.from(rules)),
+                    "Preset directory omitted typed preview metadata");
             for (var rule : rules) {
                 int index = page.ruleIds().indexOf(rule.id());
                 helper.assertTrue(

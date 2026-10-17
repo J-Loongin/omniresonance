@@ -15,6 +15,33 @@ import org.junit.jupiter.api.Test;
 
 class NodePresetPickerTest {
     @Test
+    void actualPresetChoicesRetainTheirNamesAndActionsWhileAddingSharedIcons() {
+        var picker = new NodePresetPicker();
+        picker.open();
+        picker.nextRequest();
+        var preset = new FilterPresetSummary(
+                new UUID(205, 1),
+                "Iron",
+                0,
+                1,
+                true,
+                new io.github.loongin.omniresonance.networking.FilterPresetPreview(
+                        List.of(io.github.loongin.omniresonance.networking.FilterRulePreview.exactItem(
+                                "minecraft:iron_ingot")),
+                        false));
+        picker.complete(new FilterPresetPage(List.of(preset), 0, 1, 0));
+        var widgets = new ArrayList<TerminalRowButton>();
+        var selected = new ArrayList<FilterPresetSummary>();
+        NodePresetPickerView.buildRows(
+                new TerminalLayout.Rect(0, 0, 400, 300), picker, true, widgets::add, selected::add);
+        assertNull(widgets.getFirst().icon(), "No-preset action must not pretend to be a resource");
+        org.junit.jupiter.api.Assertions.assertNotNull(widgets.getLast().icon());
+        assertEquals("Iron", widgets.getLast().getMessage().getString());
+        widgets.getLast().onPress();
+        assertEquals(preset, selected.getLast());
+    }
+
+    @Test
     void pickerOffersOnlyManualPresetsWithoutSectionRowsOrAutomaticSelection() {
         var picker = new NodePresetPicker();
         picker.open();

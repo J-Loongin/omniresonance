@@ -54,11 +54,25 @@ final class ExchangeScreen extends Screen implements TerminalScreenSessions.Part
         CODES
     }
 
-    private record Row(Component text, @Nullable Runnable action, boolean selected) {
+    private record Row(
+            Component text,
+            @Nullable Runnable action,
+            boolean selected,
+            @Nullable FilterPresetSummary preset) {
         Row(Component text, @Nullable Runnable action) {
-            this(text, action, false);
+            this(text, action, false, null);
+        }
+
+        Row(Component text, @Nullable Runnable action, boolean selected) {
+            this(text, action, selected, null);
+        }
+
+        Row(Component text, @Nullable Runnable action, FilterPresetSummary preset) {
+            this(text, action, false, preset);
         }
     }
+
+    private final ResourcePreviewRows presetPreviews = new ResourcePreviewRows();
 
     private record DetailCell(
             Component label,
@@ -316,7 +330,8 @@ final class ExchangeScreen extends Screen implements TerminalScreenSessions.Part
         return new Code(b.readUUID(), b.readLong(), b.readLong(), b.readUtf(22));
     }
 
-    private void read(int kind, FriendlyByteBuf b) {
+    /** Applies a complete response body after the session/fragment envelope has been checked. */
+    void read(int kind, FriendlyByteBuf b) {
         switch (kind) {
             case ExchangeFrame.META -> {
                 types.clear();
@@ -618,6 +633,8 @@ final class ExchangeScreen extends Screen implements TerminalScreenSessions.Part
 
     private void rebuild() {
         if (layout == null) return;
+        if (page != Page.PRESETS) presetPreviews.clear();
+        presetPreviews.beginRows();
         var focused = getFocused();
         boolean keepSearch = activeSearch().expanded() && focused instanceof TerminalSearchBox;
         results.clear();
@@ -795,12 +812,15 @@ final class ExchangeScreen extends Screen implements TerminalScreenSessions.Part
                     go(Page.EDIT);
                 }));
             for (var preset : presets)
-                content.add(new Row(Component.literal(preset.name()), () -> {
-                    filter = new ExchangeTermsDraft.OwnerPreset(preset.id(), libraryRevision);
-                    filterName = preset.name();
-                    dirty = true;
-                    go(Page.EDIT);
-                }));
+                content.add(new Row(
+                        Component.literal(preset.name()),
+                        () -> {
+                            filter = new ExchangeTermsDraft.OwnerPreset(preset.id(), libraryRevision);
+                            filterName = preset.name();
+                            dirty = true;
+                            go(Page.EDIT);
+                        },
+                        preset));
         } else if (page == Page.FILTER) content.addAll(filterRows);
         else if (page == Page.CODES) {
             toolbar(
@@ -848,6 +868,7 @@ final class ExchangeScreen extends Screen implements TerminalScreenSessions.Part
             else button.active = !pending && !uncertain;
             button.setSelected(row.selected());
             button.setTooltip(Tooltip.create(TerminalText.body(row.text())));
+            if (row.preset() != null) presetPreviews.attach(button, row.preset());
             results.add(button);
         }
     }
@@ -1566,6 +1587,7 @@ final class ExchangeScreen extends Screen implements TerminalScreenSessions.Part
 
     @Override
     public void tick() {
+        if (page == Page.PRESETS && dialogText == null) presetPreviews.tick();
         tick++;
         if (resourceSelection != null && resourceSelection.tick(tick)) rebuild();
         if (resourceSelection == null && search.due(tick)) {
@@ -1667,6 +1689,14 @@ final class ExchangeScreen extends Screen implements TerminalScreenSessions.Part
                         ? null
                         : () -> modalBackdrop.renderForeground(
                                 graphics, mouseX, mouseY, partialTick, () -> renderDialog(graphics)));
+        if (page == Page.PRESETS && dialogText == null)
+            presetPreviews.render(graphics, font, width, height, mouseX, mouseY);
+        else presetPreviews.hide();
+    }
+
+    void invalidatePresetPreviews() {
+        presetPreviews.clear();
+        if (page == Page.PRESETS) rebuild();
     }
 
     static void renderPageLayers(Runnable page, @Nullable Runnable dialog) {
@@ -1877,6 +1907,7 @@ final class ExchangeScreen extends Screen implements TerminalScreenSessions.Part
     }
 
     private void disposeSession() {
+        presetPreviews.clear();
         if (!leaving) parent.closeFromConfiguration();
         upload.clear();
         downloaded = null;

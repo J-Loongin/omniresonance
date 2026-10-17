@@ -9,6 +9,12 @@ final class NodePresetPicker {
     record Request(
             String query, int offset, long libraryRevision, long generation, PagedListScroll.PageRequest direction) {}
 
+    private final ResourcePreviewRows previews = new ResourcePreviewRows();
+
+    ResourcePreviewRows previews() {
+        return previews;
+    }
+
     private final ClientSearchState search = new ClientSearchState();
     private final PresetSearchCatalog catalog = new PresetSearchCatalog();
     private long generation, ticks;
@@ -26,6 +32,7 @@ final class NodePresetPicker {
     }
 
     void close() {
+        previews.clear();
         open = false;
         search.reset();
         catalog.clear();
@@ -77,6 +84,7 @@ final class NodePresetPicker {
     }
 
     boolean tick() {
+        previews.tick();
         ticks++;
         if (!open || !catalog.ready() || !search.due(ticks)) return false;
         updateResults(0);
@@ -98,6 +106,7 @@ final class NodePresetPicker {
     }
 
     private void restart() {
+        previews.clear();
         generation++;
         catalog.clear();
         page = null;

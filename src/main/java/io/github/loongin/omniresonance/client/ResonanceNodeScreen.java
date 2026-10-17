@@ -2240,9 +2240,17 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         if (modal != Modal.NONE) modalBackdrop.render(widget -> widget.render(graphics, -1, -1, partialTick));
     }
 
+    void invalidatePresetPreviews() {
+        presetPicker.previews().clear();
+        if (choosingItemPreset) rebuildIfActive();
+    }
+
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         super.render(graphics, mouseX, mouseY, partialTick);
+        if (choosingItemPreset && modal == Modal.NONE)
+            presetPicker.previews().render(graphics, font, width, height, mouseX, mouseY);
+        else presetPicker.previews().hide();
         NodeMenuNodeSummary headerNode = NodeMenuInteractionPolicy.linkedNode(interaction.authoritative());
         if (modal == Modal.NONE
                 && headerNode != null

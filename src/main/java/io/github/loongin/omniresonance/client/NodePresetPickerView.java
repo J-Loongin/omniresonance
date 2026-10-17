@@ -44,6 +44,7 @@ final class NodePresetPickerView {
             boolean enabled,
             Consumer<TerminalRowButton> add,
             Consumer<FilterPresetSummary> choose) {
+        picker.previews().beginRows();
         var layout = NodeRoutingView.tunnelList(body, picker.search().expanded(), picker.count(), picker.scroll());
         int visible = layout.visibleRows();
         picker.viewport(visible);
@@ -64,6 +65,7 @@ final class NodePresetPickerView {
                     row,
                     preset == null ? NodeItemPolicyView.text("no_preset") : Component.literal(preset.name()),
                     ignored -> choose.accept(preset));
+            if (preset != null) picker.previews().attach(button, preset);
             button.active = enabled && picker.ready();
             add.accept(button);
         }

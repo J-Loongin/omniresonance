@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.loongin.omniresonance.networking.FilterRulePreview;
 import io.github.loongin.omniresonance.transfer.ResourceTypes;
@@ -73,6 +74,41 @@ class RulePreviewHoverTest {
     }
 
     @Test
+    void popupFollowsPointerWithinItsOwnerRowThenStaysFixedDuringGridInspection() {
+        var row = row(FilterRulePreview.Kind.TAG, 20, List.of(FIRST, SECOND), new AtomicInteger());
+        var rows = List.of(row);
+        var hover = new RulePreviewHover();
+        hover.update(rows, 640, 360, 40, 30);
+        var firstBounds = hover.bounds();
+        var grid = hover.grid();
+        hover.update(rows, 640, 360, 200, 30);
+        assertEquals(212, hover.bounds().x());
+        assertEquals(42, hover.bounds().y());
+        assertTrue(hover.bounds().x() > firstBounds.x());
+        assertSame(grid, hover.grid());
+        var followed = hover.bounds();
+        hover.update(rows, 640, 360, followed.x() + 8, 41);
+        assertSame(followed, hover.bounds());
+        hover.update(rows, 640, 360, followed.x() + 8, followed.y() + 8);
+        assertSame(followed, hover.bounds());
+        assertSame(grid.images().getFirst().name(), hover.name());
+        hover.update(rows, 640, 360, followed.x() + 26, followed.y() + 8);
+        assertSame(followed, hover.bounds());
+        assertSame(grid.images().get(1).name(), hover.name());
+    }
+
+    @Test
+    void overlappingPreviewDoesNotCaptureThePointerBeforeItLeavesTheOwnerRow() {
+        var row = row(FilterRulePreview.Kind.TAG, 20, List.of(FIRST, SECOND), new AtomicInteger());
+        var hover = new RulePreviewHover();
+        hover.update(List.of(row), 640, 360, 40, 21);
+        hover.update(List.of(row), 640, 360, 60, 35);
+        assertEquals(72, hover.bounds().x());
+        assertEquals(47, hover.bounds().y());
+        assertNull(hover.name());
+    }
+
+    @Test
     void enteringTheFixedGridKeepsItOpenAndOverridesAnUnderlyingRule() {
         var clicks = new AtomicInteger();
         var first = row(FilterRulePreview.Kind.TAG, 20, List.of(FIRST, SECOND), clicks);
@@ -89,8 +125,8 @@ class RulePreviewHoverTest {
         assertSame(grid.images().getFirst().name(), hover.name());
         hover.update(rows, 640, 360, bounds.x() + 26, bounds.y() + 8);
         assertSame(grid.images().get(1).name(), hover.name());
-        hover.update(rows, 640, 360, bounds.x() + 44, bounds.y() + 8);
-        assertNull(hover.name(), "Empty grid cell unexpectedly produced a resource name");
+        hover.update(rows, 640, 360, bounds.right() - 2, bounds.y() + 8);
+        assertNull(hover.name(), "Grid padding unexpectedly produced a resource name");
         assertSame(grid, hover.grid());
         hover.update(rows, 640, 360, bounds.x() + 4, bounds.y() + 4);
         assertNull(hover.name(), "Slot border must not select a resource");

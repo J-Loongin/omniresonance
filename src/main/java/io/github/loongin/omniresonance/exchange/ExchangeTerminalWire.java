@@ -170,6 +170,16 @@ public final class ExchangeTerminalWire {
                             .sorted(Comparator.comparing(p -> p.name().value()))
                             .toList();
             long revision = library == null ? 0 : library.presetLibraryRevision();
+            long baseBytes = 13;
+            for (var preset : presets)
+                baseBytes += 32 + preset.name().value().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            int previewBytes = presets.isEmpty()
+                    ? 4
+                    : (int) Math.max(
+                            4,
+                            Math.min(
+                                    io.github.loongin.omniresonance.networking.FilterPresetPreview.MAXIMUM_BYTES,
+                                    (ManagementTransferPool.MAXIMUM_OBJECT_BYTES - baseBytes) / presets.size()));
             return send(
                     player,
                     state,
@@ -185,7 +195,9 @@ public final class ExchangeTerminalWire {
                                             preset.name().value(),
                                             preset.revision(),
                                             preset.rules().size(),
-                                            true)
+                                            true,
+                                            io.github.loongin.omniresonance.networking.FilterPresetPreview.from(
+                                                    preset.rules(), previewBytes))
                                     .write(b);
                     });
         }

@@ -49,19 +49,14 @@ final class TerminalFilterView {
 
     private final java.util.List<net.minecraft.resources.ResourceLocation> resourceTypes =
             io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create().types();
-    private final java.util.List<TerminalRowButton> previewRows = new java.util.ArrayList<>();
-    private final RulePreviewHover previewHover = new RulePreviewHover();
-    private final RulePreviewCache previews = new RulePreviewCache(RulePreviewSource.client());
+    private final ResourcePreviewRows previews = new ResourcePreviewRows();
 
     void invalidatePreviews() {
-        previewHover.clear();
         previews.clear();
         if (supports(state)) rebuild.run();
     }
 
     void clearPreviews() {
-        previewHover.clear();
-        previewRows.clear();
         previews.clear();
     }
 
@@ -519,8 +514,6 @@ final class TerminalFilterView {
         this.pending = pending;
         this.actions = actions;
         previews.beginRows();
-        previewHover.clear();
-        previewRows.clear();
         listRows = libraryRows = detailRows = null;
         TerminalLayout.Rect body = layout.content();
         if (fullMode
@@ -632,6 +625,7 @@ final class TerminalFilterView {
                         Component.translatable(
                                 "omniresonance.terminal.filters.summary", preset.name(), preset.ruleCount()),
                         button -> actions.accept(new Action.Open(preset.id(), preset.revision(), 0)));
+                previews.attach(widget, preset);
                 widget.active = !pending;
                 add.accept(widget);
             } else if (state instanceof NetworkTerminalState.Preset preset) {
@@ -1139,6 +1133,7 @@ final class TerminalFilterView {
                 rebuild.run();
             });
             widget.active = !pending && !queryPending;
+            previews.attach(widget, preset);
             add.accept(widget);
         }
     }
@@ -1276,22 +1271,21 @@ final class TerminalFilterView {
     }
 
     private void preview(TerminalRowButton row, io.github.loongin.omniresonance.networking.FilterRulePreview metadata) {
-        row.icon(previews.get(metadata));
-        previewRows.add(row);
+        previews.attach(row, metadata);
     }
 
     RulePreviewHover updatePreviewHover(int screenWidth, int screenHeight, int mouseX, int mouseY) {
-        if (supports(state)) previewHover.update(previewRows, screenWidth, screenHeight, mouseX, mouseY);
-        else previewHover.clear();
-        return previewHover;
+        if (!supports(state)) previews.hide();
+        return previews.updateHover(screenWidth, screenHeight, mouseX, mouseY);
     }
 
     void hidePreview() {
-        previewHover.clear();
+        previews.hide();
     }
 
     void renderPreview(GuiGraphics graphics, Font font, int screenWidth, int screenHeight, int mouseX, int mouseY) {
-        updatePreviewHover(screenWidth, screenHeight, mouseX, mouseY).render(graphics, font, mouseX, mouseY);
+        if (supports(state)) previews.render(graphics, font, screenWidth, screenHeight, mouseX, mouseY);
+        else previews.hide();
     }
 
     void renderPasteNotice(GuiGraphics graphics, Font font, int mouseX, int mouseY) {
