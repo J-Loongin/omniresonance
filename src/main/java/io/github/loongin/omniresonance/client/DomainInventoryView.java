@@ -30,14 +30,15 @@ import org.jetbrains.annotations.Nullable;
 
 /**
  * One client-owned inventory surface with server-confirmed mutations and no item prediction. Metadata is cached only for live IDs in this view; removals and
- * close evict it. Ordinary queries use 128 work units and a soft 2 ms per client tick. The first complete result
- * for at most 128 variants may use 258 units and 4 ms to avoid another tick solely to finish a small list.
+ * close evict it. Ordinary queries use up to 4096 work units and a soft 2 ms per client tick. The first complete result
+ * for at most 128 variants may use 129 units and 4 ms to avoid another tick solely to finish a small list.
  * Results still publish atomically; only visible buttons exist and quantities come from the authoritative mirror.
  */
 final class DomainInventoryView implements AutoCloseable {
     private static final int CELL = DomainInventoryLayout.CELL;
     private static final int SMALL_INITIAL_VARIANTS = 128;
-    private static final int SMALL_INITIAL_WORK = SMALL_INITIAL_VARIANTS * 2 + 2;
+    private static final int SMALL_INITIAL_WORK = SMALL_INITIAL_VARIANTS + 1;
+    static final int SEARCH_WORK = 4096;
     private final DomainInventoryReceiver receiver = new DomainInventoryReceiver();
     private final ResourceAdapterDirectory adapters =
             io.github.loongin.omniresonance.bootstrap.ResourceAdapters.create();
@@ -538,7 +539,9 @@ final class DomainInventoryView implements AutoCloseable {
             long allowedNanos = smallInitial ? 4_000_000L : 2_000_000L;
             long started = clock.getAsLong();
             search.tick(
-                    smallInitial ? SMALL_INITIAL_WORK : 128, () -> clock.getAsLong() - started < allowedNanos, frozen);
+                    smallInitial ? SMALL_INITIAL_WORK : SEARCH_WORK,
+                    () -> clock.getAsLong() - started < allowedNanos,
+                    frozen);
             if (!search.searching()) firstResultsPending = false;
             if (openTiming != null) openTiming.preparation(clock.getAsLong() - started);
             if (shownVersion != search.displayVersion()) {

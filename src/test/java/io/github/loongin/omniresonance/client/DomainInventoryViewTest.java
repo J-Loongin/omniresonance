@@ -220,7 +220,8 @@ class DomainInventoryViewTest {
                 }
             }
             field.setValue(" ");
-            view.tick(false, () -> 0);
+            long[] clock = {0};
+            view.tick(false, () -> clock[0] += 100_000);
             assertEquals(
                     DomainInventoryView.text("searching"),
                     view.statusMessage(),
@@ -231,7 +232,7 @@ class DomainInventoryViewTest {
     }
 
     @Test
-    void smallFirstResultCompletesWithoutAnExtraTickButLaterQueriesRemainIncremental() {
+    void smallFirstResultUsesFourMillisButLaterQueriesStillYieldAtTwoMillis() {
         for (int count : new int[] {86, 128}) {
             UUID session = new UUID(19, count);
             try (var view = new DomainInventoryView(() -> {})) {
@@ -245,24 +246,26 @@ class DomainInventoryViewTest {
                         ignored -> {});
                 seed(view, session, count);
                 long[] clock = {0};
-                long unitNanos = count == 86 ? 20_000 : 10_000;
+                long unitNanos = 30_000;
                 view.tick(false, () -> clock[0] += unitNanos);
                 assertTrue(widgets.size() > 3, "Small complete inventory unnecessarily waited for another tick");
                 assertFalse(view.statusMessage().equals(DomainInventoryView.text("searching")));
                 assertTrue(clock[0] < 4_100_000, "Initial work exceeded its soft time boundary");
                 field.setValue(" ");
-                view.tick(false, () -> 0);
+                clock[0] = 0;
+                view.tick(false, () -> clock[0] += unitNanos);
                 assertEquals(
                         DomainInventoryView.text("searching"),
                         view.statusMessage(),
                         "The first-open allowance must not persist for ordinary queries");
+                assertTrue(clock[0] <= 2_100_000);
             }
         }
     }
 
     @Test
     void initialPreparationStillWaitsForValidationAndYieldsForLargeOrSlowInventories() {
-        for (int count : new int[] {86, 129}) {
+        for (int count : new int[] {86, DomainInventoryView.SEARCH_WORK + 1}) {
             UUID session = new UUID(20, count);
             try (var view = new DomainInventoryView(() -> {})) {
                 view.request(session, 1);
@@ -288,6 +291,28 @@ class DomainInventoryViewTest {
                 for (int tick = 0; tick < 5; tick++) view.tick(false, () -> 0);
                 assertTrue(widgets.size() > 3, "Yielded work did not resume");
             }
+        }
+    }
+
+    @Test
+    void cheapThousandVariantInventoryUsesTheAvailableTickBudget() {
+        UUID session = new UUID(20, 1000);
+        try (var view = new DomainInventoryView(() -> {})) {
+            var widgets = new ArrayList<AbstractWidget>();
+            view.request(session, 1);
+            var field = view.build(
+                    font(),
+                    DomainInventoryLayout.window(427, 240).content(),
+                    widgets::add,
+                    widgets::remove,
+                    ignored -> {});
+            seed(view, session, 1000);
+            view.tick(false, () -> 0);
+            assertTrue(widgets.size() > 3);
+            assertFalse(view.statusMessage().equals(DomainInventoryView.text("searching")));
+            field.setValue(" ");
+            view.tick(false, () -> 0);
+            assertFalse(view.statusMessage().equals(DomainInventoryView.text("searching")));
         }
     }
 

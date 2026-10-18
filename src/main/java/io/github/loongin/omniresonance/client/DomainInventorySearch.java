@@ -3,15 +3,12 @@ package io.github.loongin.omniresonance.client;
 
 import io.github.loongin.omniresonance.storage.DomainLedger;
 import io.github.loongin.omniresonance.transfer.ResourceVariantKey;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeSet;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import org.jetbrains.annotations.Nullable;
@@ -22,6 +19,7 @@ import org.jetbrains.annotations.Nullable;
  * 4096-ID change inbox coalesces notifications and falls back to a baseline on overflow. Close drops all state.
  */
 final class DomainInventorySearch implements AutoCloseable {
+    /** Complete client mirror: identities keep monotonic IDs; reinsertion receives an ID above the prior ceiling. */
     interface Source {
         @Nullable
         DomainLedger.Cursor after(long cursor, long ceiling);
@@ -50,15 +48,12 @@ final class DomainInventorySearch implements AutoCloseable {
     private boolean invalid;
     private boolean queryWorkPending = true;
     private @Nullable Job job;
-    private @Nullable ArrayList<Long> pending;
-    private ArrayList<Long> visible = new ArrayList<>();
+    private @Nullable DomainInventoryOrder pending;
+    private DomainInventoryOrder visible = new DomainInventoryOrder();
     private List<Long> visibleReadOnly = Collections.unmodifiableList(visible);
     private Map<Long, Row> rows = Map.of(), pendingRows = Map.of();
-    private Map<ResourceVariantKey, Integer> positions = Map.of(), pendingPositions = Map.of();
-    private boolean wasFrozen, frozenChanges;
+    private boolean wasFrozen, frozenChanges, frozenOrder;
     private long notifiedVersion = -1;
-    private Map<Long, ResourceVariantKey> visibleKeys = Map.of();
-    private Map<Long, ResourceVariantKey> pendingKeys = Map.of();
     private long completedVersion = -1;
     private long displayVersion;
     private boolean pendingChanged;
@@ -128,7 +123,7 @@ final class DomainInventorySearch implements AutoCloseable {
 
     @Nullable
     ResourceVariantKey key(long id) {
-        return visibleKeys.get(id);
+        return visible.key(id);
     }
 
     long displayVersion() {
@@ -143,9 +138,7 @@ final class DomainInventorySearch implements AutoCloseable {
         queryWorkPending = true;
         job = null;
         pending = null;
-        pendingKeys = Map.of();
         pendingRows = Map.of();
-        pendingPositions = Map.of();
         completedVersion = -1;
     }
 
@@ -183,51 +176,36 @@ final class DomainInventorySearch implements AutoCloseable {
         for (int work = 0; work < maximumWork && job != null && workAvailable.getAsBoolean(); work++) {
             if (job.frozen && job.seed < job.comparedAgainst.size()) {
                 long id = job.comparedAgainst.get(job.seed++);
-                var key = visibleKeys.get(id);
-                job.positions.put(key, job.pinned.size());
-                job.pinned.add(id);
-                job.pinnedKeys.put(id, key);
+                job.pinned.insert(job.pinned.size(), id, visible.key(id));
                 continue;
             }
-            if (job.output == null) {
-                var entry = source.after(job.cursor, job.ceiling);
-                if (entry == null) {
-                    job.output = job.sorted.iterator();
-                    continue;
-                }
+            var entry = source.after(job.cursor, job.ceiling);
+            if (entry != null) {
                 job.cursor = entry.sequence();
                 var text = describe.apply(entry);
                 if (query.matches(text)) {
                     var row = new Row(entry, text);
-                    job.sorted.add(row);
+                    var previous = rows.get(entry.sequence());
+                    job.changed |= previous == null || order.compare(previous, row) != 0;
                     job.rows.put(entry.sequence(), row);
-                    job.keys.put(entry.sequence(), entry.key());
+                    int at = job.result.insertionPoint(entry.sequence(), job.compare);
+                    job.result.insert(at, entry.sequence(), entry.key());
                     if (job.frozen) {
-                        Integer index = job.positions.get(entry.key());
-                        if (index == null) {
-                            job.positions.put(entry.key(), job.pinned.size());
-                            job.pinned.add(entry.sequence());
+                        int index = job.pinned.position(entry.key());
+                        if (index < 0) {
+                            job.pinned.insert(job.pinned.size(), entry.sequence(), entry.key());
                             job.pinnedChanged = true;
                         } else {
-                            long previous = job.pinned.set(index, entry.sequence());
-                            job.pinnedKeys.remove(previous);
-                            job.pinnedChanged |= previous != entry.sequence();
+                            job.pinnedChanged |= job.pinned.get(index) != entry.sequence();
+                            job.pinned.replaceId(entry.key(), entry.sequence());
                         }
-                        job.pinnedKeys.put(entry.sequence(), entry.key());
                     }
                 }
-            } else if (job.output.hasNext()) {
-                long id = job.output.next().entry().sequence();
-                int index = job.result.size();
-                job.changed |= index >= job.comparedAgainst.size() || job.comparedAgainst.get(index) != id;
-                job.result.add(id);
-                job.resultPositions.put(job.keys.get(id), index);
             } else {
                 pending = job.result;
                 pendingRows = job.rows;
-                pendingPositions = job.resultPositions;
-                pendingKeys = job.keys;
-                pendingChanged = queryWorkPending
+                pendingChanged = frozenOrder
+                        || queryWorkPending
                         || job.changed
                         || job.result.size() != job.comparedAgainst.size()
                         || visible != job.comparedAgainst
@@ -235,14 +213,11 @@ final class DomainInventorySearch implements AutoCloseable {
                 if (frozen && job.pinnedChanged) {
                     visible = job.pinned;
                     visibleReadOnly = Collections.unmodifiableList(visible);
-                    visibleKeys = job.pinnedKeys;
                     displayVersion = Math.incrementExact(displayVersion);
                 }
                 if (frozen) {
                     rows = job.rows;
-                    positions = job.positions;
-                    visibleKeys = job.pinnedKeys;
-                    frozenChanges = true;
+                    frozenChanges = frozenOrder = true;
                 }
                 completedVersion = job.version;
                 queryWorkPending = false;
@@ -258,16 +233,16 @@ final class DomainInventorySearch implements AutoCloseable {
             visibleReadOnly = Collections.unmodifiableList(visible);
             displayVersion = Math.incrementExact(displayVersion);
         }
-        visibleKeys = pendingKeys;
+        frozenOrder = false;
         rows = pendingRows;
-        positions = pendingPositions;
         pending = null;
-        pendingKeys = Map.of();
         pendingRows = Map.of();
-        pendingPositions = Map.of();
     }
 
-    /** Quantity-only updates in stable order use one O(log N) source lookup; structural edits shift a list suffix. */
+    private final java.util.function.LongBinaryOperator compareIds =
+            (left, right) -> order.compare(rows.get(left), rows.get(right));
+
+    /** One source lookup and O(log N) index updates, including moves across the entire quantity ordering. */
     private void applyChange(long id, ResourceVariantKey key, boolean frozen) {
         Row previous = rows.remove(id);
         var entry = source.after(id - 1, id);
@@ -276,69 +251,40 @@ final class DomainInventorySearch implements AutoCloseable {
             var text = describe.apply(entry);
             if (query.matches(text)) next = new Row(entry, text);
         }
-        Integer at = positions.get(key);
+        int at = visible.position(key);
         if (frozen) {
-            frozenChanges = true;
+            frozenChanges = frozenOrder = true;
             pending = null;
-            pendingKeys = Map.of();
             pendingRows = Map.of();
-            pendingPositions = Map.of();
             if (next == null) return;
             rows.put(id, next);
-            if (at == null) {
-                positions.put(key, visible.size());
-                visible.add(id);
-                visibleKeys.put(id, key);
+            if (at < 0) {
+                visible.insert(visible.size(), id, key);
                 displayVersion = Math.incrementExact(displayVersion);
             } else if (visible.get(at) != id) {
-                long old = visible.set(at, id);
-                rows.remove(old);
-                visibleKeys.remove(old);
-                visibleKeys.put(id, key);
+                rows.remove(visible.get(at));
+                visible.replaceId(key, id);
                 displayVersion = Math.incrementExact(displayVersion);
             }
             return;
         }
-        boolean owned = at != null && visible.get(at) == id;
+        boolean owned = at >= 0 && visible.get(at) == id;
         if (owned && previous != null && next != null && order.compare(previous, next) == 0) {
             rows.put(id, next);
             return;
         }
         int oldPosition = owned ? at : -1;
-        if (owned) removeAt(at);
+        if (owned) visible.remove(at);
         if (next == null) {
             if (owned) displayVersion = Math.incrementExact(displayVersion);
             return;
         }
-        // A remove/reinsert may already have been observed by a baseline build.
-        Integer reused = positions.get(key);
-        if (reused != null) {
-            long old = visible.get(reused);
-            rows.remove(old);
-            removeAt(reused);
-        }
-        int low = 0, high = visible.size();
-        var compare = order;
-        while (low < high) {
-            int middle = (low + high) >>> 1;
-            if (compare.compare(rows.get(visible.get(middle)), next) < 0) low = middle + 1;
-            else high = middle;
-        }
+        int reused = visible.position(key);
+        if (reused >= 0) rows.remove(visible.remove(reused));
         rows.put(id, next);
-        visibleKeys.put(id, key);
-        visible.add(low, id);
-        reindex(low);
-        if (oldPosition != low || reused != null) displayVersion = Math.incrementExact(displayVersion);
-    }
-
-    private void removeAt(int index) {
-        long old = visible.remove(index);
-        positions.remove(visibleKeys.remove(old));
-        reindex(index);
-    }
-
-    private void reindex(int first) {
-        for (int i = first; i < visible.size(); i++) positions.put(visibleKeys.get(visible.get(i)), i);
+        int index = visible.insertionPoint(id, compareIds);
+        visible.insert(index, id, key);
+        if (oldPosition != index || reused >= 0) displayVersion = Math.incrementExact(displayVersion);
     }
 
     private int compareRows(Row left, Row right) {
@@ -381,23 +327,17 @@ final class DomainInventorySearch implements AutoCloseable {
     }
 
     private final class Job {
-        final long ceiling, version, matcherRevision = ClientTextSearch.matcherRevision();
-        final TreeSet<Row> sorted = new TreeSet<>(order);
-        final ArrayList<Long> result = new ArrayList<>();
+        final long ceiling, version;
+        final DomainInventoryOrder result = new DomainInventoryOrder();
         final List<Long> comparedAgainst = visible;
         final boolean frozen;
-        final Map<Long, ResourceVariantKey> keys = new HashMap<>();
         final Map<Long, Row> rows = new HashMap<>();
-        final Map<ResourceVariantKey, Integer> resultPositions = new HashMap<>();
-        final Map<ResourceVariantKey, Integer> positions = new HashMap<>();
-        final ArrayList<Long> pinned = new ArrayList<>();
-        final Map<Long, ResourceVariantKey> pinnedKeys = new HashMap<>();
+        final java.util.function.LongBinaryOperator compare =
+                (left, right) -> order.compare(rows.get(left), rows.get(right));
+        final DomainInventoryOrder pinned = new DomainInventoryOrder();
         boolean changed, pinnedChanged;
         int seed;
         long cursor;
-
-        @Nullable
-        Iterator<Row> output;
 
         Job(long ceiling, long version, boolean frozen) {
             this.frozen = frozen;
@@ -411,17 +351,13 @@ final class DomainInventorySearch implements AutoCloseable {
         queryWorkPending = true;
         job = null;
         pending = null;
-        visible = new ArrayList<>();
+        visible = new DomainInventoryOrder();
         visibleReadOnly = Collections.unmodifiableList(visible);
         rows = pendingRows = Map.of();
-        positions = pendingPositions = Map.of();
         changes.clear();
-        rescan = wasFrozen = frozenChanges = false;
+        rescan = wasFrozen = frozenChanges = frozenOrder = false;
         notifiedVersion = -1;
-        visibleKeys = Map.of();
-        pendingKeys = Map.of();
         pendingRows = Map.of();
-        pendingPositions = Map.of();
         completedVersion = -1;
     }
 }

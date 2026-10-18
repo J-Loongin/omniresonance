@@ -72,6 +72,108 @@ class DomainInventorySearchTest {
         }
     }
 
+    @Test
+    void completeBaselinePublishesWithoutASecondLinearOutputPass() {
+        var source = new DeltaSource();
+        for (int i = 1; i <= 10_000; i++) source.put(i, scaleKey(i), i);
+        try (var search = source.search()) {
+            search.tick(10_001, () -> true, false);
+            assertEquals(10_000, search.ids().size());
+            assertFalse(search.working());
+        }
+    }
+
+    @Test
+    void scatteredAmountMovesDoNotAllocateWholeSuffixPositionIndexes() {
+        var source = new DeltaSource();
+        for (int i = 1; i <= 50_000; i++) source.put(i, scaleKey(i), i);
+        try (var search = source.search()) {
+            search.sort(DomainInventorySearch.Sort.AMOUNT_DESC);
+            search.tick(100_010, () -> true, false);
+            for (int i = 0; i < 128; i++) {
+                long id = 1 + (i * 389L) % 50_000;
+                search.changed(source.put(id, scaleKey((int) id), 50_001 + i));
+            }
+            var memory = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+            assertTrue(memory.isThreadAllocatedMemorySupported());
+            memory.setThreadAllocatedMemoryEnabled(true);
+            long thread = Thread.currentThread().threadId();
+            long before = memory.getThreadAllocatedBytes(thread);
+            search.tick(128, () -> true, false);
+            long allocated = memory.getThreadAllocatedBytes(thread) - before;
+            org.slf4j.LoggerFactory.getLogger(getClass())
+                    .info("Index allocation: variants=50000, changes=128, allocatedBytes={}", allocated);
+            assertTrue(
+                    allocated < 16L * 1024 * 1024,
+                    "128 changes rebuilt large suffix indexes: allocated " + allocated + " bytes");
+            assertEquals(50_000, search.ids().size());
+            for (int i = 0; i < 128; i++)
+                assertEquals(1 + ((127 - i) * 389L) % 50_000, search.ids().get(i));
+        }
+    }
+
+    @Test
+    void identityReintroducedBehindTheBaselineCursorDoesNotDuplicateTheResult() {
+        var source = new DeltaSource();
+        var key = scaleKey(1);
+        source.put(1, key, 10);
+        source.put(2, scaleKey(2), 20);
+        source.put(3, scaleKey(3), 30);
+        try (var search = source.search()) {
+            search.tick(1, () -> true, false);
+            search.changed(source.put(1, key, 0));
+            // New identities cannot enter the active baseline ceiling; the queued delta must restore this one.
+            search.changed(source.put(4, key, 30));
+            for (int i = 0; i < 4; i++) search.tick(10, () -> true, false);
+            assertEquals(3, search.ids().size());
+            assertEquals(java.util.Set.of(2L, 3L, 4L), new java.util.HashSet<>(search.ids()));
+        }
+    }
+
+    @Test
+    void allSixSortsRetainTheirExistingTypeNameModAndIdentityOrder() {
+        var source = new DeltaSource();
+        String[] names = {"z", "a", "c", "b", "a", "x"};
+        String[] mods = {"b", "a", "b", "a", "c", "a"};
+        String[] types = {
+            "minecraft:item",
+            "minecraft:item",
+            "minecraft:fluid",
+            "neoforge:energy",
+            "minecraft:item",
+            "minecraft:fluid"
+        };
+        for (int i = 0; i < 6; i++)
+            source.put(
+                    i + 1,
+                    new ResourceVariantKey(ResourceLocation.parse(types[i]), new byte[] {(byte) (i + 1)}),
+                    (i + 1) * 10);
+        var expected = java.util.Map.of(
+                DomainInventorySearch.Sort.NAME_ASC, List.of(2L, 5L, 4L, 3L, 6L, 1L),
+                DomainInventorySearch.Sort.NAME_DESC, List.of(1L, 6L, 3L, 4L, 2L, 5L),
+                DomainInventorySearch.Sort.MOD_ASC, List.of(2L, 4L, 6L, 3L, 1L, 5L),
+                DomainInventorySearch.Sort.MOD_DESC, List.of(5L, 3L, 1L, 2L, 4L, 6L),
+                DomainInventorySearch.Sort.AMOUNT_DESC, List.of(5L, 2L, 1L, 6L, 3L, 4L),
+                DomainInventorySearch.Sort.AMOUNT_ASC, List.of(1L, 2L, 5L, 3L, 6L, 4L));
+        try (var search = new DomainInventorySearch(source, entry -> {
+            int index = (int) entry.sequence() - 1;
+            return new DomainInventoryQuery.Document(
+                    names[index], mods[index], "sample", types[index], List.of(), () -> "");
+        })) {
+            for (var sort : DomainInventorySearch.Sort.values()) {
+                search.sort(sort);
+                search.tick(7, () -> true, false);
+                assertEquals(expected.get(sort), search.ids(), sort.name());
+            }
+        }
+    }
+
+    private static ResourceVariantKey scaleKey(int id) {
+        return new ResourceVariantKey(
+                ResourceLocation.parse("minecraft:item"),
+                java.nio.ByteBuffer.allocate(4).putInt(id).array());
+    }
+
     private static final class DeltaSource implements DomainInventorySearch.Source {
         final TreeMap<Long, DomainLedger.Cursor> data = new TreeMap<>();
         long version;
