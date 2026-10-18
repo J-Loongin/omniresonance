@@ -73,6 +73,11 @@ class ExchangePresetPreviewTest {
         assertTrue(rows.getLast().icon() instanceof PresetIconPreview);
         assertEquals("Iron", rows.getLast().getMessage().getString());
         assertNull(rows.getLast().getTooltip());
+        var preview = (ResourceIconPreview) rows.getLast().icon();
+        for (int tick = 0; tick < 20; tick++) screen.tick();
+        assertEquals(0, preview.imageCount(), "A screen without a foreground client must not prepare previews");
+        preview.prepare(256);
+        assertEquals(1, preview.imageCount());
         rows.getLast().onPress();
         assertTrue(screen.draftDirty());
     }

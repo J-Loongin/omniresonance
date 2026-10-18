@@ -428,7 +428,9 @@ final class ResonanceNodeScreen extends AbstractContainerScreen<ResonanceNodeMen
         }
         if (resourceSelection != null && modal == Modal.NONE && resourceSelection.tick(clientTicks))
             updateResourceRows();
-        if (choosingItemPreset && modal == Modal.NONE && presetPicker.tick()) updatePresetResultRows();
+        if (choosingItemPreset
+                && modal == Modal.NONE
+                && presetPicker.tick(minecraft != null && minecraft.screen == this)) updatePresetResultRows();
         applyLocalTunnelSearch();
         requestPresetQuery();
         if (clientTicks % 20 == 0

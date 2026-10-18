@@ -7,11 +7,12 @@ import java.util.HashSet;
 import java.util.List;
 
 /** Samples each bounded direct rule once before filling additional examples in round-robin order.
+ * Preparation can pause independently, but a ready rule cannot enter the next example round early.
  * Identities deduplicate by resource type and ID, not texture or localized name. References never resolve. */
 final class PresetIconPreview extends ResourceIconPreview {
     private static final class Rule {
         final RuleIconPreview preview;
-        int consumed;
+        int consumed, completedRound = -1;
         boolean first, exhausted;
 
         Rule(RuleIconPreview preview) {
@@ -22,7 +23,7 @@ final class PresetIconPreview extends ResourceIconPreview {
     private final List<Rule> rules = new ArrayList<>();
     private final HashSet<RuleIconPreview.Identity> identities = new HashSet<>();
     private final HashSet<RulePreviewImage> placeholders = new HashSet<>();
-    private int cursor, firstRemaining, live;
+    private int cursor, round, roundRemaining, live;
     private boolean done;
 
     PresetIconPreview(FilterPresetPreview metadata, RulePreviewSource source) {
@@ -30,7 +31,7 @@ final class PresetIconPreview extends ResourceIconPreview {
         more = metadata.truncated();
         var seen = new HashSet<io.github.loongin.omniresonance.networking.FilterRulePreview>();
         for (var rule : metadata.rules()) if (seen.add(rule)) rules.add(new Rule(new RuleIconPreview(rule, source)));
-        firstRemaining = live = rules.size();
+        roundRemaining = live = rules.size();
         if (rules.isEmpty()) {
             finish();
             if (metadata.truncated()) fallback = UNAVAILABLE;
@@ -40,9 +41,13 @@ final class PresetIconPreview extends ResourceIconPreview {
     int prepare(int budget) {
         int used = 0;
         while (!done && used < budget) {
+            if (roundRemaining == 0) {
+                round++;
+                roundRemaining = live;
+            }
             Rule rule = rules.get(cursor);
             cursor = (cursor + 1) % rules.size();
-            if (rule.exhausted || firstRemaining > 0 && rule.first) {
+            if (rule.exhausted || rule.completedRound == round) {
                 used++;
                 continue;
             }
@@ -51,12 +56,12 @@ final class PresetIconPreview extends ResourceIconPreview {
                 used++;
                 var image = child.image(rule.consumed);
                 boolean unique = identities.add(child.identity(rule.consumed++));
-                first(rule);
+                completeRound(rule);
                 if (unique) add(image);
             } else if (child.done()) {
                 used++;
                 if (!rule.first && placeholders.add(child.current())) add(child.current());
-                first(rule);
+                completeRound(rule);
                 rule.exhausted = true;
                 live--;
                 more |= child.hasMore();
@@ -68,11 +73,10 @@ final class PresetIconPreview extends ResourceIconPreview {
         return used;
     }
 
-    private void first(Rule rule) {
-        if (!rule.first) {
-            rule.first = true;
-            firstRemaining--;
-        }
+    private void completeRound(Rule rule) {
+        rule.first = true;
+        rule.completedRound = round;
+        roundRemaining--;
     }
 
     private void add(RulePreviewImage image) {

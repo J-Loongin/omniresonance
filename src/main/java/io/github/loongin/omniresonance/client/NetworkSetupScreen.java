@@ -2495,7 +2495,8 @@ final class NetworkSetupScreen extends Screen implements RecipeGhostTarget, Term
         if (statusView != null) statusView.tick();
         tickFilterTransfer();
         memberView.tick(clientTicks);
-        filterView.tick(clientTicks, pendingOperation != PendingOperation.NONE);
+        filterView.tick(
+                clientTicks, pendingOperation != PendingOperation.NONE, minecraft != null && minecraft.screen == this);
         boolean editing = topologyState instanceof NetworkTerminalState.TunnelEdit
                 || topologyState instanceof NetworkTerminalState.DeleteConfirmation
                 || topologyState instanceof NetworkTerminalState.NetworkRename

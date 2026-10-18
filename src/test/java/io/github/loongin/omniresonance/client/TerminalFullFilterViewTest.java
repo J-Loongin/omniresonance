@@ -148,7 +148,10 @@ class TerminalFullFilterViewTest {
                 .findFirst()
                 .orElseThrow();
         var preview = (RuleIconPreview) row.icon();
-        preview.prepare(64);
+        view.tick(1, true, false);
+        assertEquals(0, preview.imageCount());
+        view.tick(2, true, true);
+        assertEquals(1, preview.imageCount());
         var hover = view.updatePreviewHover(640, 360, row.iconRight() - 8, row.getY() + 10);
         org.junit.jupiter.api.Assertions.assertSame(preview.inlineImage(0).name(), hover.name());
         org.junit.jupiter.api.Assertions.assertNotNull(hover.name());
@@ -472,7 +475,7 @@ class TerminalFullFilterViewTest {
             var layout = TerminalLayout.terminal(640, 360);
             build(view, layout, directory, actions);
             for (int offset : new int[] {128, 256}) {
-                view.tick(offset, false);
+                view.tick(offset, false, true);
                 view.acceptLibrary(new NetworkTerminalResponse.FilterLibrary(
                         NETWORK.id(),
                         NETWORK.ownerId(),
@@ -505,7 +508,7 @@ class TerminalFullFilterViewTest {
                                 .findFirst()
                                 .orElseThrow())
                         .setValue("Candidate");
-                view.tick(300, false);
+                view.tick(300, false, true);
                 widgets = build(view, layout, edit, actions);
             }
             int requests = actions.size();
@@ -939,7 +942,7 @@ class TerminalFullFilterViewTest {
         field.setFocused(true);
         field.setCursorPosition(3);
         field.setHighlightPos(1);
-        view.tick(2, false);
+        view.tick(2, false, true);
         widgets = build(view, layout, directory, actions);
         org.junit.jupiter.api.Assertions.assertSame(
                 field,
@@ -953,7 +956,7 @@ class TerminalFullFilterViewTest {
         try {
             ClientTextSearch.install((name, query) -> query.equals("pinyin"));
             field.setValue("pinyin");
-            view.tick(3, false);
+            view.tick(3, false, true);
             var matched = build(view, layout, directory, actions);
             assertEquals(
                     1,

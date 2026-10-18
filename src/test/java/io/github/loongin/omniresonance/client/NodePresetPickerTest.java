@@ -37,6 +37,11 @@ class NodePresetPickerTest {
         assertNull(widgets.getFirst().icon(), "No-preset action must not pretend to be a resource");
         org.junit.jupiter.api.Assertions.assertNotNull(widgets.getLast().icon());
         assertEquals("Iron", widgets.getLast().getMessage().getString());
+        var preview = (ResourceIconPreview) widgets.getLast().icon();
+        picker.tick(false);
+        assertEquals(0, preview.imageCount());
+        picker.tick(true);
+        assertEquals(1, preview.imageCount());
         widgets.getLast().onPress();
         assertEquals(preset, selected.getLast());
     }
@@ -70,14 +75,14 @@ class NodePresetPickerTest {
         try {
             ClientTextSearch.install((name, query) -> name.equals("测试预设") && query.equals("csys"));
             picker.edit("csys");
-            picker.tick();
+            picker.tick(true);
             assertEquals(2, picker.count());
             assertNull(picker.nextRequest());
             assertEquals("测试预设", picker.page().entries().getFirst().name());
             ClientTextSearch.usePlain();
             picker.edit("");
             picker.edit("csys");
-            picker.tick();
+            picker.tick(true);
             assertEquals(1, picker.count());
         } finally {
             ClientTextSearch.usePlain();
@@ -127,7 +132,7 @@ class NodePresetPickerTest {
         assertTrue(picker.ready());
         assertNull(picker.nextRequest());
         field.setValue("");
-        picker.tick();
+        picker.tick(true);
         for (int i = 0; i < 140; i++) picker.wheel(-1, 10);
         host.refresh();
         assertTrue(host.getFocused() == field);
@@ -281,17 +286,17 @@ class NodePresetPickerTest {
             assertEquals(0, calls.get(), "Typing must defer matching until the next client tick");
             assertEquals(0, host.refreshes, "Typing rebuilt result controls before the scheduled update");
             assertTrue(picker.search().due(1));
-            assertTrue(picker.tick());
+            assertTrue(picker.tick(true));
             host.refresh();
             assertEquals(256, calls.get(), "Three edits must perform only one full catalog match");
             assertEquals(1, host.refreshes);
             assertEquals("Preset 255", picker.page().entries().getFirst().name());
-            assertFalse(picker.tick());
+            assertFalse(picker.tick(true));
             assertEquals(256, calls.get());
             host.field.setValue("");
             host.field.setValue("missing");
             picker.close();
-            assertFalse(picker.tick());
+            assertFalse(picker.tick(true));
             assertEquals(256, calls.get(), "Closed picker resumed stale search work");
         } finally {
             ClientTextSearch.usePlain();
@@ -355,11 +360,11 @@ class NodePresetPickerTest {
         assertTrue(picker.ready());
         assertEquals(2, picker.count());
         picker.edit("missing");
-        picker.tick();
+        picker.tick(true);
         assertEquals(1, picker.count());
         assertNull(picker.nextRequest());
         picker.edit("");
-        picker.tick();
+        picker.tick(true);
         assertEquals(2, picker.count());
         assertEquals(0, picker.scroll());
     }

@@ -47,10 +47,12 @@ public record FilterRulePreview(Kind kind, @Nullable ResourceLocation type, Stri
         String text;
         switch (match.selector()) {
             case ResourceFilterRule.Exact exact -> {
+                if (!fitsPreview(exact.resourceId())) return NONE;
                 kind = Kind.EXACT;
                 text = exact.resourceId().toString();
             }
             case ResourceFilterRule.TagSelector tag -> {
+                if (!fitsPreview(tag.tagId())) return NONE;
                 kind = Kind.TAG;
                 text = tag.tagId().toString();
             }
@@ -66,6 +68,11 @@ public record FilterRulePreview(Kind kind, @Nullable ResourceLocation type, Stri
         // Legal long selectors remain fully readable/editable; preview never truncates an identity into another
         // resource.
         return text.length() > MAX_SELECTOR ? NONE : new FilterRulePreview(kind, match.resourceTypeId(), text);
+    }
+
+    private static boolean fitsPreview(ResourceLocation id) {
+        // Avoid allocating a complete long identity merely to discard its display-only projection.
+        return (long) id.getNamespace().length() + 1 + id.getPath().length() <= MAX_SELECTOR;
     }
 
     public static FilterRulePreview exactItem(String id) {

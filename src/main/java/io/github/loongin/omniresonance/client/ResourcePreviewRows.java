@@ -38,8 +38,9 @@ final class ResourcePreviewRows {
         rows.add(row);
     }
 
-    void tick() {
-        cache.tick();
+    void tick(boolean visible) {
+        if (visible) cache.tick();
+        else hover.clear();
     }
 
     void clear() {

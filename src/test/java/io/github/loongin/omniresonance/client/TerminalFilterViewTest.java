@@ -252,10 +252,10 @@ class TerminalFilterViewTest {
         var layout = TerminalLayout.calculate(960, 540);
         view.apply(state);
         build(view, layout, state, actions);
-        view.tick(1, false);
+        view.tick(1, false, true);
         assertEquals(1, actions.size());
         org.junit.jupiter.api.Assertions.assertFalse(NetworkSetupScreen.completeTopologySend(view, false));
-        view.tick(2, false);
+        view.tick(2, false, true);
         assertEquals(1, actions.size());
         var retry = (TerminalButton) build(view, layout, state, actions).stream()
                 .filter(w -> w.getMessage().getContents()
@@ -264,7 +264,7 @@ class TerminalFilterViewTest {
                 .findFirst()
                 .orElseThrow();
         retry.onPress();
-        view.tick(3, false);
+        view.tick(3, false, true);
         assertEquals(2, actions.size());
         assertEquals(0, ((TerminalFilterView.Action.Query) actions.getLast()).offset());
     }
@@ -310,14 +310,14 @@ class TerminalFilterViewTest {
         var state = new io.github.loongin.omniresonance.networking.NetworkTerminalState.Filters(network(), presets(0));
         view.apply(state);
         build(view, layout, state, actions);
-        view.tick(1, false);
+        view.tick(1, false, true);
         view.requestFailed(state);
-        view.tick(2, false);
+        view.tick(2, false, true);
         assertEquals(2, actions.size());
         assertEquals(128, ((TerminalFilterView.Action.Query) actions.getLast()).offset());
         view.acceptLibrary(new io.github.loongin.omniresonance.networking.NetworkTerminalResponse.FilterLibrary(
                 network().id(), network().ownerId(), 2, "", presets(128)));
-        view.tick(3, false);
+        view.tick(3, false, true);
         assertEquals(256, ((TerminalFilterView.Action.Query) actions.getLast()).offset());
     }
 
@@ -330,7 +330,7 @@ class TerminalFilterViewTest {
         view.apply(state);
         build(view, layout, state, actions);
         for (int offset : new int[] {128, 256}) {
-            view.tick(offset, false);
+            view.tick(offset, false, true);
             assertEquals(offset, ((TerminalFilterView.Action.Query) actions.getLast()).offset());
             assertEquals("", ((TerminalFilterView.Action.Query) actions.getLast()).query());
             view.acceptLibrary(new io.github.loongin.omniresonance.networking.NetworkTerminalResponse.FilterLibrary(

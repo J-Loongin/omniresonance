@@ -167,8 +167,8 @@ final class TerminalFilterView {
         librarySearch.finishToggleClick(previous, owner, searchField);
     }
 
-    void tick(long tick, boolean busy) {
-        previews.tick();
+    void tick(long tick, boolean busy, boolean visible) {
+        previews.tick(visible);
         searchTick = tick;
         if (pasteNoticeTicks > 0) pasteNoticeTicks--;
         if (!supports(state) || busy || queryPending || catalog.failed()) return;

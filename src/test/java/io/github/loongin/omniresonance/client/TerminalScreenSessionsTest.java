@@ -88,6 +88,76 @@ class TerminalScreenSessionsTest {
         assertEquals(0, second.ticks);
     }
 
+    @Test
+    void hiddenRecipeParentKeepsHeartbeatsButPausesPreviewDiscoveryUntilReturn() {
+        var parent = new PreviewPage();
+        var child = new Recipe(parent);
+        parent.front = true;
+        parent.tick();
+        assertEquals(1, parent.opens);
+        assertEquals(0, parent.images);
+        parent.front = false;
+        parent.removed();
+        for (int i = 0; i < 20; i++) sessions.tick(child, true);
+        assertEquals(21, parent.ticks, "Session keepalive was stopped with preview rendering");
+        assertEquals(0, parent.images, "Hidden preview continued registry preparation");
+        parent.front = true;
+        sessions.tick(parent, true);
+        for (int i = 0; i < 20; i++) parent.tick();
+        assertEquals(2, parent.images);
+        assertEquals(1, parent.opens, "Returning to the page restarted its preview cursor");
+    }
+
+    private static final class PreviewPage extends Screen implements TerminalScreenSessions.Participant {
+        int ticks, opens, images;
+        boolean front, valid = true;
+        final ResourcePreviewRows previews;
+
+        PreviewPage() {
+            super(Component.empty());
+            previews = new ResourcePreviewRows(new RulePreviewSource() {
+                public java.util.Iterator<net.minecraft.resources.ResourceLocation> open(
+                        io.github.loongin.omniresonance.networking.FilterRulePreview rule) {
+                    opens++;
+                    return java.util.List.of(
+                                    net.minecraft.resources.ResourceLocation.parse("slow:" + "x".repeat(10000)),
+                                    net.minecraft.resources.ResourceLocation.parse("slow:" + "y".repeat(10000)))
+                            .iterator();
+                }
+
+                public RulePreviewImage image(
+                        net.minecraft.resources.ResourceLocation type, net.minecraft.resources.ResourceLocation id) {
+                    images++;
+                    return RulePreviewImage.item(
+                            new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT));
+                }
+            });
+            previews.beginRows();
+            previews.attach(
+                    new TerminalRowButton(new TerminalLayout.Rect(0, 0, 300, 20), Component.empty(), ignored -> {}),
+                    new io.github.loongin.omniresonance.networking.FilterRulePreview(
+                            io.github.loongin.omniresonance.networking.FilterRulePreview.Kind.GLOB,
+                            io.github.loongin.omniresonance.transfer.ResourceTypes.ITEM,
+                            "slow:*"));
+        }
+
+        public boolean sessionValid() {
+            return valid;
+        }
+
+        public void tick() {
+            ticks++;
+            previews.tick(front);
+        }
+
+        public void removed() {
+            TerminalScreenSessions.removed(this, () -> {
+                valid = false;
+                previews.clear();
+            });
+        }
+    }
+
     private static ConfirmScreen confirm() {
         return new ConfirmScreen(ignored -> {}, Component.empty(), Component.empty());
     }

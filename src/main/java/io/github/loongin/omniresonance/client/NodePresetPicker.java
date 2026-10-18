@@ -83,8 +83,8 @@ final class NodePresetPicker {
         }
     }
 
-    boolean tick() {
-        previews.tick();
+    boolean tick(boolean visible) {
+        previews.tick(visible);
         ticks++;
         if (!open || !catalog.ready() || !search.due(ticks)) return false;
         updateResults(0);

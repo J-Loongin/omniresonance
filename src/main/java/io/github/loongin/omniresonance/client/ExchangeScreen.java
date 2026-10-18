@@ -1587,7 +1587,8 @@ final class ExchangeScreen extends Screen implements TerminalScreenSessions.Part
 
     @Override
     public void tick() {
-        if (page == Page.PRESETS && dialogText == null) presetPreviews.tick();
+        if (page == Page.PRESETS && dialogText == null)
+            presetPreviews.tick(minecraft != null && minecraft.screen == this);
         tick++;
         if (resourceSelection != null && resourceSelection.tick(tick)) rebuild();
         if (resourceSelection == null && search.due(tick)) {

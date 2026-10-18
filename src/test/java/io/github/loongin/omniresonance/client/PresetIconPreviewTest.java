@@ -130,6 +130,48 @@ class PresetIconPreviewTest {
     }
 
     @Test
+    void everySupplementalRoundIncludesTheSlowMatchingRuleBeforeTheFastRuleAdvances() {
+        for (int budget : new int[] {1, 64, 256, 16384}) {
+            var source = new RulePreviewSource() {
+                public Iterator<ResourceLocation> open(FilterRulePreview rule) {
+                    return new Iterator<>() {
+                        int next;
+
+                        public boolean hasNext() {
+                            return next < 100;
+                        }
+
+                        public ResourceLocation next() {
+                            return ResourceLocation.parse(
+                                    (rule.kind() == FilterRulePreview.Kind.TAG ? "fast:" : "slow:" + "x".repeat(32))
+                                            + next++);
+                        }
+                    };
+                }
+
+                public RulePreviewImage image(ResourceLocation type, ResourceLocation id) {
+                    return new RulePreviewImage(
+                            ItemStack.EMPTY,
+                            FluidStack.EMPTY,
+                            EnergyDisplay.TEXTURE,
+                            EnergyDisplay.TINT,
+                            Component.literal(id.toString()));
+                }
+            };
+            var slow = new FilterRulePreview(FilterRulePreview.Kind.GLOB, ResourceTypes.ITEM, "slow:*");
+            var preview = new PresetIconPreview(new FilterPresetPreview(List.of(TAG, slow), false), source);
+            for (int tick = 0; tick < 20000; tick++) assertTrue(preview.prepare(budget) <= budget);
+            assertEquals(24, preview.imageCount());
+            for (int i = 0; i < 24; i += 2) {
+                var pair = new java.util.HashSet<>(java.util.List.of(
+                        preview.image(i).name().getString().split(":")[0],
+                        preview.image(i + 1).name().getString().split(":")[0]));
+                assertEquals(java.util.Set.of("fast", "slow"), pair, "Preparation cost changed the example round");
+            }
+        }
+    }
+
+    @Test
     void smallBudgetsDoNotLetTheFirstRuleHideOtherTypes() {
         for (int budget = 1; budget <= 4; budget++) {
             var preview = new PresetIconPreview(
